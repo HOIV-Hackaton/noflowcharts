@@ -1,101 +1,91 @@
 import {
-  BlocksStatsGrid,
-  BlocksTicketTable,
-  type BlocksStat,
-  type BlocksSidebarView,
-} from "../../components/blocks";
-import { PageHeader, StatusLabel } from "../../components/ui/primitives";
-import { getQueueHeading } from "../../lib/queue";
-import type { Priority, Ticket, TicketStatus } from "../../types";
+  PriorityBars,
+  StatsGrid,
+  TicketTable,
+  type DashboardStat,
+} from "@/components/service-desk-ui";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type { Priority, Ticket, TicketStatus } from "@/types";
 
 export function DashboardHome({
   filteredTickets,
   onSelectTicket,
-  onRefreshTickets,
   priorityFilter,
   setPriorityFilter,
   setSortBy,
   setStatusFilter,
-  sidebarView,
   sortBy,
   stats,
   statusFilter,
 }: {
   filteredTickets: Ticket[];
   onSelectTicket: (ticketId: number) => void;
-  onRefreshTickets: () => void;
   priorityFilter: "all" | Priority;
   setPriorityFilter: (filter: "all" | Priority) => void;
   setSortBy: (sort: "date" | "priority" | "customer") => void;
   setStatusFilter: (filter: "all" | TicketStatus) => void;
-  sidebarView: BlocksSidebarView;
   sortBy: "date" | "priority" | "customer";
-  stats: BlocksStat[];
+  stats: DashboardStat[];
   statusFilter: "all" | TicketStatus;
 }) {
-  const queueHeading = getQueueHeading(sidebarView, filteredTickets.length);
-  const ticketStats = stats.map((stat) => ({
-    ...stat,
-    change: "",
-    kind: stat.kind === "chart" ? ("metric" as const) : stat.kind,
-  }));
-
   return (
-    <>
-      <PageHeader title={queueHeading.title} badges={<StatusLabel label={queueHeading.badge} />} />
-      <BlocksStatsGrid density="compact" stats={ticketStats} />
+    <div className="flex flex-col gap-5">
+      <StatsGrid stats={stats} />
 
-      <section className="space-y-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h3 className="text-balance text-lg font-normal text-foreground">{queueHeading.title}</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {filteredTickets.length} visible across the selected queue.
-            </p>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <section className="flex min-w-0 flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Select onValueChange={(value) => setStatusFilter(value as "all" | TicketStatus)} value={statusFilter}>
+              <SelectTrigger aria-label="Status filter" size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">All status</SelectItem>
+                  <SelectItem value="OPEN">Open</SelectItem>
+                  <SelectItem value="PENDING">Pending</SelectItem>
+                  <SelectItem value="DONE">Done</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Select onValueChange={(value) => setPriorityFilter(value as "all" | Priority)} value={priorityFilter}>
+              <SelectTrigger aria-label="Priority filter" size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">All priority</SelectItem>
+                  <SelectItem value="Critical">Critical</SelectItem>
+                  <SelectItem value="High">High</SelectItem>
+                  <SelectItem value="Medium">Medium</SelectItem>
+                  <SelectItem value="Low">Low</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Select onValueChange={(value) => setSortBy(value as "date" | "priority" | "customer")} value={sortBy}>
+              <SelectTrigger aria-label="Ticket sort" size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="date">Newest</SelectItem>
+                  <SelectItem value="priority">Priority</SelectItem>
+                  <SelectItem value="customer">Customer</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           </div>
-          <button className="button" onClick={onRefreshTickets} type="button">
-            Refresh
-          </button>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <select
-            aria-label="Status filter"
-            className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/15 sm:w-[150px]"
-            onChange={(event) => setStatusFilter(event.target.value as "all" | TicketStatus)}
-            value={statusFilter}
-          >
-            <option value="all">All status</option>
-            <option value="OPEN">Open</option>
-            <option value="PENDING">Pending</option>
-            <option value="DONE">Done</option>
-          </select>
-          <select
-            aria-label="Priority filter"
-            className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/15 sm:w-[150px]"
-            onChange={(event) => setPriorityFilter(event.target.value as "all" | Priority)}
-            value={priorityFilter}
-          >
-            <option value="all">All priority</option>
-            <option value="Critical">Critical</option>
-            <option value="High">High</option>
-            <option value="Medium">Medium</option>
-            <option value="Low">Low</option>
-          </select>
-          <select
-            aria-label="Ticket sort"
-            className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/15 sm:w-[140px]"
-            onChange={(event) => setSortBy(event.target.value as "date" | "priority" | "customer")}
-            value={sortBy}
-          >
-            <option value="date">Date</option>
-            <option value="priority">Priority</option>
-            <option value="customer">Customer</option>
-          </select>
-        </div>
-        <div className="overflow-hidden rounded-lg border border-border bg-card">
-          <BlocksTicketTable tickets={filteredTickets} onSelectTicket={onSelectTicket} />
-        </div>
-      </section>
-    </>
+          <TicketTable tickets={filteredTickets} onSelectTicket={onSelectTicket} />
+        </section>
+        <PriorityBars tickets={filteredTickets} />
+      </div>
+    </div>
   );
 }

@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from app.clients.phoenix import get_phoenix_client
 from app.core.errors import PhoenixNotFoundError
 from app.main import app
-from app.schemas.phoenix import CustomerSystem, Employee, SystemInfo, Ticket, TicketStatus
+from app.schemas.phoenix import CustomerSystem, Employee, SimpleMessage, SystemInfo, Ticket, TicketStatus
 
 
 class FakePhoenixClient:
@@ -51,6 +51,9 @@ class FakePhoenixClient:
     def get_customer(self, customer_id):
         raise AssertionError("not used")
 
+    def reset_me(self):
+        return SimpleMessage(message="reset queued")
+
 
 def test_ticket_routes_proxy_phoenix_and_sort_customer_client_side():
     fake = FakePhoenixClient()
@@ -62,6 +65,19 @@ def test_ticket_routes_proxy_phoenix_and_sort_customer_client_side():
         assert response.status_code == 200
         assert [ticket["customer_name"] for ticket in response.json()] == ["Alpha GmbH", "Zulu GmbH"]
         assert fake.last_sort == "date"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_reset_route_proxies_phoenix_reset_without_exposing_credentials():
+    app.dependency_overrides[get_phoenix_client] = lambda: FakePhoenixClient()
+    try:
+        client = TestClient(app)
+        response = client.post("/api/me/reset")
+
+        assert response.status_code == 200
+        assert response.json() == {"message": "reset queued", "detail": None}
+        assert "Bearer" not in response.text
     finally:
         app.dependency_overrides.clear()
 

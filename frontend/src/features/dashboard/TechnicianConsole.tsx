@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  BlocksSidebar,
-  type BlocksStat,
-  type BlocksSidebarCounts,
-  type BlocksSidebarView,
-} from "../../components/blocks";
+import { RefreshCwIcon, RotateCcwIcon } from "lucide-react";
+import { AppShell } from "@/components/app-shell";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import type { DashboardStat, SidebarCounts, SidebarView } from "@/components/service-desk-ui";
+import { getQueueHeading } from "@/lib/queue";
 import { Toast } from "../../components/ui/Toast";
 import { emptyDraft, initialValidation, systems, tickets } from "../../data/mockData";
 import { useAuth } from "../auth/AuthProvider";
 import {
   createActions,
   createEvent,
+  formatDate,
   isDraftComplete,
 } from "../../lib/serviceDesk";
 import { backendApi, getApiErrorMessage, type BackendRunStateRead } from "../../services/backendApi";
@@ -18,10 +19,14 @@ import {
   employeeName,
   mapActivityDraft,
   mapAuditEvent,
+  mapBackendCustomer,
   mapBackendAction,
+  mapBackendCommandResultAction,
   mapBackendCustomerSystem,
   mapBackendTicket,
   mapRunState,
+  mapTerminalCommand,
+  mapTerminalTranscript,
   mapValidation,
 } from "../../services/backendMapping";
 import type {
@@ -36,35 +41,51 @@ import type {
   TicketStatus,
   ValidationResult,
   Ticket,
+  TerminalCommandLog,
+  TerminalTranscriptLine,
 } from "../../types";
 import { DashboardHome } from "./DashboardHome";
 import { DashboardOverview } from "./DashboardOverview";
 import { TicketWorkspace } from "../tickets/TicketWorkspace";
 
-type SidebarView = BlocksSidebarView;
-type SidebarCounts = BlocksSidebarCounts;
+type AppRouteState = {
+  ticketId: number | null;
+  view: SidebarView;
+};
+
+const routeByView: Record<SidebarView, string> = {
+  all: "/app/tickets",
+  assigned: "/app/tickets/assigned",
+  high: "/app/tickets/high-priority",
+  overview: "/app/overview",
+  pending: "/app/tickets/pending",
+};
 
 export function TechnicianConsole() {
   const { session, logout } = useAuth();
+  const initialRoute = getAppRouteState();
   const [ticketList, setTicketList] = useState<Ticket[]>(tickets);
   const [systemsByTicket, setSystemsByTicket] = useState<Record<number, CustomerSystem>>(systems);
   const [backendReady, setBackendReady] = useState(false);
   const [ticketsLoading, setTicketsLoading] = useState(true);
   const [lastTicketFetchAt, setLastTicketFetchAt] = useState<string | null>(null);
   const [backendRunId, setBackendRunId] = useState<string | null>(null);
-  const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
+  const [selectedTicketId, setSelectedTicketId] = useState<number | null>(() => initialRoute.ticketId);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | TicketStatus>("all");
   const [priorityFilter, setPriorityFilter] = useState<"all" | Priority>("all");
   const [sortBy, setSortBy] = useState<"date" | "priority" | "customer">("date");
-  const [sidebarView, setSidebarView] = useState<SidebarView>("overview");
+  const [sidebarView, setSidebarView] = useState<SidebarView>(() => initialRoute.view);
   const [systemLoaded, setSystemLoaded] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<"not_requested" | "awaiting_approval" | "connected" | "disconnected">("not_requested");
   const [runState, setRunState] = useState<RunState>("idle");
   const [analysisReady, setAnalysisReady] = useState(false);
   const [actions, setActions] = useState<ProposedAction[]>([]);
+  const [autodiagnosisRunning, setAutodiagnosisRunning] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
+  const [terminalCommands, setTerminalCommands] = useState<TerminalCommandLog[]>([]);
+  const [terminalTranscript, setTerminalTranscript] = useState<TerminalTranscriptLine[]>([]);
   const [validation, setValidation] = useState<ValidationResult>(initialValidation);
   const [draft, setDraft] = useState<ActivityDraft>(emptyDraft);
   const [submitStatus, setSubmitStatus] = useState<"idle" | "submitted">("idle");
@@ -75,6 +96,12 @@ export function TechnicianConsole() {
   const selectedSystem = selectedTicketId ? systemsByTicket[selectedTicketId] ?? null : null;
   const pendingActions = actions.filter((action) => action.status === "pending");
   const executedActions = actions.filter((action) => action.status === "executed");
+  const canStartAutodiagnosis =
+    backendReady &&
+    Boolean(backendRunId) &&
+    connectionStatus === "connected" &&
+    (runState === "idle" || runState === "analyzing") &&
+    submitStatus === "idle";
 
   useEffect(() => {
     let cancelled = false;
@@ -183,26 +210,108 @@ export function TechnicianConsole() {
     [backendReady, session?.name, ticketList],
   );
 
-  const stats = useMemo<BlocksStat[]>(
-    () => [
+  const stats = useMemo<DashboardStat[]>(() => {
+    const total = Math.max(ticketList.length, 1);
+    const openTickets = ticketList.filter((ticket) => ticket.status === "OPEN").length;
+    const highTickets = ticketList.filter(
+      (ticket) => ticket.priority === "Critical" || ticket.priority === "High",
+    ).length;
+
+    return [
       {
+        detail: `${openTickets} tickets still need diagnosis or documentation.`,
         label: "Open tickets",
-        value: ticketList.filter((ticket) => ticket.status === "OPEN").length,
-        kind: "chart",
-        tone: "positive",
+        progress: (openTickets / total) * 100,
+        tone: "default",
+        value: openTickets,
       },
       {
+        detail: "Critical and high priority work.",
         label: "High priority",
-        value: ticketList.filter((ticket) => ticket.priority === "Critical" || ticket.priority === "High").length,
-        kind: "chart",
-        tone: "negative",
+        progress: (highTickets / total) * 100,
+        tone: highTickets ? "critical" : "success",
+        value: highTickets,
       },
-      { label: "Pending approval", value: pendingActions.length, kind: "metric", tone: "neutral" },
-    ],
-    [pendingActions.length, ticketList],
-  );
+      {
+        detail: "Commands or connection steps waiting on a human.",
+        label: "Pending approval",
+        progress: pendingActions.length ? 100 : 0,
+        tone: pendingActions.length ? "warning" : "success",
+        value: pendingActions.length,
+      },
+    ];
+  }, [pendingActions.length, ticketList]);
 
   const dismissNotice = useCallback(() => setNotice(""), []);
+
+  useEffect(() => {
+    if (!backendReady || !selectedTicketId) {
+      return;
+    }
+
+    const ticketId = selectedTicketId;
+    let cancelled = false;
+
+    async function loadSelectedTicket() {
+      try {
+        const backendTicket = await backendApi.getTicket(ticketId);
+        if (cancelled) {
+          return;
+        }
+
+        const assignedTo = session?.name ?? "Technician";
+        setTicketList((currentTickets) =>
+          upsertTicket(currentTickets, mapBackendTicket(backendTicket, assignedTo)),
+        );
+      } catch (error) {
+        if (!cancelled) {
+          setNotice(`Ticket detail refresh failed. ${getApiErrorMessage(error)}`);
+        }
+      }
+    }
+
+    void loadSelectedTicket();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [backendReady, selectedTicketId, session?.name]);
+
+  const resetTicketWorkspace = useCallback((ticketId: number) => {
+    setSelectedTicketId(ticketId);
+    setBackendRunId(null);
+    setActiveTab("overview");
+    setSystemLoaded(false);
+    setConnectionStatus("not_requested");
+    setRunState("idle");
+    setAnalysisReady(false);
+    setActions([]);
+    setEvents([createEvent("approval", "Ticket opened", `Ticket ${ticketId} opened.`)]);
+    setTerminalCommands([]);
+    setTerminalTranscript([]);
+    setValidation(initialValidation);
+    setDraft(emptyDraft);
+    setSubmitStatus("idle");
+    setNotice("");
+  }, []);
+
+  useEffect(() => {
+    const syncRoute = () => {
+      const route = getAppRouteState();
+      setSidebarView(route.view);
+
+      if (route.ticketId) {
+        resetTicketWorkspace(route.ticketId);
+        return;
+      }
+
+      setSelectedTicketId(null);
+    };
+
+    syncRoute();
+    window.addEventListener("popstate", syncRoute);
+    return () => window.removeEventListener("popstate", syncRoute);
+  }, [resetTicketWorkspace]);
 
   const syncRunState = useCallback((state: BackendRunStateRead) => {
     setRunState(mapRunState(state));
@@ -213,27 +322,37 @@ export function TechnicianConsole() {
     }
 
     setActions((currentActions) => {
-      if (!state.current_action) {
-        return currentActions;
+      let nextActions = currentActions;
+
+      for (const result of state.command_results) {
+        nextActions = upsertAction(nextActions, mapBackendCommandResultAction(result));
       }
 
-      const nextAction = mapBackendAction(state.current_action, state.command_results);
-      const existing = currentActions.find((action) => action.id === nextAction.id);
-
-      if (existing) {
-        return currentActions.map((action) => (action.id === nextAction.id ? nextAction : action));
+      if (state.current_action) {
+        nextActions = upsertAction(nextActions, mapBackendAction(state.current_action, state.command_results));
       }
 
-      return [...currentActions, nextAction];
+      return nextActions;
     });
   }, []);
 
   const refreshAuditEvents = useCallback(async (runId: string) => {
-    try {
-      const auditEvents = await backendApi.getAudit(runId);
-      setEvents(auditEvents.map(mapAuditEvent));
-    } catch {
-      // Audit refresh is helpful, but should not block the technician flow.
+    const [auditResult, commandResult, transcriptResult] = await Promise.allSettled([
+      backendApi.getAudit(runId),
+      backendApi.getTerminalLogs(runId),
+      backendApi.getTerminalTranscript(runId),
+    ]);
+
+    if (auditResult.status === "fulfilled") {
+      setEvents(auditResult.value.map(mapAuditEvent));
+    }
+
+    if (commandResult.status === "fulfilled") {
+      setTerminalCommands(commandResult.value.map(mapTerminalCommand));
+    }
+
+    if (transcriptResult.status === "fulfilled") {
+      setTerminalTranscript(transcriptResult.value.map(mapTerminalTranscript));
     }
   }, []);
 
@@ -244,19 +363,9 @@ export function TechnicianConsole() {
   }, []);
 
   const selectTicket = (ticketId: number) => {
-    setSelectedTicketId(ticketId);
-    setBackendRunId(null);
-    setActiveTab("overview");
-    setSystemLoaded(false);
-    setConnectionStatus("not_requested");
-    setRunState("idle");
-    setAnalysisReady(false);
-    setActions([]);
-    setEvents([createEvent("approval", "Ticket opened", `Ticket ${ticketId} opened.`)]);
-    setValidation(initialValidation);
-    setDraft(emptyDraft);
-    setSubmitStatus("idle");
-    setNotice("");
+    pushAppRoute(`/app/tickets/${ticketId}`);
+    setSidebarView("all");
+    resetTicketWorkspace(ticketId);
   };
 
   const loadSystemInfo = async () => {
@@ -272,7 +381,21 @@ export function TechnicianConsole() {
           [selectedTicket.id]: mapBackendCustomerSystem(backendSystem),
         }));
       } catch (error) {
-        setNotice(`Using local system context. ${getApiErrorMessage(error)}`);
+        if (selectedTicket.customerId) {
+          try {
+            const backendCustomer = await backendApi.getCustomer(selectedTicket.customerId);
+            setSystemsByTicket((currentSystems) => ({
+              ...currentSystems,
+              [selectedTicket.id]: mapBackendCustomer(backendCustomer, selectedTicket.id),
+            }));
+          } catch (customerError) {
+            setNotice(
+              `Using local system context. ${getApiErrorMessage(error)} ${getApiErrorMessage(customerError)}`,
+            );
+          }
+        } else {
+          setNotice(`Using local system context. ${getApiErrorMessage(error)}`);
+        }
       }
     }
 
@@ -301,9 +424,14 @@ export function TechnicianConsole() {
         syncRunState(confirmedState);
         await refreshAuditEvents(confirmedState.run.id);
         appendEvent("approval", "Connection approved", "Backend run created and SSH approval confirmed.");
+        setActiveTab("actions");
         return;
       } catch (error) {
-        setNotice(`Using mock connection approval. ${getApiErrorMessage(error)}`);
+        setBackendRunId(null);
+        setConnectionStatus("awaiting_approval");
+        setRunState("awaiting_connection_approval");
+        setNotice(`Connection approval failed. ${getApiErrorMessage(error)}`);
+        return;
       }
     }
 
@@ -324,12 +452,12 @@ export function TechnicianConsole() {
       }
 
       try {
-        const state = await backendApi.nextAction(backendRunId);
+        const state = await backendApi.getRun(backendRunId);
         syncRunState(state);
         await refreshAuditEvents(backendRunId);
         setAnalysisReady(true);
-        appendEvent("analysis", "Analysis complete", "Backend proposed the next action.");
-        setActiveTab("analysis");
+        appendEvent("analysis", "Terminal agent ready", "Open the terminal and start the backend agent.");
+        setActiveTab("actions");
         return;
       } catch (error) {
         setNotice(`Using mock analysis. ${getApiErrorMessage(error)}`);
@@ -342,6 +470,75 @@ export function TechnicianConsole() {
     appendEvent("analysis", "Analysis complete", "Hypotheses and proposed actions are ready.");
     setRunState("awaiting_action_approval");
     setActiveTab("analysis");
+  };
+
+  const startAutodiagnosis = async () => {
+    if (!backendReady || !backendRunId || autodiagnosisRunning) {
+      return;
+    }
+
+    if (connectionStatus !== "connected") {
+      setNotice("Approve the backend connection before starting safe autodiagnosis.");
+      return;
+    }
+
+    setAutodiagnosisRunning(true);
+    setAnalysisReady(true);
+    setRunState("analyzing");
+    appendEvent(
+      "analysis",
+      "Safe autodiagnosis started",
+      "Backend will auto-run only deterministic read-only diagnostic tools.",
+    );
+
+    try {
+      const state = await backendApi.startAutodiagnosis(backendRunId);
+      syncRunState(state);
+      await refreshAuditEvents(backendRunId);
+      setAnalysisReady(true);
+
+      const currentActionNeedsReview =
+        state.current_action !== null &&
+        (state.current_action.status === "proposed" ||
+          state.current_action.status === "edited" ||
+          state.current_action.status === "blocked");
+
+      if (state.current_action?.status === "blocked" || state.run.status === "failed") {
+        appendEvent(
+          "error",
+          "Safe autodiagnosis stopped",
+          "See audit log for the blocked request or error.",
+        );
+        setNotice("Safe autodiagnosis stopped. See audit log for the blocked request or error.");
+        setActiveTab("actions");
+        return;
+      }
+
+      if (currentActionNeedsReview) {
+        appendEvent("approval", "A proposed fix requires technician approval", "Safe autodiagnosis handed off to the normal approval flow.");
+        setNotice("A proposed fix requires technician approval.");
+        setActiveTab("actions");
+        return;
+      }
+
+      appendEvent(
+        "analysis",
+        "Safe autodiagnosis completed",
+        "Redacted diagnostic evidence was captured.",
+      );
+      setNotice("Safe autodiagnosis completed. Redacted diagnostic evidence was captured.");
+      setActiveTab("actions");
+    } catch (error) {
+      setNotice(`Safe autodiagnosis stopped. See audit log for the blocked request or error. ${getApiErrorMessage(error)}`);
+      appendEvent(
+        "error",
+        "Safe autodiagnosis stopped",
+        "See audit log for the blocked request or error.",
+      );
+      await refreshAuditEvents(backendRunId).catch(() => undefined);
+    } finally {
+      setAutodiagnosisRunning(false);
+    }
   };
 
   const updateActionCommand = (actionId: string, command: string) => {
@@ -606,9 +803,16 @@ export function TechnicianConsole() {
   };
 
   const copyAuditExcerpt = () => {
-    const excerpt = events
+    const auditExcerpt = events
       .map((event) => `[${event.time}] ${event.type.toUpperCase()}: ${event.title} - ${event.detail}`)
       .join("\n");
+    const terminalExcerpt = terminalCommands
+      .map((command) => {
+        const exitCode = command.exitCode === null ? "pending" : `exit ${command.exitCode}`;
+        return `[${new Date(command.updatedAt).toLocaleTimeString()}] ${command.source.toUpperCase()} ${command.status.toUpperCase()} (${exitCode}): ${command.command}`;
+      })
+      .join("\n");
+    const excerpt = [auditExcerpt, terminalExcerpt].filter(Boolean).join("\n");
 
     if (!excerpt) {
       setNotice("No log entries to copy yet.");
@@ -640,7 +844,44 @@ export function TechnicianConsole() {
     }
   };
 
+  const resetEnvironment = async () => {
+    if (!backendReady) {
+      setNotice("Backend reset is unavailable in mock mode.");
+      return;
+    }
+
+    try {
+      const response = await backendApi.resetEnvironment();
+      const backendTickets = await backendApi.listTickets({
+        priority: priorityFilter === "all" ? null : priorityFilter,
+        sort: sortBy,
+        status: statusFilter === "all" ? null : statusFilter,
+      });
+      const assignedTo = session?.name ?? "Technician";
+      setTicketList(backendTickets.map((ticket) => mapBackendTicket(ticket, assignedTo)));
+      setLastTicketFetchAt(new Date().toISOString());
+      setSelectedTicketId(null);
+      setBackendRunId(null);
+      setActiveTab("overview");
+      setSystemLoaded(false);
+      setConnectionStatus("not_requested");
+      setRunState("idle");
+      setAnalysisReady(false);
+      setActions([]);
+      setEvents([]);
+      setTerminalCommands([]);
+      setTerminalTranscript([]);
+      setValidation(initialValidation);
+      setDraft(emptyDraft);
+      setSubmitStatus("idle");
+      setNotice(response.message || "VM reset requested.");
+    } catch (error) {
+      setNotice(`VM reset failed. ${getApiErrorMessage(error)}`);
+    }
+  };
+
   const handleSidebarView = (view: SidebarView) => {
+    pushAppRoute(routeByView[view]);
     setSidebarView(view);
 
     if (selectedTicket) {
@@ -683,14 +924,65 @@ export function TechnicianConsole() {
     setEvents((currentEvents) => [...currentEvents, createEvent(type, title, detail)]);
   }
 
+  const newestTicket = useMemo(
+    () =>
+      ticketList
+        .slice()
+        .sort((first, second) => new Date(second.updatedAt).getTime() - new Date(first.updatedAt).getTime())[0],
+    [ticketList],
+  );
+  const latestQueueUpdate = lastTicketFetchAt ?? newestTicket?.updatedAt ?? null;
+  const queueHeading = getQueueHeading(sidebarView, filteredTickets.length);
+  const pageTitle = selectedTicket
+    ? `Ticket #${selectedTicket.id}`
+    : sidebarView === "overview"
+      ? "Service desk overview"
+      : queueHeading.title;
+  const headerDescription = selectedTicket
+    ? undefined
+    : sidebarView === "overview"
+      ? latestQueueUpdate
+        ? `Last queue update ${formatDate(latestQueueUpdate)}.`
+        : "No tickets loaded yet."
+      : `${filteredTickets.length} visible tickets across the selected queue.`;
+  const headerBadges = selectedTicket ? undefined : (
+    <>
+      {sidebarView === "overview" ? <Badge variant="secondary">{ticketList.length} assigned</Badge> : null}
+      {pendingActions.length ? <Badge variant="destructive">{pendingActions.length} approvals</Badge> : null}
+    </>
+  );
+  const headerAction =
+    !selectedTicket && sidebarView !== "overview" ? (
+      <>
+        <Button onClick={refreshTickets} size="sm" type="button" variant="outline">
+          <RefreshCwIcon data-icon="inline-start" />
+          Refresh
+        </Button>
+        <Button
+          className="bg-destructive text-white hover:bg-destructive/90"
+          onClick={resetEnvironment}
+          size="sm"
+          type="button"
+          variant="destructive"
+        >
+          <RotateCcwIcon data-icon="inline-start" />
+          Reset
+        </Button>
+      </>
+    ) : undefined;
+
   return (
-    <main className="console">
-      <BlocksSidebar
+    <>
+      <AppShell
         activeView={sidebarView}
         counts={sidebarCounts}
-        onNavigate={handleSidebarView}
+        headerAction={headerAction}
+        headerBadges={headerBadges}
+        headerDescription={headerDescription}
         onLogout={logout}
+        onNavigate={handleSidebarView}
         onSelectTicket={selectTicket}
+        pageTitle={pageTitle}
         profile={{
           email: session?.email ?? "",
           name: session?.name ?? "Technician",
@@ -699,10 +991,8 @@ export function TechnicianConsole() {
         search={search}
         setSearch={setSearch}
         tickets={ticketList}
-      />
-
-      <section className="app-main">
-        <section className="main-canvas" aria-label="Main dashboard">
+      >
+        <div className="flex min-h-[calc(100svh-7rem)] flex-col">
           {selectedTicket ? (
             <TicketWorkspace
               activeTab={activeTab}
@@ -725,23 +1015,28 @@ export function TechnicianConsole() {
               onRejectAction={rejectAction}
               onRetryAction={retryAction}
               onRunValidation={runValidation}
+              onStartAutodiagnosis={startAutodiagnosis}
               onStartAnalysis={startAnalysis}
               onSubmitActivity={submitActivity}
               onTabChange={setActiveTab}
               onUpdateCommand={updateActionCommand}
               pendingActions={pendingActions}
+              autodiagnosisRunning={autodiagnosisRunning}
+              backendRunId={backendRunId}
+              canStartAutodiagnosis={canStartAutodiagnosis}
               runState={runState}
               selectedSystem={selectedSystem}
               setLogFilter={setLogFilter}
               submitStatus={submitStatus}
               systemLoaded={systemLoaded}
+              terminalCommands={terminalCommands}
+              terminalTranscript={terminalTranscript}
               ticket={selectedTicket}
               validation={validation}
             />
           ) : sidebarView === "overview" ? (
             <DashboardOverview
               highPriorityTickets={highPriorityTickets}
-              latestFetchedAt={lastTicketFetchAt}
               onSelectTicket={selectTicket}
               stats={stats}
               tickets={ticketList}
@@ -750,21 +1045,92 @@ export function TechnicianConsole() {
             <DashboardHome
               filteredTickets={filteredTickets}
               onSelectTicket={selectTicket}
-              onRefreshTickets={refreshTickets}
               priorityFilter={priorityFilter}
               setPriorityFilter={setPriorityFilter}
               setSortBy={setSortBy}
               setStatusFilter={setStatusFilter}
-              sidebarView={sidebarView}
               sortBy={sortBy}
               stats={stats}
               statusFilter={statusFilter}
             />
           )}
-        </section>
-      </section>
+        </div>
+      </AppShell>
 
       {notice ? <Toast message={notice} onDone={dismissNotice} /> : null}
-    </main>
+    </>
   );
+}
+
+function getAppRouteState(): AppRouteState {
+  const pathname = window.location.pathname.replace(/\/$/, "") || "/";
+  const ticketMatch = pathname.match(/^\/app\/tickets\/(\d+)$/);
+
+  if (ticketMatch) {
+    return { ticketId: Number(ticketMatch[1]), view: "all" };
+  }
+
+  if (pathname === "/app/tickets/assigned") {
+    return { ticketId: null, view: "assigned" };
+  }
+
+  if (pathname === "/app/tickets/high-priority") {
+    return { ticketId: null, view: "high" };
+  }
+
+  if (pathname === "/app/tickets/pending") {
+    return { ticketId: null, view: "pending" };
+  }
+
+  if (pathname === "/app/tickets") {
+    return { ticketId: null, view: "all" };
+  }
+
+  return { ticketId: null, view: "overview" };
+}
+
+function pushAppRoute(path: string) {
+  if (window.location.pathname === path) {
+    return;
+  }
+
+  window.history.pushState(null, "", path);
+}
+
+function upsertTicket(tickets: Ticket[], ticket: Ticket) {
+  const exists = tickets.some((candidate) => candidate.id === ticket.id);
+  if (!exists) {
+    return [ticket, ...tickets];
+  }
+
+  return tickets.map((candidate) => (candidate.id === ticket.id ? ticket : candidate));
+}
+
+function upsertAction(actions: ProposedAction[], action: ProposedAction) {
+  const exists = actions.some((candidate) => candidate.id === action.id);
+  if (!exists) {
+    return [...actions, action];
+  }
+
+  return actions.map((candidate) => (candidate.id === action.id ? action : candidate));
+}
+
+function getPageTitle(view: SidebarView) {
+  if (view === "assigned") {
+    return "Assigned tickets";
+  }
+
+  if (view === "high") {
+    return "High priority";
+  }
+
+  if (view === "pending") {
+    return "Pending approval";
+  }
+
+  if (view === "all") {
+    return "All tickets";
+  }
+
+  return "Overview";
 }

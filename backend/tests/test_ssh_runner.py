@@ -2,11 +2,14 @@ from pathlib import Path
 import socket
 
 import pytest
+from paramiko.ssh_exception import AuthenticationException
 
 from app.core.config import Settings
 from app.core.errors import ConfigurationError, SshError
 from app.schemas.phoenix import SystemInfo
+from app.services.ssh_keys import candidate_private_key_paths
 from app.services.ssh_runner import MAX_STREAM_CHARS, SshRunner
+from app.services.terminal_session import SshPtySession
 
 
 class FakeChannel:
@@ -56,6 +59,61 @@ class FakeSshClient:
         self.closed = True
 
 
+class FakeInteractiveChannel:
+    def __init__(self):
+        self.closed = False
+        self.timeout = None
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def recv_ready(self):
+        return False
+
+    def recv(self, max_bytes):
+        return b""
+
+    def send(self, data):
+        self.sent = data
+
+    def close(self):
+        self.closed = True
+
+
+class FakeTransport:
+    def __init__(self):
+        self.keepalive = None
+
+    def set_keepalive(self, seconds):
+        self.keepalive = seconds
+
+
+class FakePtySshClient:
+    def __init__(self, should_fail_auth=False):
+        self.should_fail_auth = should_fail_auth
+        self.closed = False
+        self.channel = FakeInteractiveChannel()
+        self.transport = FakeTransport()
+
+    def set_missing_host_key_policy(self, policy):
+        self.policy = policy
+
+    def connect(self, **kwargs):
+        self.connect_kwargs = kwargs
+        if self.should_fail_auth:
+            raise AuthenticationException("bad key")
+
+    def get_transport(self):
+        return self.transport
+
+    def invoke_shell(self, **kwargs):
+        self.shell_kwargs = kwargs
+        return self.channel
+
+    def close(self):
+        self.closed = True
+
+
 def test_ssh_runner_executes_single_command_and_truncates_output(tmp_path, monkeypatch):
     key_path = tmp_path / "key.pem"
     key_path.write_text("fake", encoding="utf-8")
@@ -73,6 +131,89 @@ def test_ssh_runner_executes_single_command_and_truncates_output(tmp_path, monke
     assert result.exit_code == 0
     assert len(result.stdout) > MAX_STREAM_CHARS
     assert result.stdout.endswith("[truncated]")
+
+
+def test_candidate_private_key_paths_use_configured_key_first_then_sibling_pems(tmp_path):
+    other_key = tmp_path / "case1_key.pem"
+    configured_key = tmp_path / "case2_key.pem"
+    third_key = tmp_path / "case3_key.pem"
+    ignored_file = tmp_path / "notes.txt"
+    for path in (other_key, configured_key, third_key, ignored_file):
+        path.write_text("fake", encoding="utf-8")
+
+    paths = candidate_private_key_paths(Settings(_env_file=None, ssh_private_key_path=str(configured_key)))
+
+    assert paths == [configured_key, other_key, third_key]
+
+
+def test_ssh_runner_tries_sibling_key_after_auth_failure(tmp_path, monkeypatch):
+    primary_key = tmp_path / "case1_key.pem"
+    fallback_key = tmp_path / "case2_key.pem"
+    primary_key.write_text("fake", encoding="utf-8")
+    fallback_key.write_text("fake", encoding="utf-8")
+
+    created_clients = []
+
+    def client_factory():
+        client = FakeSshClient()
+        original_connect = client.connect
+
+        def connect(**kwargs):
+            client.connect_kwargs = kwargs
+            if len(created_clients) == 1:
+                raise AuthenticationException("bad key")
+            original_connect(**kwargs)
+
+        client.connect = connect
+        created_clients.append(client)
+        return client
+
+    runner = SshRunner(
+        settings=Settings(_env_file=None, ssh_private_key_path=str(primary_key)),
+        client_factory=client_factory,
+    )
+    monkeypatch.setattr(runner, "_load_private_key", lambda path: f"key:{path.name}")
+
+    result = runner.run(SystemInfo(ip="10.0.0.5", port=22, username="azureuser", os="Ubuntu"), "uptime")
+
+    assert len(created_clients) == 2
+    assert created_clients[0].closed is True
+    assert created_clients[1].closed is True
+    assert created_clients[0].connect_kwargs["pkey"] == "key:case1_key.pem"
+    assert created_clients[1].connect_kwargs["pkey"] == "key:case2_key.pem"
+    assert created_clients[1].command == "uptime"
+    assert result.exit_code == 0
+
+
+def test_ssh_pty_session_tries_sibling_key_after_auth_failure(tmp_path, monkeypatch):
+    primary_key = tmp_path / "case1_key.pem"
+    fallback_key = tmp_path / "case2_key.pem"
+    primary_key.write_text("fake", encoding="utf-8")
+    fallback_key.write_text("fake", encoding="utf-8")
+    created_clients = []
+
+    def client_factory():
+        client = FakePtySshClient(should_fail_auth=len(created_clients) == 0)
+        created_clients.append(client)
+        return client
+
+    session = SshPtySession(
+        SystemInfo(ip="10.0.0.5", port=22, username="azureuser", os="Ubuntu"),
+        settings=Settings(_env_file=None, ssh_private_key_path=str(primary_key)),
+        client_factory=client_factory,
+    )
+    monkeypatch.setattr(session, "_load_private_key", lambda path: f"key:{path.name}")
+
+    session.open()
+
+    assert len(created_clients) == 2
+    assert created_clients[0].closed is True
+    assert created_clients[1].connect_kwargs["pkey"] == "key:case2_key.pem"
+    assert created_clients[1].transport.keepalive == 30
+    assert created_clients[1].shell_kwargs == {"term": "xterm-256color", "width": 120, "height": 32}
+    assert session.client is created_clients[1]
+    assert session.channel is created_clients[1].channel
+    assert session.channel.timeout == 0.0
 
 
 def test_ssh_runner_requires_private_key_path():

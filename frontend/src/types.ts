@@ -18,6 +18,17 @@ export type TabId = "overview" | "system" | "analysis" | "actions" | "logs" | "a
 export type ActionStatus = "pending" | "executed" | "rejected" | "failed";
 export type RiskLevel = "Low" | "Medium" | "High";
 export type EventType = "analysis" | "approval" | "command" | "output" | "validation" | "error";
+export type TerminalCommandStatus =
+  | "submitted"
+  | "confirmation_required"
+  | "blocked"
+  | "accepted"
+  | "rejected"
+  | "edited"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export type TechnicianSession = {
   email: string;
@@ -28,6 +39,7 @@ export type TechnicianSession = {
 
 export type Ticket = {
   id: number;
+  customerId: number | null;
   title: string;
   customer: string;
   priority: Priority;
@@ -72,6 +84,29 @@ export type RunEvent = {
   type: EventType;
   title: string;
   detail: string;
+};
+
+export type TerminalCommandLog = {
+  id: number;
+  source: "manual" | "agent";
+  status: TerminalCommandStatus;
+  command: string;
+  classification: string | null;
+  riskReason: string | null;
+  exitCode: number | null;
+  output: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TerminalTranscriptLine = {
+  id: number;
+  stream: string;
+  data: string;
+  createdAt: string;
+  redacted: boolean;
 };
 
 export type ValidationResult = {

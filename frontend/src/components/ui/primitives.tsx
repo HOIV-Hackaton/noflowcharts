@@ -1,6 +1,23 @@
 import type { ReactNode } from "react";
-import { getStatusBadgeClass } from "../status";
-import type { EventType, RunEvent } from "../../types";
+
+import { EmptyPanel, PageHeading, StatusLabel as ServiceStatusLabel } from "@/components/service-desk-ui";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import type { EventType, RunEvent } from "@/types";
 
 export function PageHeader({
   aside,
@@ -11,78 +28,61 @@ export function PageHeader({
   badges?: ReactNode;
   title: string;
 }) {
-  return (
-    <header className="page-header">
-      <div>
-        <HeadingWithTags badges={badges}>{title}</HeadingWithTags>
-      </div>
-      {aside ? <div className="header-aside">{aside}</div> : null}
-    </header>
-  );
+  return <PageHeading action={aside} badges={badges} title={title} />;
 }
 
 export function HeadingWithTags({ badges, children }: { badges?: ReactNode; children: string }) {
   return (
-    <div className="title-row">
-      <h2>{children}</h2>
-      {badges ? <div className="title-tags">{badges}</div> : null}
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <h2 className="truncate font-heading text-lg font-medium tracking-normal text-foreground">{children}</h2>
+      {badges ? <div className="flex flex-wrap items-center gap-1.5">{badges}</div> : null}
     </div>
   );
 }
 
 export function DefinitionTable({ rows }: { rows: Array<[string, string]> }) {
   return (
-    <table className="definition-table">
-      <colgroup>
-        <col className="w-[34%]" />
-        <col className="w-[66%]" />
-      </colgroup>
-      <tbody>
+    <Table>
+      <TableBody>
         {rows.map(([label, value]) => (
-          <tr key={label}>
-            <th>{label}</th>
-            <td>{value}</td>
-          </tr>
+          <TableRow key={label}>
+            <TableHead className="w-[34%] text-muted-foreground">{label}</TableHead>
+            <TableCell className="whitespace-normal break-words">{value}</TableCell>
+          </TableRow>
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 
 export function EventTable({ events }: { events: RunEvent[] }) {
   if (!events.length) {
-    return <EmptyState title="No log entries" detail="Events appear as the mock run progresses." />;
+    return <EmptyState title="No log entries" detail="Events appear as the run progresses." />;
   }
 
   return (
-    <table className="data-table">
-      <colgroup>
-        <col className="w-[16%]" />
-        <col className="w-[14%]" />
-        <col className="w-[24%]" />
-        <col className="w-[46%]" />
-      </colgroup>
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Type</th>
-          <th>Event</th>
-          <th>Detail</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Time</TableHead>
+          <TableHead>Type</TableHead>
+          <TableHead>Event</TableHead>
+          <TableHead>Detail</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {events.map((event) => (
-          <tr key={event.id}>
-            <td>{event.time}</td>
-            <td>
+          <TableRow key={event.id}>
+            <TableCell>{event.time}</TableCell>
+            <TableCell>
               <StatusLabel label={event.type} />
-            </td>
-            <td>{event.title}</td>
-            <td>{event.detail}</td>
-          </tr>
+            </TableCell>
+            <TableCell className="font-medium">{event.title}</TableCell>
+            <TableCell className="whitespace-normal text-muted-foreground">{event.detail}</TableCell>
+          </TableRow>
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 
@@ -94,30 +94,29 @@ export function LogFilter({
   value: "all" | EventType;
 }) {
   return (
-    <label className="inline-label">
-      Log filter
-      <select onChange={(event) => onChange(event.target.value as "all" | EventType)} value={value}>
-        <option value="all">All</option>
-        <option value="analysis">Analysis</option>
-        <option value="approval">Approval</option>
-        <option value="command">Command</option>
-        <option value="output">Output</option>
-        <option value="validation">Validation</option>
-        <option value="error">Error</option>
-      </select>
-    </label>
+    <Select onValueChange={(nextValue) => onChange(nextValue as "all" | EventType)} value={value}>
+      <SelectTrigger aria-label="Log filter" size="sm">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          <SelectItem value="all">All logs</SelectItem>
+          <SelectItem value="analysis">Analysis</SelectItem>
+          <SelectItem value="approval">Approval</SelectItem>
+          <SelectItem value="command">Command</SelectItem>
+          <SelectItem value="output">Output</SelectItem>
+          <SelectItem value="validation">Validation</SelectItem>
+          <SelectItem value="error">Error</SelectItem>
+        </SelectGroup>
+      </SelectContent>
+    </Select>
   );
 }
 
 export function EmptyState({ detail, title }: { detail: string; title: string }) {
-  return (
-    <div className="empty-state">
-      <h3>{title}</h3>
-      <p>{detail}</p>
-    </div>
-  );
+  return <EmptyPanel detail={detail} title={title} />;
 }
 
 export function StatusLabel({ label }: { label: string }) {
-  return <span className={["status-label", getStatusBadgeClass(label)].join(" ")}>{label}</span>;
+  return <ServiceStatusLabel label={label} />;
 }
