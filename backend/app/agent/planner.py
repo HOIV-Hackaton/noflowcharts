@@ -45,6 +45,8 @@ Operating rules:
 - Prefer read-only commands without sudo when they provide enough evidence. Use sudo -n only for targeted privileged commands that truly need it, so commands fail fast instead of prompting.
 - Never propose commands that read secrets, dump environment files, delete customer data, clear logs/history, disable firewall/audit/security controls, reinitialize databases, or work around permissions by running services as root.
 - Prefer service-local and app-local checks: service status, recent logs, listening ports, config syntax, disk space, permissions on the exact affected path, and health endpoints inferred from evidence.
+- If the ticket names an explicit customer-facing health URL, validate that URL directly with curl --max-time 5 -fsS before lower-level listener checks.
+- If a ticket provides a public validation command or script, run it only after the direct health check or fix evidence indicates the system is likely healthy; do not substitute generic diagnostics for the required validation.
 - For Linux service incidents, first check the expected listener, then inspect the relevant systemd unit with systemctl cat, enabled/active state, and recent journal logs.
 - If an EnvironmentFile is involved, inspect only relevant non-secret keys like PORT or HOST rather than dumping the full file.
 - If a service is disabled, enable it separately from starting it. If a config value is wrong, make the smallest targeted edit and then restart only the affected service.
