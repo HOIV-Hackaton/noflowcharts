@@ -123,3 +123,32 @@ class ActivityDraftRead(BaseModel):
     review_status: ActivityReviewStatus
     created_at: datetime
     updated_at: datetime
+
+
+class RunCreate(BaseModel):
+    ticket_id: int
+
+
+class ActionDecision(BaseModel):
+    action_id: int | None = None
+
+
+class RiskConfirmation(BaseModel):
+    action_id: int | None = None
+    confirmation_text: str
+
+
+class ActionEdit(BaseModel):
+    action_id: int | None = None
+    command: str
+    intent: str | None = None
+
+
+class ValidationConfirmation(BaseModel):
+    evidence: str
+
+
+class RunStateRead(BaseModel):
+    run: RunRead
+    current_action: ActionRead | None = None
+    command_results: list[CommandResultRead] = Field(default_factory=list)
