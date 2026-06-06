@@ -4,6 +4,8 @@ This is intentionally minimal. Build your own API here for the frontend to call,
 and consume the Phoenix ERP mock from your backend (see docs/phoenix-openapi.yaml).
 Keep the ERP token and the SSH key on the backend — never in the browser.
 """
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -13,7 +15,14 @@ from app.api.routes_tickets import router as tickets_router
 from app.api.routes_ws import router as ws_router
 from app.db.session import init_db
 
-app = FastAPI(title="techbold AI Service Desk Autopilot — Team Backend")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="techbold AI Service Desk Autopilot — Team Backend", lifespan=lifespan)
 
 # Open CORS for local dev so your React app can call this backend.
 app.add_middleware(
@@ -32,8 +41,3 @@ app.include_router(ws_router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
