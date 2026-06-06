@@ -5,7 +5,7 @@ from sqlmodel import Session
 from app.agent.planner import SAFETY_POLICY_SUMMARY, Planner
 from app.clients.phoenix import PhoenixClient
 from app.core.errors import SafetyError, ValidationError
-from app.core.redaction import redact_payload
+from app.core.redaction import redact_payload, redact_text
 from app.db.models import Action, ActivityDraft, Run, utc_now
 from app.repositories.runs import RunRepository
 from app.schemas.phoenix import Activity, ActivityCreate, CustomerSystem, TicketStatus
@@ -19,6 +19,7 @@ from app.schemas.runs import (
     CommandClassification,
     CommandResultRead,
     ConfirmationStatus,
+    RelatedTicketRead,
     RunRead,
     RunStateRead,
     RunStatus,
@@ -29,6 +30,7 @@ from app.services.activity_generator import ActivityGenerator
 from app.services.events import persist_and_publish_ws_event_sync
 from app.services.safety import classify_command
 from app.services.ssh_runner import SshRunner
+from app.services.ticket_memory import RelatedTicketContext, TicketMemoryService
 from app.services.terminal_manager import terminal_manager
 
 
@@ -43,6 +45,7 @@ class RunManager:
         planner: Planner | None = None,
         ssh_runner: SshRunner | None = None,
         activity_generator: ActivityGenerator | None = None,
+        ticket_memory_service: TicketMemoryService | None = None,
     ):
         self.session = session
         self.repo = RunRepository(session)
@@ -51,11 +54,15 @@ class RunManager:
         self.planner = planner
         self.ssh_runner = ssh_runner or SshRunner()
         self.activity_generator = activity_generator
+        self.ticket_memory_service = ticket_memory_service
 
     def start_run(self, ticket_id: int) -> RunStateRead:
         ticket = self.phoenix.get_ticket(ticket_id)
         customer_system = self.phoenix.get_customer_system(ticket_id)
         snapshot = {"ticket": ticket.model_dump(mode="json"), "customer_system": customer_system.model_dump(mode="json")}
+        related_context = self._prepare_related_ticket(ticket)
+        if related_context is not None:
+            snapshot["related_ticket"] = related_context.model_dump(mode="json")
         run = self.repo.create_run(ticket_id=ticket_id, customer_system_snapshot=snapshot)
         self.audit.record("ticket_loaded", {"ticket_id": ticket_id, "title": ticket.title}, run.id)
         self.audit.record("customer_system_loaded", {"ticket_id": ticket_id, "system": customer_system.model_dump(mode="json")}, run.id)
@@ -84,6 +91,7 @@ class RunManager:
             customer_system=snapshot.get("customer_system", {}),
             observations=observations,
             safety_policy=SAFETY_POLICY_SUMMARY,
+            related_ticket=snapshot.get("related_ticket"),
         )
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
@@ -127,6 +135,7 @@ class RunManager:
                 }
             ],
             safety_policy=SAFETY_POLICY_SUMMARY,
+            related_ticket=snapshot.get("related_ticket"),
         )
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
@@ -354,6 +363,7 @@ class RunManager:
         self.phoenix.set_ticket_status(run.ticket_id, TicketStatus.DONE)
         self.audit.record("ticket_set_done", {"ticket_id": run.ticket_id}, run.id)
         self._event(run.id, "ticket_done", {"ticket_id": run.ticket_id, "status": TicketStatus.DONE.value})
+        self._create_completed_ticket_memory(run, draft)
         return created
 
     def audit_events(self, run_id: str):
@@ -370,6 +380,7 @@ class RunManager:
             current_action=ActionRead.model_validate(action, from_attributes=True) if action else None,
             command_results=[CommandResultRead.model_validate(result, from_attributes=True) for result in results],
             activity_draft=ActivityDraftRead.model_validate(draft, from_attributes=True) if draft else None,
+            related_ticket=self._related_ticket_read(run),
         )
 
     def _run(self, run_id: str) -> Run:
@@ -433,6 +444,64 @@ class RunManager:
         missing = [field for field in required_fields if not (getattr(draft, field) or "").strip()]
         if missing:
             raise ValidationError(f"Activity draft is missing required field(s): {', '.join(missing)}")
+
+    def _prepare_related_ticket(self, ticket) -> RelatedTicketContext | None:
+        try:
+            service = self.ticket_memory_service or TicketMemoryService(self.session)
+            context = service.prepare_ticket_relation(ticket)
+            if service.last_candidate_payloads:
+                self.audit.record("related_ticket_candidates_found", {"ticket_id": ticket.id, "candidates": service.last_candidate_payloads})
+            if service.last_decision_payload is not None:
+                self.audit.record("related_ticket_decision", service.last_decision_payload)
+            return context
+        except Exception as exc:
+            self.audit.record("related_ticket_lookup_failed", {"ticket_id": ticket.id, "error": redact_text(str(exc))})
+            return None
+
+    def _create_completed_ticket_memory(self, run: Run, draft: ActivityDraft) -> None:
+        snapshot = self._snapshot(run)
+        ticket = snapshot.get("ticket") or {}
+        if not ticket:
+            return
+        try:
+            service = self.ticket_memory_service or TicketMemoryService(self.session)
+            commands = self._completed_memory_commands(run.id)
+            service.create_completed_memory(ticket, draft, commands)
+            self.audit.record("ticket_memory_created", {"ticket_id": run.ticket_id, "command_count": len(commands)}, run.id)
+        except Exception as exc:
+            self.audit.record("ticket_memory_create_failed", {"ticket_id": run.ticket_id, "error": redact_text(str(exc))}, run.id)
+
+    def _completed_memory_commands(self, run_id: str) -> list[str]:
+        commands: list[str] = []
+        for result in self.repo.list_command_results(run_id):
+            if result.command.strip():
+                commands.append(result.command)
+        for command in self.repo.list_terminal_commands(run_id):
+            if command.exit_code is None:
+                continue
+            selected = command.final_command or command.original_command
+            if selected.strip():
+                commands.append(selected)
+        sanitized: list[str] = []
+        seen = set()
+        for command in commands:
+            redacted = redact_payload(command, self.repo.secrets)
+            if redacted not in seen:
+                seen.add(redacted)
+                sanitized.append(redacted)
+        return sanitized
+
+    def _related_ticket_read(self, run: Run) -> RelatedTicketRead | None:
+        related = self._snapshot(run).get("related_ticket")
+        if not related:
+            return None
+        return RelatedTicketRead(
+            ticket_id=related["ticket_id"],
+            title=related.get("title", ""),
+            description=related.get("description", ""),
+            rationale=related.get("rationale"),
+            confidence=related.get("confidence"),
+        )
 
     def _action_payload(self, action: Action) -> dict[str, Any]:
         return redact_payload(

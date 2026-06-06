@@ -9,6 +9,7 @@ from app.schemas.phoenix import Activity, ActivityCreate, CustomerSystem, System
 from app.schemas.runs import ActivityDraftUpdate, ActivityReviewStatus, ActivitySubmitRequest, RunStatus
 from app.services.run_manager import RunManager
 from app.services.ssh_runner import MAX_STREAM_CHARS, SshCommandResult
+from app.services.ticket_memory import RelatedTicketContext
 
 
 def make_session():
@@ -71,11 +72,20 @@ class FailingActivityPhoenix(FakePhoenix):
         raise PhoenixError("activity failed")
 
 
+class FailingDonePhoenix(FakePhoenix):
+    def set_ticket_status(self, ticket_id, status):
+        if status == TicketStatus.DONE:
+            raise PhoenixError("done failed")
+        return super().set_ticket_status(ticket_id, status)
+
+
 class FakePlanner:
     def __init__(self, command="systemctl status nginx"):
         self.command = command
+        self.related_ticket = None
 
-    def propose_next_command(self, ticket, customer_system, observations, safety_policy):
+    def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
+        self.related_ticket = related_ticket
         return CommandProposal(intent="Check service", command=self.command, expected_signal="Service state is visible")
 
 
@@ -83,8 +93,9 @@ class FakeValidationPlanner(FakePlanner):
     def __init__(self):
         super().__init__("curl -fsS http://localhost/health")
 
-    def propose_next_command(self, ticket, customer_system, observations, safety_policy):
+    def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
         self.observations = observations
+        self.related_ticket = related_ticket
         return CommandProposal(intent="Validate customer service restoration", command=self.command, expected_signal="HTTP endpoint responds successfully")
 
 
@@ -109,13 +120,41 @@ class FakeActivityGenerator:
         )
 
 
-def make_manager(session, planner=None, ssh_runner=None, phoenix=None, activity_generator=None):
+class FakeTicketMemoryService:
+    def __init__(self, context=None, fail_prepare=False, fail_create=False):
+        self.context = context
+        self.fail_prepare = fail_prepare
+        self.fail_create = fail_create
+        self.last_candidate_payloads = [{"ticket_id": 7000, "score": 0.9}] if context else []
+        self.last_decision_payload = {
+            "ticket_id": 7001,
+            "related_ticket_id": context.ticket_id if context else None,
+            "decision": "related" if context else "none",
+            "rationale": context.rationale if context else "none",
+            "confidence": context.confidence if context else "low",
+            "candidate_count": 1 if context else 0,
+        }
+        self.created = []
+
+    def prepare_ticket_relation(self, ticket):
+        if self.fail_prepare:
+            raise RuntimeError("rag unavailable")
+        return self.context
+
+    def create_completed_memory(self, ticket, draft, commands):
+        if self.fail_create:
+            raise RuntimeError("memory unavailable")
+        self.created.append((ticket, draft, commands))
+
+
+def make_manager(session, planner=None, ssh_runner=None, phoenix=None, activity_generator=None, ticket_memory_service=None):
     manager = RunManager(
         session,
         phoenix_client=phoenix or FakePhoenix(),
         planner=planner or FakePlanner(),
         ssh_runner=ssh_runner or FakeSshRunner(),
         activity_generator=activity_generator,
+        ticket_memory_service=ticket_memory_service,
     )
     manager._event = lambda run_id, event_type, payload: None
     return manager
@@ -304,3 +343,86 @@ def test_safer_alternative_requires_ssh_and_blocked_action_and_does_not_execute(
         assert alternative.current_action.status == "proposed"
         assert ssh_runner.commands == []
         assert planner.observations[-1]["blocked_command"] == "rm -rf /etc"
+
+
+def test_start_run_stores_related_ticket_context_and_planner_receives_it():
+    with make_session() as session:
+        related = RelatedTicketContext(
+            ticket_id=7000,
+            title="Prior status API outage",
+            description="Status API returned 502",
+            root_cause="nginx proxy used the wrong upstream port.",
+            actions_taken="Checked nginx config and corrected upstream port.",
+            commands_summary="Used systemctl, nginx config inspection, and curl validation.",
+            validation_result="Health endpoint returned OK.",
+            commands=["systemctl status nginx", "curl --max-time 5 -fsS http://localhost:8080/health"],
+            rationale="Same API proxy symptom.",
+            confidence="medium",
+        )
+        memory = FakeTicketMemoryService(context=related)
+        planner = FakePlanner()
+        manager = make_manager(session, planner=planner, ticket_memory_service=memory)
+
+        state = manager.start_run(7001)
+        assert state.related_ticket is not None
+        assert state.related_ticket.ticket_id == 7000
+
+        manager.confirm_ssh(state.run.id)
+        manager.propose_next(state.run.id)
+
+        assert planner.related_ticket["ticket_id"] == 7000
+        assert planner.related_ticket["commands"] == related.commands
+
+
+def test_start_run_continues_when_related_ticket_lookup_fails():
+    with make_session() as session:
+        manager = make_manager(session, ticket_memory_service=FakeTicketMemoryService(fail_prepare=True))
+
+        state = manager.start_run(7001)
+
+        assert state.run.ticket_id == 7001
+        assert state.related_ticket is None
+
+
+def test_activity_submission_creates_completed_memory_after_done_status():
+    with make_session() as session:
+        memory = FakeTicketMemoryService()
+        manager = make_manager(session, activity_generator=FakeActivityGenerator(), ticket_memory_service=memory)
+        run_id = ready_run(manager)
+
+        manager.generate_activity_draft(run_id)
+        manager.review_activity_draft(run_id)
+        manager.submit_activity(run_id, ActivitySubmitRequest())
+
+        assert len(memory.created) == 1
+        ticket, draft, commands = memory.created[0]
+        assert ticket["id"] == 7001
+        assert draft.root_cause == "nginx was inactive, so the API proxy was unavailable."
+        assert "curl -fsS http://localhost/health" in commands
+
+
+def test_activity_submission_does_not_create_memory_when_done_status_fails():
+    with make_session() as session:
+        memory = FakeTicketMemoryService()
+        manager = make_manager(session, phoenix=FailingDonePhoenix(), activity_generator=FakeActivityGenerator(), ticket_memory_service=memory)
+        run_id = ready_run(manager)
+        manager.generate_activity_draft(run_id)
+        manager.review_activity_draft(run_id)
+
+        with pytest.raises(PhoenixError):
+            manager.submit_activity(run_id, ActivitySubmitRequest())
+
+        assert memory.created == []
+
+
+def test_activity_submission_continues_when_completed_memory_creation_fails():
+    with make_session() as session:
+        memory = FakeTicketMemoryService(fail_create=True)
+        manager = make_manager(session, activity_generator=FakeActivityGenerator(), ticket_memory_service=memory)
+        run_id = ready_run(manager)
+        manager.generate_activity_draft(run_id)
+        manager.review_activity_draft(run_id)
+
+        activity = manager.submit_activity(run_id, ActivitySubmitRequest())
+
+        assert activity.id == 9001

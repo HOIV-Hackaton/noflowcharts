@@ -61,7 +61,7 @@ class ConfirmingReviewer:
 
 
 class FakePlanner:
-    def propose_next_command(self, ticket, customer_system, observations, safety_policy):
+    def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
         return CommandProposal(intent="Check service status", command="systemctl status nginx", expected_signal="Service state is visible")
 
 

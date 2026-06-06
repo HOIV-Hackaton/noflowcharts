@@ -243,6 +243,7 @@ class TerminalManager:
             context.get("customer_system", {}),
             context.get("observations", []),
             SAFETY_POLICY_SUMMARY,
+            context.get("related_ticket"),
         )
         safety = self.safety_reviewer.review(proposal.command, context)
         status = TerminalCommandStatus.BLOCKED if safety.decision == "block" else TerminalCommandStatus.SUBMITTED
@@ -423,7 +424,12 @@ class TerminalManager:
                 for command in terminal_commands[-12:]
             ]
             snapshot = run.customer_system_snapshot or {}
-            return {"ticket": snapshot.get("ticket", {}), "customer_system": snapshot.get("customer_system", {}), "observations": observations}
+            return {
+                "ticket": snapshot.get("ticket", {}),
+                "customer_system": snapshot.get("customer_system", {}),
+                "related_ticket": snapshot.get("related_ticket"),
+                "observations": observations,
+            }
 
     def _audit(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
         with Session(engine) as session:

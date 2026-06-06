@@ -52,6 +52,8 @@ Operating rules:
 - For final validation after a fix, prefer read-only checks and, when safe and proportionate, evidence that the fix persists after a relevant service restart or equivalent configuration check.
 - Use bounded HTTP validation such as curl --max-time 5 -fsS. Run provided public validation scripts only after direct evidence indicates the fix is likely correct.
 - If the previous command failed or was blocked, explain that in intent and propose the safest next diagnostic or safer alternative. Do not repeat the same failed command unless retrying is clearly justified.
+- Related ticket context, when supplied, is historical assistance only. Do not assume the current ticket has the same root cause. Do not copy historical commands blindly. Use related root causes, validation results, and exact historical commands only to choose better diagnostics for the current system.
+- Even with related ticket context, the first command must remain a read-only diagnostic unless current observations already prove a concrete fix is appropriate.
 
 Return JSON only with keys: intent, command, expected_signal, risk_level, command_class_hint, rollback_note, phase, evidence_basis, evidence_gap.
 
@@ -78,6 +80,7 @@ class Planner:
         customer_system: dict,
         observations: list[dict],
         safety_policy: str,
+        related_ticket: dict | None = None,
     ) -> CommandProposal:
         messages = [
             {
@@ -91,6 +94,7 @@ class Planner:
                         {
                             "ticket": ticket,
                             "customer_system": customer_system,
+                            "related_ticket": related_ticket,
                             "recent_observations": observations[-8:],
                             "safety_policy": safety_policy,
                         },
