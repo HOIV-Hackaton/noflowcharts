@@ -3,14 +3,28 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app.core.redaction import redact_payload
-from app.db.models import Action, ActivityDraft, AuditEvent, CommandResult, Run, WebSocketEvent, utc_now
-from app.schemas.runs import ActionStatus, ActivityReviewStatus, CommandClassification, ConfirmationStatus, RunStatus, ValidationStatus
+from app.core.config import get_settings
+from app.db.models import Action, ActivityDraft, AuditEvent, CommandResult, Run, TerminalCommand, TerminalSession, TerminalTranscriptEvent, WebSocketEvent, utc_now
+from app.schemas.runs import (
+    ActionStatus,
+    ActivityReviewStatus,
+    CommandClassification,
+    ConfirmationStatus,
+    RunStatus,
+    TerminalCommandSource,
+    TerminalCommandStatus,
+    TerminalSessionStatus,
+    ValidationStatus,
+)
+
+
+MAX_STREAM_CHARS = 32 * 1024
 
 
 class RunRepository:
     def __init__(self, session: Session, secrets: list[str] | None = None):
         self.session = session
-        self.secrets = secrets or []
+        self.secrets = secrets if secrets is not None else get_settings().configured_secrets()
 
     def create_run(self, ticket_id: int, customer_system_snapshot: dict[str, Any] | None = None) -> Run:
         run = Run(ticket_id=ticket_id, customer_system_snapshot=customer_system_snapshot)
@@ -148,10 +162,10 @@ class RunRepository:
     ) -> CommandResult:
         result = CommandResult(
             action_id=action.id,
-            command=command,
+            command=redact_payload(command, self.secrets),
             exit_code=exit_code,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=_truncate_stream(redact_payload(stdout, self.secrets)),
+            stderr=_truncate_stream(redact_payload(stderr, self.secrets)),
             timed_out=timed_out,
             ended_at=utc_now(),
         )
@@ -224,3 +238,132 @@ class RunRepository:
             statement = statement.where(WebSocketEvent.event_id > last_event_id)
         statement = statement.order_by(WebSocketEvent.event_id)
         return list(self.session.exec(statement))
+
+    def create_terminal_session(self, run_id: str) -> TerminalSession:
+        terminal_session = TerminalSession(run_id=run_id)
+        self.session.add(terminal_session)
+        self.session.commit()
+        self.session.refresh(terminal_session)
+        return terminal_session
+
+    def get_open_terminal_session(self, run_id: str) -> TerminalSession | None:
+        statement = (
+            select(TerminalSession)
+            .where(TerminalSession.run_id == run_id, TerminalSession.status == TerminalSessionStatus.OPEN.value)
+            .order_by(TerminalSession.id.desc())
+        )
+        return self.session.exec(statement).first()
+
+    def touch_terminal_session(self, terminal_session: TerminalSession) -> TerminalSession:
+        terminal_session.last_seen_at = utc_now()
+        self.session.add(terminal_session)
+        self.session.commit()
+        self.session.refresh(terminal_session)
+        return terminal_session
+
+    def close_terminal_session(self, terminal_session: TerminalSession, reason: str) -> TerminalSession:
+        terminal_session.status = TerminalSessionStatus.CLOSED.value
+        terminal_session.closed_at = utc_now()
+        terminal_session.last_seen_at = terminal_session.closed_at
+        terminal_session.close_reason = reason
+        self.session.add(terminal_session)
+        self.session.commit()
+        self.session.refresh(terminal_session)
+        return terminal_session
+
+    def add_terminal_command(
+        self,
+        run_id: str,
+        source: TerminalCommandSource,
+        original_command: str,
+        terminal_session_id: int | None = None,
+        final_command: str | None = None,
+        status: TerminalCommandStatus = TerminalCommandStatus.SUBMITTED,
+        classification: CommandClassification | None = None,
+        risk_reason: str | None = None,
+    ) -> TerminalCommand:
+        command = TerminalCommand(
+            run_id=run_id,
+            terminal_session_id=terminal_session_id,
+            source=source.value,
+            status=status.value,
+            original_command=redact_payload(original_command, self.secrets),
+            final_command=redact_payload(final_command, self.secrets) if final_command is not None else None,
+            classification=classification.value if classification is not None else None,
+            risk_reason=redact_payload(risk_reason, self.secrets) if risk_reason is not None else None,
+        )
+        self.session.add(command)
+        self.session.commit()
+        self.session.refresh(command)
+        return command
+
+    def get_terminal_command(self, command_id: int) -> TerminalCommand | None:
+        return self.session.get(TerminalCommand, command_id)
+
+    def update_terminal_command(
+        self,
+        command: TerminalCommand,
+        status: TerminalCommandStatus | None = None,
+        final_command: str | None = None,
+        edited_from: str | None = None,
+        edited_to: str | None = None,
+        classification: CommandClassification | None = None,
+        risk_reason: str | None = None,
+        exit_code: int | None = None,
+        output: str | None = None,
+        started: bool = False,
+        ended: bool = False,
+    ) -> TerminalCommand:
+        if status is not None:
+            command.status = status.value
+        if final_command is not None:
+            command.final_command = redact_payload(final_command, self.secrets)
+        if edited_from is not None:
+            command.edited_from = redact_payload(edited_from, self.secrets)
+        if edited_to is not None:
+            command.edited_to = redact_payload(edited_to, self.secrets)
+        if classification is not None:
+            command.classification = classification.value
+        if risk_reason is not None:
+            command.risk_reason = redact_payload(risk_reason, self.secrets)
+        if exit_code is not None:
+            command.exit_code = exit_code
+        if output is not None:
+            command.output = _truncate_stream(redact_payload(output, self.secrets))
+        now = utc_now()
+        if started and command.started_at is None:
+            command.started_at = now
+        if ended:
+            command.ended_at = now
+        command.updated_at = now
+        self.session.add(command)
+        self.session.commit()
+        self.session.refresh(command)
+        return command
+
+    def list_terminal_commands(self, run_id: str) -> list[TerminalCommand]:
+        statement = select(TerminalCommand).where(TerminalCommand.run_id == run_id).order_by(TerminalCommand.id)
+        return list(self.session.exec(statement))
+
+    def add_terminal_transcript_event(self, run_id: str, terminal_session_id: int | None, data: str, stream: str = "stdout") -> TerminalTranscriptEvent:
+        event = TerminalTranscriptEvent(
+            run_id=run_id,
+            terminal_session_id=terminal_session_id,
+            stream=stream,
+            data=_truncate_stream(redact_payload(data, self.secrets)),
+            redacted=True,
+        )
+        self.session.add(event)
+        self.session.commit()
+        self.session.refresh(event)
+        return event
+
+    def list_terminal_transcript(self, run_id: str) -> list[TerminalTranscriptEvent]:
+        statement = select(TerminalTranscriptEvent).where(TerminalTranscriptEvent.run_id == run_id).order_by(TerminalTranscriptEvent.id)
+        return list(self.session.exec(statement))
+
+
+def _truncate_stream(value: str) -> str:
+    if len(value) <= MAX_STREAM_CHARS:
+        return value
+    return value[:MAX_STREAM_CHARS] + "\n[truncated]"

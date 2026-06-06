@@ -4,11 +4,11 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.agent.planner import CommandProposal
-from app.core.errors import ValidationError
+from app.core.errors import PhoenixError, ValidationError
 from app.schemas.phoenix import Activity, ActivityCreate, CustomerSystem, SystemInfo, Ticket, TicketStatus
 from app.schemas.runs import ActivityDraftUpdate, ActivityReviewStatus, ActivitySubmitRequest, RunStatus
 from app.services.run_manager import RunManager
-from app.services.ssh_runner import SshCommandResult
+from app.services.ssh_runner import MAX_STREAM_CHARS, SshCommandResult
 
 
 def make_session():
@@ -65,6 +65,35 @@ class FakePhoenix:
             created_at=datetime.now(UTC),
         )
 
+class TicketValidationPhoenix(FakePhoenix):
+    def get_ticket(self, ticket_id):
+        ticket = super().get_ticket(ticket_id)
+        ticket.description = """
+The customer reports that the internal status API is not reachable at:
+http://localhost:8080/health
+
+Public validation:
+sudo /usr/local/bin/status-smoke-test.sh
+"""
+        return ticket
+
+
+class ValidationOnlyPhoenix(FakePhoenix):
+    def get_ticket(self, ticket_id):
+        ticket = super().get_ticket(ticket_id)
+        ticket.description = """
+Customer report: the batch processor health is degraded.
+
+Run:
+/usr/local/bin/batch-smoke-test.sh
+"""
+        return ticket
+
+
+class FailingActivityPhoenix(FakePhoenix):
+    def create_activity(self, activity: ActivityCreate):
+        raise PhoenixError("activity failed")
+
 
 class FakePlanner:
     def __init__(self, command="systemctl status nginx"):
@@ -72,6 +101,15 @@ class FakePlanner:
 
     def propose_next_command(self, ticket, customer_system, observations, safety_policy):
         return CommandProposal(intent="Check service", command=self.command, expected_signal="Service state is visible")
+
+
+class FakeValidationPlanner(FakePlanner):
+    def __init__(self):
+        super().__init__("curl -fsS http://localhost/health")
+
+    def propose_next_command(self, ticket, customer_system, observations, safety_policy):
+        self.observations = observations
+        return CommandProposal(intent="Validate customer service restoration", command=self.command, expected_signal="HTTP endpoint responds successfully")
 
 
 class FakeSshRunner:
@@ -137,6 +175,44 @@ def test_run_manager_requires_approval_before_command_execution():
         assert ssh_runner.commands == [("10.0.0.5", "systemctl status nginx")]
         assert state.command_results[0].stdout == "active"
 
+def test_run_manager_prefers_ticket_health_and_public_validation_before_generic_planner():
+    with make_session() as session:
+        ssh_runner = FakeSshRunner()
+        manager = make_manager(
+            session,
+            phoenix=TicketValidationPhoenix(),
+            planner=FakePlanner("ss -ltn sport = :8080"),
+            ssh_runner=ssh_runner,
+        )
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+
+        state = manager.propose_next(run_id)
+        assert state.current_action.command == "curl --max-time 5 -fsS http://localhost:8080/health"
+
+        _, action_id = manager.approve(run_id, state.current_action.id)
+        manager.execute_action(run_id, action_id)
+
+        state = manager.propose_next(run_id)
+        assert state.current_action.command == "sudo -n /usr/local/bin/status-smoke-test.sh"
+        assert state.current_action.typed_confirmation_status == "pending"
+        assert ssh_runner.commands == [("10.0.0.5", "curl --max-time 5 -fsS http://localhost:8080/health")]
+
+
+def test_run_manager_can_propose_explicit_validation_command_without_health_url():
+    with make_session() as session:
+        manager = make_manager(
+            session,
+            phoenix=ValidationOnlyPhoenix(),
+            planner=FakePlanner("systemctl status batch-processor"),
+        )
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+
+        state = manager.propose_next(run_id)
+
+        assert state.current_action.command == "/usr/local/bin/batch-smoke-test.sh"
+
 
 def test_run_manager_requires_typed_confirmation_for_risky_command():
     with make_session() as session:
@@ -154,7 +230,7 @@ def test_run_manager_requires_typed_confirmation_for_risky_command():
         assert state.current_action.typed_confirmation_status == "confirmed"
 
 
-def test_validation_confirmation_requires_successful_command_evidence():
+def test_validation_confirmation_requires_successful_validation_command_evidence():
     with make_session() as session:
         manager = make_manager(session)
         run_id = manager.start_run(7001).run.id
@@ -163,6 +239,14 @@ def test_validation_confirmation_requires_successful_command_evidence():
         with pytest.raises(ValidationError):
             manager.confirm_validation(run_id, "Service responds with HTTP 200")
 
+        state = manager.propose_next(run_id)
+        _, action_id = manager.approve(run_id, state.current_action.id)
+        manager.execute_action(run_id, action_id)
+
+        with pytest.raises(ValidationError):
+            manager.confirm_validation(run_id, "Service responds with HTTP 200 and systemctl reports active")
+
+        manager.planner = FakeValidationPlanner()
         state = manager.propose_next(run_id)
         _, action_id = manager.approve(run_id, state.current_action.id)
         manager.execute_action(run_id, action_id)
@@ -175,6 +259,7 @@ def test_validation_confirmation_requires_successful_command_evidence():
 def ready_run(manager):
     run_id = manager.start_run(7001).run.id
     manager.confirm_ssh(run_id)
+    manager.planner = FakeValidationPlanner()
     state = manager.propose_next(run_id)
     _, action_id = manager.approve(run_id, state.current_action.id)
     manager.execute_action(run_id, action_id)
@@ -191,6 +276,7 @@ def test_activity_submission_requires_validation_review_and_complete_draft():
             manager.generate_activity_draft(run_id)
 
         manager.confirm_ssh(run_id)
+        manager.planner = FakeValidationPlanner()
         state = manager.propose_next(run_id)
         _, action_id = manager.approve(run_id, state.current_action.id)
         manager.execute_action(run_id, action_id)
@@ -222,3 +308,61 @@ def test_activity_draft_review_submission_sets_ticket_done():
         assert phoenix.status_updates[-1] == (7001, TicketStatus.DONE)
         assert state.run.status == RunStatus.SUBMITTED
         assert state.activity_draft.review_status == ActivityReviewStatus.SUBMITTED
+
+
+def test_activity_submission_failure_does_not_set_ticket_done():
+    with make_session() as session:
+        phoenix = FailingActivityPhoenix()
+        manager = make_manager(session, phoenix=phoenix, activity_generator=FakeActivityGenerator())
+        run_id = ready_run(manager)
+        manager.generate_activity_draft(run_id)
+        manager.review_activity_draft(run_id)
+
+        with pytest.raises(PhoenixError):
+            manager.submit_activity(run_id, ActivitySubmitRequest())
+
+        assert (7001, TicketStatus.DONE) not in phoenix.status_updates
+
+
+def test_command_results_are_redacted_in_state_and_llm_observations():
+    with make_session() as session:
+        manager = make_manager(session)
+        manager.repo.secrets = ["configured-secret"]
+        manager.audit.repository.secrets = ["configured-secret"]
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+        state = manager.propose_next(run_id)
+        action = manager.repo.get_action(state.current_action.id)
+        manager.repo.add_command_result(action, action.command, 0, "output configured-secret " + ("x" * (MAX_STREAM_CHARS + 10)), "password=hunter2")
+
+        state = manager.state(run_id)
+        observations = manager._observations(run_id)
+
+        assert "configured-secret" not in state.command_results[0].stdout
+        assert "hunter2" not in state.command_results[0].stderr
+        assert state.command_results[0].stdout.endswith("[truncated]")
+        assert "configured-secret" not in str(observations)
+
+
+def test_safer_alternative_requires_ssh_and_blocked_action_and_does_not_execute():
+    with make_session() as session:
+        ssh_runner = FakeSshRunner()
+        planner = FakeValidationPlanner()
+        manager = make_manager(session, planner=planner, ssh_runner=ssh_runner)
+        run_id = manager.start_run(7001).run.id
+
+        with pytest.raises(ValidationError):
+            manager.request_safer_alternative(run_id)
+
+        manager.confirm_ssh(run_id)
+        state = manager.propose_next(run_id)
+        with pytest.raises(ValidationError):
+            manager.request_safer_alternative(run_id, state.current_action.id)
+
+        manager.edit(run_id, "rm -rf /etc", action_id=state.current_action.id)
+        alternative = manager.request_safer_alternative(run_id, state.current_action.id)
+
+        assert alternative.current_action.command == "curl -fsS http://localhost/health"
+        assert alternative.current_action.status == "proposed"
+        assert ssh_runner.commands == []
+        assert planner.observations[-1]["blocked_command"] == "rm -rf /etc"

@@ -1,8 +1,9 @@
+import re
 from typing import Any
 
 from sqlmodel import Session
 
-from app.agent.planner import SAFETY_POLICY_SUMMARY, Planner
+from app.agent.planner import SAFETY_POLICY_SUMMARY, CommandProposal, Planner
 from app.clients.phoenix import PhoenixClient
 from app.core.errors import SafetyError, ValidationError
 from app.core.redaction import redact_payload
@@ -29,6 +30,7 @@ from app.services.activity_generator import ActivityGenerator
 from app.services.events import persist_and_publish_ws_event_sync
 from app.services.safety import classify_command
 from app.services.ssh_runner import SshRunner
+from app.services.terminal_manager import terminal_manager
 
 
 RISK_CONFIRMATION_PREFIX = "RUN "
@@ -77,13 +79,15 @@ class RunManager:
         self._require_ssh_confirmed(run)
         snapshot = self._snapshot(run)
         observations = self._observations(run.id)
-        planner = self.planner or Planner()
-        proposal = planner.propose_next_command(
-            ticket=snapshot.get("ticket", {}),
-            customer_system=snapshot.get("customer_system", {}),
-            observations=observations,
-            safety_policy=SAFETY_POLICY_SUMMARY,
-        )
+        proposal = self._ticket_validation_proposal(snapshot, observations)
+        if proposal is None:
+            planner = self.planner or Planner()
+            proposal = planner.propose_next_command(
+                ticket=snapshot.get("ticket", {}),
+                customer_system=snapshot.get("customer_system", {}),
+                observations=observations,
+                safety_policy=SAFETY_POLICY_SUMMARY,
+            )
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
         action = self.repo.add_action(
@@ -103,6 +107,54 @@ class RunManager:
         else:
             self.audit.record("command_proposed", {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
             self._event(run.id, "command_proposed", {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value})
+        return self.state(run.id)
+
+    def request_safer_alternative(self, run_id: str, action_id: int | None = None) -> RunStateRead:
+        run = self._run(run_id)
+        self._require_ssh_confirmed(run)
+        blocked_action = self._action(run, action_id)
+        if blocked_action.status != ActionStatus.BLOCKED.value:
+            raise ValidationError("Safer alternative requires a blocked action")
+        snapshot = self._snapshot(run)
+        observations = self._observations(run.id)
+        planner = self.planner or Planner()
+        proposal = planner.propose_next_command(
+            ticket=snapshot.get("ticket", {}),
+            customer_system=snapshot.get("customer_system", {}),
+            observations=observations
+            + [
+                {
+                    "blocked_command": blocked_action.command,
+                    "block_reason": blocked_action.risk_reason or "Blocked by safety policy",
+                    "request": "Propose one safer alternative command that avoids the blocked behavior. Do not execute anything.",
+                }
+            ],
+            safety_policy=SAFETY_POLICY_SUMMARY,
+        )
+        safety = classify_command(proposal.command)
+        typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
+        action = self.repo.add_action(
+            run,
+            command=proposal.command,
+            classification=safety.classification,
+            intent=proposal.intent,
+            risk_reason=safety.reason,
+            expected_signal=proposal.expected_signal,
+            typed_confirmation_status=typed_status,
+        )
+        self.audit.record(
+            "safer_alternative_requested",
+            {"blocked_action_id": blocked_action.id, "blocked_command": blocked_action.command, "reason": blocked_action.risk_reason},
+            run.id,
+        )
+        self.audit.record("command_classified", {"command": proposal.command, "classification": safety.classification.value, "reason": safety.reason}, run.id)
+        if safety.blocked:
+            self.repo.update_action_status(action, ActionStatus.BLOCKED)
+            self.audit.record("blocked_command", {"action_id": action.id, "command": proposal.command, "reason": safety.reason}, run.id)
+            self._event(run.id, "command_blocked", {"action_id": action.id, "reason": safety.reason})
+        else:
+            self.audit.record("safer_alternative_proposed", {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
+            self._event(run.id, "safer_alternative_proposed", {"action_id": action.id, "classification": safety.classification.value})
         return self.state(run.id)
 
     def confirm_risk(self, run_id: str, confirmation_text: str, action_id: int | None = None) -> RunStateRead:
@@ -208,14 +260,15 @@ class RunManager:
 
     def confirm_validation(self, run_id: str, evidence: str) -> RunStateRead:
         run = self._run(run_id)
-        if not evidence.strip():
+        if not self._is_concrete_validation_evidence(evidence):
             raise ValidationError("Validation confirmation requires concrete evidence")
         successful_results = [result for result in self.repo.list_command_results(run.id) if result.exit_code == 0 and not result.timed_out]
-        if not successful_results:
-            raise ValidationError("Validation requires at least one successful command result as evidence")
+        validation_results = [result for result in successful_results if self._result_is_validation_evidence(result)]
+        if not validation_results:
+            raise ValidationError("Validation requires at least one successful validation command result as evidence")
         self.repo.set_validation_status(run, ValidationStatus.HUMAN_CONFIRMED, confirmed=True)
         self.repo.update_run_status(run, RunStatus.READY_FOR_ACTIVITY)
-        self.audit.record("validation_evidence", {"evidence": evidence, "result_count": len(successful_results)}, run.id)
+        self.audit.record("validation_evidence", {"evidence": evidence, "result_count": len(validation_results)}, run.id)
         self.audit.record("human_validation_confirmation", {"confirmed": True}, run.id)
         self._event(run.id, "validation_confirmed", {"status": RunStatus.READY_FOR_ACTIVITY.value})
         return self.state(run.id)
@@ -223,6 +276,7 @@ class RunManager:
     def abort(self, run_id: str) -> RunStateRead:
         run = self._run(run_id)
         self.repo.update_run_status(run, RunStatus.ABORTED)
+        terminal_manager.close_run_sync(run.id, "run_aborted")
         self.audit.record("abort", {"ticket_id": run.ticket_id}, run.id)
         self._event(run.id, "run_aborted", {"status": RunStatus.ABORTED.value})
         return self.state(run.id)
@@ -232,14 +286,15 @@ class RunManager:
         self._require_ready_for_activity(run)
         snapshot = self._snapshot(run)
         actions = [self._action_payload(action) for action in self.repo.list_actions(run.id)]
+        terminal_commands = [self._terminal_command_payload(command) for command in self.repo.list_terminal_commands(run.id)]
         command_results = [self._command_result_payload(result) for result in self.repo.list_command_results(run.id)]
         validation_events = [event.payload for event in self.audit.for_run(run.id) if event.type in {"validation_evidence", "human_validation_confirmation"}]
         activity_generator = self.activity_generator or ActivityGenerator()
         generated = activity_generator.generate(
             ticket=snapshot.get("ticket", {}),
             customer_system=snapshot.get("customer_system", {}),
-            actions=actions,
-            command_results=command_results,
+            actions=actions + terminal_commands,
+            command_results=command_results + terminal_commands,
             validation={"status": run.validation_status, "confirmed": run.validation_confirmed, "events": validation_events},
         )
         draft = self.repo.upsert_activity_draft(run, **generated.model_dump())
@@ -345,6 +400,105 @@ class RunManager:
         results = self.repo.list_command_results(run_id)
         return [redact_payload({"command": result.command, "exit_code": result.exit_code, "stdout": result.stdout, "stderr": result.stderr, "timed_out": result.timed_out}) for result in results]
 
+    def _is_concrete_validation_evidence(self, evidence: str) -> bool:
+        text = evidence.strip().lower()
+        if len(text) < 12:
+            return False
+        concrete_terms = ("http", "200", "ok", "active", "running", "respond", "success", "passed", "reachable", "restored", "validated")
+        return any(term in text for term in concrete_terms)
+
+    def _result_is_validation_evidence(self, result) -> bool:
+        action = self.repo.get_action(result.action_id)
+        if action is None:
+            return False
+        action_text = " ".join(filter(None, [action.intent, action.expected_signal])).lower()
+        command_text = " ".join(filter(None, [action.command, result.command])).lower()
+        if any(term in action_text for term in ("validat", "verify", "confirm", "test", "respond", "restored", "customer benefit")):
+            return True
+        return any(term in command_text for term in ("curl", "health", "is-active", "smoke", "wget --spider"))
+
+    def _ticket_validation_proposal(self, snapshot: dict[str, Any], observations: list[dict[str, Any]]) -> CommandProposal | None:
+        ticket = snapshot.get("ticket", {})
+        description = " ".join(str(ticket.get(field, "")) for field in ("title", "description"))
+        health_url = self._extract_health_url(description)
+        health_command = f"curl --max-time 5 -fsS {health_url}" if health_url else None
+        validation_command = self._extract_ticket_validation_command(description)
+
+        if health_command and not self._command_was_observed(observations, health_command):
+            return CommandProposal(
+                intent="Run the ticket-specified customer-facing health check before deeper diagnostics or changes.",
+                command=health_command,
+                expected_signal="The command exits 0 and returns the expected health payload, such as ok; failure means the incident is still active and needs diagnosis.",
+                risk_level="low",
+                command_class_hint=CommandClassification.READ_ONLY,
+                phase="validate",
+                evidence_basis="ticket provides an explicit local health endpoint",
+                evidence_gap="whether the customer-facing status API is currently reachable",
+            )
+
+        if (not health_command or self._command_succeeded(observations, health_command)) and validation_command:
+            if validation_command and not self._command_was_observed(observations, validation_command):
+                return CommandProposal(
+                    intent="Run the ticket-provided validation command after the available ticket-directed checks indicate it is the next required proof.",
+                    command=validation_command,
+                    expected_signal="The command exits 0 and reports that the ticket-required service or capability is healthy.",
+                    risk_level="medium",
+                    command_class_hint=CommandClassification.RISKY_MUTATING,
+                    rollback_note="No rollback is expected because this is the ticket-provided validation command, not a repair command.",
+                    phase="validate",
+                    evidence_basis="direct health endpoint validation succeeded" if health_command else "ticket provides an explicit validation command",
+                    evidence_gap="whether the ticket's required validation passes",
+                )
+
+        return None
+
+    def _extract_health_url(self, text: str) -> str | None:
+        match = re.search(r"https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/[^\s)`,]*health[^\s)`,]*", text, flags=re.IGNORECASE)
+        return match.group(0).rstrip(".,") if match else None
+
+    def _extract_ticket_validation_command(self, text: str) -> str | None:
+        lines = text.splitlines()
+        for index, raw_line in enumerate(lines):
+            line = raw_line.strip().lower()
+            if "validation" not in line and line != "run:":
+                continue
+            for candidate_line in lines[index + 1 : index + 5]:
+                command = self._normalize_ticket_command(candidate_line.strip())
+                if command:
+                    return command
+        return None
+
+    def _normalize_ticket_command(self, line: str) -> str | None:
+        command = line.strip().strip("`").strip()
+        if not command or command.startswith("#"):
+            return None
+        if command.startswith(("- ", "* ")):
+            command = command[2:].strip()
+        if command.startswith("sudo ") and not command.startswith("sudo -n "):
+            command = "sudo -n " + command.removeprefix("sudo ").strip()
+        if self._is_simple_ticket_validation_command(command):
+            return command
+        return None
+
+    def _is_simple_ticket_validation_command(self, command: str) -> bool:
+        if any(operator in command for operator in ("&&", "||", ";", "|", "$", "`", "\n")):
+            return False
+        allowed_prefixes = (
+            "curl ",
+            "wget --spider ",
+            "systemctl is-active ",
+            "sudo -n systemctl is-active ",
+            "sudo -n /",
+            "/",
+        )
+        return command.startswith(allowed_prefixes)
+
+    def _command_was_observed(self, observations: list[dict[str, Any]], command: str) -> bool:
+        return any(observation.get("command") == command for observation in observations)
+
+    def _command_succeeded(self, observations: list[dict[str, Any]], command: str) -> bool:
+        return any(observation.get("command") == command and observation.get("exit_code") == 0 and not observation.get("timed_out") for observation in observations)
+
     def _require_ssh_confirmed(self, run: Run) -> None:
         if not run.ssh_confirmed:
             raise ValidationError("Technician must confirm SSH connection before any system action")
@@ -387,6 +541,23 @@ class RunManager:
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "timed_out": result.timed_out,
+            }
+        )
+
+    def _terminal_command_payload(self, command) -> dict[str, Any]:
+        return redact_payload(
+            {
+                "id": command.id,
+                "source": command.source,
+                "status": command.status,
+                "command": command.final_command or command.original_command,
+                "original_command": command.original_command,
+                "edited_from": command.edited_from,
+                "edited_to": command.edited_to,
+                "classification": command.classification,
+                "risk_reason": command.risk_reason,
+                "exit_code": command.exit_code,
+                "output": command.output,
             }
         )
 

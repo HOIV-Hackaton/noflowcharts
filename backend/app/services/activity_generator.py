@@ -1,10 +1,11 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError as PydanticValidationError
+from pydantic import BaseModel, Field, ValidationError as PydanticValidationError, field_validator
 
 from app.agent.providers import LlmProvider, get_llm_provider
 from app.core.errors import AgentError
 from app.core.redaction import redact_payload
+from app.core.config import get_settings
 
 
 class GeneratedActivityDraft(BaseModel):
@@ -14,6 +15,41 @@ class GeneratedActivityDraft(BaseModel):
     commands_summary: str = Field(min_length=1)
     validation_result: str = Field(min_length=1)
     description: str = Field(min_length=1)
+
+    @field_validator("summary", "root_cause", "actions_taken", "commands_summary", "validation_result", "description", mode="before")
+    @classmethod
+    def coerce_text_field(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            return "\n".join(str(item) for item in value if item is not None)
+        return value
+
+
+ACTIVITY_SYSTEM_PROMPT = """You draft Phoenix ERP activity documentation for a human technician.
+
+Write a detailed technician log that helps the next technician understand what was found, what was changed, and how restoration was proven. Optimize for the grader: technical root cause, working persistent fix, no regression/data loss, and complete useful summary.
+
+Rules:
+- Do not assume facts that are not present in the ticket, actions, command results, or validation evidence.
+- If evidence is incomplete, state the concrete limitation instead of inventing certainty.
+- The root_cause must be the technical cause, not just the customer symptom.
+- Actions must list diagnosis, fix, and validation steps in chronological order.
+- Commands summary must summarize relevant command classes and targets without raw secret-bearing output.
+- Validation must include concrete proof that customer benefit was restored, using successful command results and human-confirmed validation evidence.
+- Preserve safety: do not include secrets, tokens, private keys, passwords, raw environment contents, or unnecessary raw log excerpts.
+- Be specific about persistence when evidence exists, such as service restart checks, enabled-state checks, config syntax checks, or reboot-safe configuration changes.
+- Keep the wording professional and technical. Prefer clear paragraphs or semicolon-separated steps over vague phrases.
+- Every JSON value must be a string. Do not return arrays, objects, markdown lists, or null values. In particular, actions_taken must be one string, not a JSON array.
+
+Return JSON only with keys: summary, root_cause, actions_taken, commands_summary, validation_result, description.
+
+Field guidance:
+- summary: one sentence describing the restored customer-facing service or capability.
+- root_cause: one to three sentences naming the underlying technical cause and evidence.
+- actions_taken: ordered technician log of diagnosis, fix, and validation.
+- commands_summary: concise sanitized summary of command classes, not raw output.
+- validation_result: concrete evidence that the customer benefit is restored and, when shown, persists.
+- description: polished ERP note combining the essential root cause, actions, and result without secrets.
+"""
 
 
 class ActivityGenerator:
@@ -31,14 +67,7 @@ class ActivityGenerator:
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You draft Phoenix ERP activity documentation for a technician. Return JSON only with keys: "
-                    "summary, root_cause, actions_taken, commands_summary, validation_result, description. "
-                    "The root_cause must be the technical cause, not just the customer symptom. "
-                    "Actions must list diagnosis and fix steps in order. Commands summary must describe command classes "
-                    "without secrets or raw secret-bearing output. Validation must state concrete proof that customer benefit "
-                    "is restored. Keep text concise and technically useful."
-                ),
+                "content": ACTIVITY_SYSTEM_PROMPT,
             },
             {
                 "role": "user",
@@ -50,7 +79,8 @@ class ActivityGenerator:
                             "actions": actions,
                             "command_results": command_results,
                             "validation": validation,
-                        }
+                        },
+                        get_settings().configured_secrets(),
                     )
                 ),
             },

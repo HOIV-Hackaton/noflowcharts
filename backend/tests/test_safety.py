@@ -31,10 +31,26 @@ def test_sudo_is_risky_and_requires_typed_confirmation():
     "command",
     [
         "rm -rf /etc",
+        "rm -rf /",
+        "rm -rf /home/customer",
+        "rm -rf /srv/app",
+        "rm -rf /var/lib/postgresql/15/main",
         "chmod -R 777 /var",
+        "chmod -R 777 /",
+        "chmod -R 777 /srv/app",
         "systemctl disable ufw",
+        "ufw disable",
+        "iptables -F",
         "history -c",
+        "rm -rf /var/log/nginx",
+        "truncate -s 0 /var/log/syslog",
         "cat /home/azureuser/.ssh/id_rsa",
+        "cat /srv/app/.env",
+        "grep SECRET /etc/app/config.pem",
+        "dropdb customer_prod",
+        "psql -c 'drop database customer_prod'",
+        "rm -rf /var/lib/mysql",
+        "sudo -u postgres psql -c 'alter user app superuser'",
     ],
 )
 def test_hard_fail_patterns_are_blocked(command):
@@ -51,3 +67,18 @@ def test_edited_compound_command_is_risky_not_auto_allowed():
 
     assert result.classification == CommandClassification.RISKY_MUTATING
     assert result.requires_typed_confirmation is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "chown www-data:www-data /srv/app/uploads",
+        "chmod 750 /srv/app/uploads",
+        "systemctl status nginx",
+        "curl -fsS http://localhost/health",
+    ],
+)
+def test_targeted_safeish_commands_remain_unblocked(command):
+    result = classify_command(command)
+
+    assert result.blocked is False

@@ -1,6 +1,8 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+import socket
+import time
 from typing import Any
 
 import paramiko
@@ -59,7 +61,9 @@ class SshRunner:
                 allow_agent=False,
             )
             _, stdout, stderr = client.exec_command(command, timeout=self.command_timeout)
-            exit_code = stdout.channel.recv_exit_status()
+            exit_code = self._wait_for_exit(stdout.channel)
+            if exit_code is None:
+                return SshCommandResult(command=command, exit_code=None, stdout="", stderr="Command timed out", timed_out=True)
             return SshCommandResult(
                 command=command,
                 exit_code=exit_code,
@@ -67,7 +71,7 @@ class SshRunner:
                 stderr=_truncate(_decode_stream(stderr)),
                 timed_out=False,
             )
-        except TimeoutError:
+        except (TimeoutError, socket.timeout):
             return SshCommandResult(command=command, exit_code=None, stdout="", stderr="Command timed out", timed_out=True)
         except Exception as exc:
             message = redact_text(str(exc), self.settings.configured_secrets())
@@ -97,6 +101,22 @@ class SshRunner:
             except Exception as exc:
                 last_error = exc
         raise ConfigurationError(f"Could not load SSH private key: {last_error}")
+
+    def _wait_for_exit(self, channel: Any) -> int | None:
+        exit_status_ready = getattr(channel, "exit_status_ready", None)
+        if not callable(exit_status_ready):
+            return channel.recv_exit_status()
+
+        deadline = time.monotonic() + self.command_timeout
+        while time.monotonic() < deadline:
+            if exit_status_ready():
+                return channel.recv_exit_status()
+            time.sleep(0.1)
+
+        close = getattr(channel, "close", None)
+        if callable(close):
+            close()
+        return None
 
 
 def _decode_stream(stream: Any) -> str:

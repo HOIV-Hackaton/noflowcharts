@@ -2,7 +2,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any
 
-from openai import AzureOpenAI
+from openai import AzureOpenAI, OpenAI
 
 from app.core.config import Settings, get_settings
 from app.core.errors import AgentError, ConfigurationError
@@ -25,14 +25,20 @@ class AzureOpenAiProvider(LlmProvider):
 
         assert self.settings.azure_openai_endpoint is not None
         assert self.settings.azure_openai_api_key is not None
-        assert self.settings.azure_openai_api_version is not None
         self.deployment = self.settings.azure_openai_deployment
         assert self.deployment is not None
-        self.client = AzureOpenAI(
-            azure_endpoint=self.settings.azure_openai_endpoint,
-            api_key=self.settings.azure_openai_api_key,
-            api_version=self.settings.azure_openai_api_version,
-        )
+        if self.settings.uses_foundry_project_endpoint():
+            self.client = OpenAI(
+                base_url=f"{self.settings.azure_openai_endpoint.rstrip('/')}/openai/v1/",
+                api_key=self.settings.azure_openai_api_key,
+            )
+        else:
+            assert self.settings.azure_openai_api_version is not None
+            self.client = AzureOpenAI(
+                azure_endpoint=self.settings.azure_openai_endpoint,
+                api_key=self.settings.azure_openai_api_key,
+                api_version=self.settings.azure_openai_api_version,
+            )
 
     def complete_json(self, messages: list[dict[str, str]], timeout: float = 30.0) -> dict[str, Any]:
         try:
