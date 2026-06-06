@@ -4,7 +4,7 @@ from app.agent import providers
 from app.agent.providers import AzureOpenAiProvider
 from app.core.config import Settings
 from app.core.errors import AgentError, ConfigurationError
-from app.services.activity_generator import ActivityGenerator
+from app.services.activity_generator import ActivityGenerator, GeneratedActivityDraft
 
 
 def test_missing_azure_config_fails_only_when_provider_is_used():
@@ -18,6 +18,29 @@ def test_missing_azure_config_fails_only_when_provider_is_used():
 
     with pytest.raises(ConfigurationError):
         AzureOpenAiProvider(settings=settings)
+
+
+def test_foundry_project_endpoint_uses_openai_compatible_client_without_api_version(monkeypatch):
+    created = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+            self.chat = type("Chat", (), {"completions": object()})()
+
+    monkeypatch.setattr(providers, "OpenAI", FakeOpenAI)
+    settings = Settings(
+        _env_file=None,
+        azure_openai_endpoint="https://example.services.ai.azure.com/api/projects/demo",
+        azure_openai_api_key="azure-secret",
+        azure_openai_deployment="gpt-test",
+    )
+
+    provider = AzureOpenAiProvider(settings=settings)
+
+    assert provider.deployment == "gpt-test"
+    assert created["base_url"] == "https://example.services.ai.azure.com/api/projects/demo/openai/v1/"
+    assert created["api_key"] == "azure-secret"
 
 
 def test_azure_provider_redacts_secrets_on_failure(monkeypatch):
@@ -78,40 +101,6 @@ def test_azure_provider_rejects_invalid_and_non_object_json(monkeypatch):
         AzureOpenAiProvider(settings=settings).complete_json([])
 
 
-def test_azure_project_endpoint_uses_responses_api(monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"output_text": '{"intent":"Check health","command":"curl -fsS http://localhost:8080/health","expected_signal":"HTTP 200"}'}
-
-    def fake_post(url, **kwargs):
-        captured["url"] = url
-        captured["kwargs"] = kwargs
-        return FakeResponse()
-
-    monkeypatch.setattr(providers.httpx, "post", fake_post)
-    settings = Settings(
-        _env_file=None,
-        azure_openai_endpoint="https://example.services.ai.azure.com/api/projects/example_project",
-        azure_openai_api_key="azure-secret",
-        azure_openai_deployment="gpt",
-        azure_openai_api_version="2024-02-01",
-    )
-
-    payload = AzureOpenAiProvider(settings=settings).complete_json([{"role": "user", "content": "Return JSON"}])
-
-    assert payload["command"] == "curl -fsS http://localhost:8080/health"
-    assert captured["url"] == "https://example.services.ai.azure.com/api/projects/example_project/openai/v1/responses"
-    assert captured["kwargs"]["headers"]["api-key"] == "azure-secret"
-    assert captured["kwargs"]["json"]["model"] == "gpt"
-    assert captured["kwargs"]["json"]["input"] == "USER: Return JSON"
-    assert captured["kwargs"]["json"]["text"] == {"format": {"type": "json_object"}}
-
-
 def test_activity_generator_converts_invalid_draft_payload_to_agent_error():
     class FakeProvider:
         def complete_json(self, messages, timeout=45.0):
@@ -119,3 +108,46 @@ def test_activity_generator_converts_invalid_draft_payload_to_agent_error():
 
     with pytest.raises(AgentError):
         ActivityGenerator(provider=FakeProvider()).generate({}, {}, [], [], {})
+
+
+def test_generated_activity_draft_coerces_list_text_fields():
+    draft = GeneratedActivityDraft.model_validate(
+        {
+            "summary": "Restored service.",
+            "root_cause": "Service was stopped.",
+            "actions_taken": ["Checked status.", "Restarted service.", "Validated endpoint."],
+            "commands_summary": "Used service and HTTP validation commands.",
+            "validation_result": "Endpoint returned ok.",
+            "description": "Restored service after restart.",
+        }
+    )
+
+    assert draft.actions_taken == "Checked status.\nRestarted service.\nValidated endpoint."
+
+
+def test_activity_generator_prompt_requires_detailed_grounded_technician_log():
+    class FakeProvider:
+        def __init__(self):
+            self.messages = None
+
+        def complete_json(self, messages, timeout=45.0):
+            self.messages = messages
+            return {
+                "summary": "Restored the customer-facing status API.",
+                "root_cause": "nginx was inactive, which prevented the API proxy from serving requests.",
+                "actions_taken": "Checked service state, reviewed recent service logs, restarted nginx, and validated the endpoint.",
+                "commands_summary": "Used service status, journal review, service restart, and HTTP validation commands without secret output.",
+                "validation_result": "The service reported active and the health endpoint returned successfully.",
+                "description": "Restored the status API after confirming nginx was inactive and validating service recovery.",
+            }
+
+    provider = FakeProvider()
+    draft = ActivityGenerator(provider=provider).generate({}, {}, [], [], {})
+    prompt = provider.messages[0]["content"]
+
+    assert draft.summary == "Restored the customer-facing status API."
+    assert "detailed technician log" in prompt
+    assert "Do not assume facts" in prompt
+    assert "technical root cause" in prompt
+    assert "concrete proof" in prompt
+    assert "do not include secrets" in prompt
