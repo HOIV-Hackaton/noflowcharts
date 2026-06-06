@@ -1,17 +1,14 @@
 from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlmodel import Session
 
+from app.api.dependencies import get_run_manager
 from app.core.errors import AppError, to_http_exception
-from app.db.session import engine, get_session
+from app.db.session import engine
 from app.schemas.runs import ActionDecision, ActionEdit, AuditEventRead, RiskConfirmation, RunCreate, RunStateRead, ValidationConfirmation
 from app.services.run_manager import RunManager
 
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
-
-
-def get_run_manager(session: Session = Depends(get_session)) -> RunManager:
-    return RunManager(session)
 
 
 @router.post("", response_model=RunStateRead)

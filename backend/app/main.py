@@ -9,11 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes_activity import router as activity_router
-from app.api.routes_runs import router as runs_router
-from app.api.routes_terminal import router as terminal_router
-from app.api.routes_tickets import router as tickets_router
-from app.api.routes_ws import router as ws_router
+from app.api.router import api_router
 from app.db.session import init_db
 
 
@@ -33,11 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(tickets_router)
-app.include_router(runs_router)
-app.include_router(activity_router)
-app.include_router(ws_router)
-app.include_router(terminal_router)
+app.include_router(api_router)
 
 
 @app.get("/health")

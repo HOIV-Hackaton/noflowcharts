@@ -1,19 +1,40 @@
 import asyncio
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlmodel import Session
 
+from app.clients.phoenix import PhoenixClient, get_phoenix_client
 from app.core.errors import AppError, to_http_exception
 from app.db.session import engine
 from app.repositories.runs import RunRepository
 from app.schemas.runs import TerminalCommandRead, TerminalTranscriptRead
 from app.services.terminal_manager import terminal_manager
+from app.services.terminal_session import TerminalSession
 
 
-router = APIRouter(prefix="/api/runs", tags=["terminal"])
+router = APIRouter(tags=["terminal"])
 
 
-@router.get("/{run_id}/terminal/logs", response_model=list[TerminalCommandRead])
+@router.websocket("/api/terminal/tickets/{ticket_id}/ws")
+async def ticket_terminal_ws(
+    websocket: WebSocket,
+    ticket_id: int,
+    cols: int = 120,
+    rows: int = 32,
+    client: PhoenixClient = Depends(get_phoenix_client),
+) -> None:
+    try:
+        customer_system = client.get_customer_system(ticket_id)
+    except AppError as exc:
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "message": exc.message})
+        await websocket.close()
+        return
+
+    await TerminalSession().bridge(websocket, customer_system.system, cols=cols, rows=rows)
+
+
+@router.get("/api/runs/{run_id}/terminal/logs", response_model=list[TerminalCommandRead])
 def terminal_logs(run_id: str) -> list[TerminalCommandRead]:
     with Session(engine) as session:
         repo = RunRepository(session)
@@ -24,7 +45,7 @@ def terminal_logs(run_id: str) -> list[TerminalCommandRead]:
         return [TerminalCommandRead.model_validate(command, from_attributes=True) for command in repo.list_terminal_commands(run_id)]
 
 
-@router.get("/{run_id}/terminal/transcript", response_model=list[TerminalTranscriptRead])
+@router.get("/api/runs/{run_id}/terminal/transcript", response_model=list[TerminalTranscriptRead])
 def terminal_transcript(run_id: str) -> list[TerminalTranscriptRead]:
     with Session(engine) as session:
         repo = RunRepository(session)
@@ -35,7 +56,7 @@ def terminal_transcript(run_id: str) -> list[TerminalTranscriptRead]:
         return [TerminalTranscriptRead.model_validate(event, from_attributes=True) for event in repo.list_terminal_transcript(run_id)]
 
 
-@router.websocket("/{run_id}/terminal/ws")
+@router.websocket("/api/runs/{run_id}/terminal/ws")
 async def terminal_ws(websocket: WebSocket, run_id: str, cols: int = 120, rows: int = 32) -> None:
     await websocket.accept()
     try:
