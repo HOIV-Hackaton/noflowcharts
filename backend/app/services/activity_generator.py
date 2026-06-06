@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, ValidationError as PydanticValidationErro
 from app.agent.providers import LlmProvider, get_llm_provider
 from app.core.errors import AgentError
 from app.core.redaction import redact_payload
+from app.core.config import get_settings
 
 
 class GeneratedActivityDraft(BaseModel):
@@ -50,7 +51,8 @@ class ActivityGenerator:
                             "actions": actions,
                             "command_results": command_results,
                             "validation": validation,
-                        }
+                        },
+                        get_settings().configured_secrets(),
                     )
                 ),
             },

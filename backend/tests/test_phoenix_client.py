@@ -3,7 +3,7 @@ import pytest
 
 from app.clients.phoenix import PhoenixClient
 from app.core.config import Settings
-from app.core.errors import ConfigurationError, PhoenixNotFoundError, PhoenixUnauthorizedError, PhoenixValidationError
+from app.core.errors import ConfigurationError, PhoenixError, PhoenixNotFoundError, PhoenixUnauthorizedError, PhoenixValidationError
 from app.schemas.phoenix import ActivityCreate, TicketStatus
 
 
@@ -129,3 +129,38 @@ def test_missing_phoenix_config_fails_only_when_client_operation_is_called():
 
     with pytest.raises(ConfigurationError):
         client.get_me()
+
+
+def test_get_me_malformed_payload_raises_clean_phoenix_error_without_token():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "bad", "username": "secret-token"})
+
+    with pytest.raises(PhoenixError) as exc_info:
+        PhoenixClient(settings(), transport=transport(handler)).get_me()
+
+    assert "invalid technician identity" in str(exc_info.value)
+    assert "secret-token" not in str(exc_info.value)
+
+
+def test_list_tickets_malformed_item_raises_clean_phoenix_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[ticket_payload(), {"id": "bad", "title": "secret-token"}])
+
+    with pytest.raises(PhoenixError) as exc_info:
+        PhoenixClient(settings(), transport=transport(handler)).list_tickets()
+
+    assert "invalid ticket item" in str(exc_info.value)
+    assert "secret-token" not in str(exc_info.value)
+
+
+def test_create_activity_malformed_response_raises_clean_phoenix_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"id": "bad", "description": "secret-token"})
+
+    activity = ActivityCreate(ticket_id=7001, start_datetime="2026-06-07T10:00:00Z", end_datetime="2026-06-07T10:25:00Z")
+
+    with pytest.raises(PhoenixError) as exc_info:
+        PhoenixClient(settings(), transport=transport(handler)).create_activity(activity)
+
+    assert "invalid created activity" in str(exc_info.value)
+    assert "secret-token" not in str(exc_info.value)

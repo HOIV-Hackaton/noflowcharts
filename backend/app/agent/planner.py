@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.agent.providers import LlmProvider, get_llm_provider
 from app.core.errors import AgentError
 from app.core.redaction import redact_payload
+from app.core.config import get_settings
 from app.schemas.runs import CommandClassification
 
 
@@ -48,7 +49,8 @@ class Planner:
                             "customer_system": customer_system,
                             "recent_observations": observations[-8:],
                             "safety_policy": safety_policy,
-                        }
+                        },
+                        get_settings().configured_secrets(),
                     )
                 ),
             },

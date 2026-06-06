@@ -5,6 +5,7 @@ from app.db.session import engine, init_db
 from app.main import app
 from app.repositories.runs import RunRepository
 from app.services.events import persist_and_publish_ws_event
+import pytest
 
 
 def test_websocket_replays_events_after_last_event_id():
@@ -56,3 +57,31 @@ def test_persist_and_publish_ws_event_stores_redacted_event():
 
     assert event["type"] == "created"
     assert event["payload"] == {"ok": True}
+
+
+def test_websocket_unknown_run_closes_with_policy_error():
+    client = TestClient(app)
+
+    with pytest.raises(Exception):
+        with client.websocket_connect("/api/runs/definitely-missing-run/ws") as websocket:
+            websocket.receive_json()
+
+
+def test_websocket_replay_redacts_configured_secret(monkeypatch):
+    class FakeSettings:
+        def configured_secrets(self):
+            return ["secret-token"]
+
+    init_db()
+    with Session(engine) as session:
+        repo = RunRepository(session, secrets=["secret-token"])
+        run = repo.create_run(8004)
+        repo.add_websocket_event(run.id, "command_result", {"stdout": "token=secret-token"})
+        run_id = run.id
+
+    client = TestClient(app)
+    with client.websocket_connect(f"/api/runs/{run_id}/ws") as websocket:
+        event = websocket.receive_json()
+
+    assert "secret-token" not in str(event)
+    assert "[REDACTED]" in str(event)

@@ -27,7 +27,7 @@ class PhoenixClient:
         self.transport = transport
 
     def get_me(self) -> Employee:
-        return Employee.model_validate(self._request("GET", "/api/v1/me"))
+        return self._validate(Employee, self._request("GET", "/api/v1/me"), "technician identity")
 
     def list_tickets(
         self,
@@ -43,30 +43,34 @@ class PhoenixClient:
         payload = self._request("GET", "/api/v1/me/tickets", params=params)
         if not isinstance(payload, list):
             raise PhoenixError("Phoenix returned an invalid ticket list")
-        return [Ticket.model_validate(item) for item in payload]
+        return [self._validate(Ticket, item, "ticket item") for item in payload]
 
     def get_ticket(self, ticket_id: int) -> Ticket:
-        return Ticket.model_validate(self._request("GET", f"/api/v1/tickets/{ticket_id}"))
+        return self._validate(Ticket, self._request("GET", f"/api/v1/tickets/{ticket_id}"), "ticket")
 
     def get_customer_system(self, ticket_id: int) -> CustomerSystem:
-        return CustomerSystem.model_validate(self._request("GET", f"/api/v1/tickets/{ticket_id}/customer-system"))
+        return self._validate(CustomerSystem, self._request("GET", f"/api/v1/tickets/{ticket_id}/customer-system"), "customer system")
 
     def get_customer(self, customer_id: int) -> Customer:
-        return Customer.model_validate(self._request("GET", f"/api/v1/customers/{customer_id}"))
+        return self._validate(Customer, self._request("GET", f"/api/v1/customers/{customer_id}"), "customer")
 
     def set_ticket_status(self, ticket_id: int, status: TicketStatus) -> Ticket:
         update = StatusUpdate(status=status)
-        return Ticket.model_validate(
-            self._request("PATCH", f"/api/v1/tickets/{ticket_id}/status", json=update.model_dump(mode="json"))
+        return self._validate(
+            Ticket,
+            self._request("PATCH", f"/api/v1/tickets/{ticket_id}/status", json=update.model_dump(mode="json")),
+            "ticket status update",
         )
 
     def create_activity(self, activity: ActivityCreate) -> Activity:
-        return Activity.model_validate(
-            self._request("POST", "/api/v1/activities/create", json=activity.model_dump(mode="json", exclude_none=True))
+        return self._validate(
+            Activity,
+            self._request("POST", "/api/v1/activities/create", json=activity.model_dump(mode="json", exclude_none=True)),
+            "created activity",
         )
 
     def reset_me(self) -> SimpleMessage:
-        return SimpleMessage.model_validate(self._request("POST", "/api/v1/me/reset"))
+        return self._validate(SimpleMessage, self._request("POST", "/api/v1/me/reset"), "reset response")
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         try:
@@ -113,7 +117,14 @@ class PhoenixClient:
         except ValueError as exc:
             raise PhoenixError("Phoenix returned invalid JSON") from exc
         except PydanticValidationError as exc:
-            raise PhoenixError(f"Phoenix response validation failed: {exc}") from exc
+            raise PhoenixError(f"Phoenix response validation failed: {redact_text(str(exc), self.settings.configured_secrets())}") from exc
+
+    def _validate(self, model, payload: Any, label: str):
+        try:
+            return model.model_validate(payload)
+        except PydanticValidationError as exc:
+            message = redact_text(str(exc), self.settings.configured_secrets())
+            raise PhoenixError(f"Phoenix returned an invalid {label}: {message}") from exc
 
     def _response_detail(self, response: httpx.Response, fallback: str) -> str:
         try:

@@ -63,15 +63,18 @@ SECRET_PATH_PATTERNS = [
     re.compile(r"(^|/)\.ssh(/|$)"),
     re.compile(r"(^|/)\.env($|[.\s])"),
     re.compile(r"(^|/)id_rsa($|[.\s])"),
-    re.compile(r"(^|/)[^\s]+\.pem$"),
+    re.compile(r"(^|/)id_ed25519($|[.\s])"),
+    re.compile(r"(^|/)[^\s]+\.(pem|key)$"),
 ]
 
 BLOCK_PATTERNS = [
-    (re.compile(r"\brm\s+(-[A-Za-z]*r[A-Za-z]*f|-rf|-fr)\s+(/|/etc|/home|/var|/srv|/var/lib/postgresql)(\s|$)"), "Broad recursive deletion is blocked"),
-    (re.compile(r"\bchmod\s+-R\s+777\s+(/|/etc|/home|/var|/srv)(\s|$)"), "Blanket world-writable permissions are blocked"),
-    (re.compile(r"\b(dropdb|createdb\s+.*--template|mysql\s+.*drop\s+database|psql\s+.*drop\s+database)\b", re.I), "Database deletion or reinitialization is blocked"),
+    (re.compile(r"\brm\s+(-[A-Za-z]*r[A-Za-z]*f|-rf|-fr)\s+(/|/etc|/home|/var|/srv|/var/lib/postgresql)(/|\s|$)"), "Broad recursive deletion is blocked"),
+    (re.compile(r"\bchmod\s+-R\s+777\s+(/|/etc|/home|/var|/srv|/var/lib/postgresql)(/|\s|$)"), "Blanket world-writable permissions are blocked"),
+    (re.compile(r"\b(dropdb|createdb\s+.*--template|mysql\s+.*drop\s+database|psql\s+.*drop\s+database|rm\s+.*(/var/lib/(postgresql|mysql)|\.sqlite|\.db))\b", re.I), "Database deletion or reinitialization is blocked"),
     (re.compile(r"\b(systemctl|service)\s+(stop|disable)\s+(ufw|firewalld|auditd|apparmor|selinux)\b", re.I), "Disabling firewall, audit, or security controls is blocked"),
-    (re.compile(r"\b(history\s+-c|rm\s+.*(\.bash_history|/var/log|/var/log/[^\s]+))\b", re.I), "Deleting logs or shell history is blocked"),
+    (re.compile(r"\b(ufw\s+disable|setenforce\s+0|aa-teardown|iptables\s+-F)\b", re.I), "Disabling firewall, audit, or security controls is blocked"),
+    (re.compile(r"\b(history\s+-c|rm\s+.*(\.bash_history|/var/log|/var/log/[^\s]+)|truncate\s+.*(/var/log|\.bash_history))\b", re.I), "Deleting logs or shell history is blocked"),
+    (re.compile(r"\b(sudo\s+-u\s+(postgres|mysql|root)|su\s+-\s+(postgres|mysql|root)).*(chmod|chown|psql|mysql|service|systemctl)?", re.I), "Superuser workaround patterns are blocked"),
 ]
 
 
@@ -160,6 +163,9 @@ def _blocked_reason(command: str) -> str | None:
 
 def _reads_secret_path(command: str) -> bool:
     tokens = _tokens(command)
-    if not tokens or _base_command(tokens) not in {"cat", "head", "tail", "less", "grep"}:
+    if not tokens:
+        return False
+    base_commands = {token.split("/")[-1] for token in tokens if not token.startswith("-")}
+    if not (base_commands & {"cat", "head", "tail", "less", "grep"}):
         return False
     return any(pattern.search(token) for token in tokens[1:] for pattern in SECRET_PATH_PATTERNS)

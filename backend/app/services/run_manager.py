@@ -105,6 +105,54 @@ class RunManager:
             self._event(run.id, "command_proposed", {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value})
         return self.state(run.id)
 
+    def request_safer_alternative(self, run_id: str, action_id: int | None = None) -> RunStateRead:
+        run = self._run(run_id)
+        self._require_ssh_confirmed(run)
+        blocked_action = self._action(run, action_id)
+        if blocked_action.status != ActionStatus.BLOCKED.value:
+            raise ValidationError("Safer alternative requires a blocked action")
+        snapshot = self._snapshot(run)
+        observations = self._observations(run.id)
+        planner = self.planner or Planner()
+        proposal = planner.propose_next_command(
+            ticket=snapshot.get("ticket", {}),
+            customer_system=snapshot.get("customer_system", {}),
+            observations=observations
+            + [
+                {
+                    "blocked_command": blocked_action.command,
+                    "block_reason": blocked_action.risk_reason or "Blocked by safety policy",
+                    "request": "Propose one safer alternative command that avoids the blocked behavior. Do not execute anything.",
+                }
+            ],
+            safety_policy=SAFETY_POLICY_SUMMARY,
+        )
+        safety = classify_command(proposal.command)
+        typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
+        action = self.repo.add_action(
+            run,
+            command=proposal.command,
+            classification=safety.classification,
+            intent=proposal.intent,
+            risk_reason=safety.reason,
+            expected_signal=proposal.expected_signal,
+            typed_confirmation_status=typed_status,
+        )
+        self.audit.record(
+            "safer_alternative_requested",
+            {"blocked_action_id": blocked_action.id, "blocked_command": blocked_action.command, "reason": blocked_action.risk_reason},
+            run.id,
+        )
+        self.audit.record("command_classified", {"command": proposal.command, "classification": safety.classification.value, "reason": safety.reason}, run.id)
+        if safety.blocked:
+            self.repo.update_action_status(action, ActionStatus.BLOCKED)
+            self.audit.record("blocked_command", {"action_id": action.id, "command": proposal.command, "reason": safety.reason}, run.id)
+            self._event(run.id, "command_blocked", {"action_id": action.id, "reason": safety.reason})
+        else:
+            self.audit.record("safer_alternative_proposed", {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
+            self._event(run.id, "safer_alternative_proposed", {"action_id": action.id, "classification": safety.classification.value})
+        return self.state(run.id)
+
     def confirm_risk(self, run_id: str, confirmation_text: str, action_id: int | None = None) -> RunStateRead:
         run = self._run(run_id)
         action = self._action(run, action_id)
@@ -208,14 +256,15 @@ class RunManager:
 
     def confirm_validation(self, run_id: str, evidence: str) -> RunStateRead:
         run = self._run(run_id)
-        if not evidence.strip():
+        if not self._is_concrete_validation_evidence(evidence):
             raise ValidationError("Validation confirmation requires concrete evidence")
         successful_results = [result for result in self.repo.list_command_results(run.id) if result.exit_code == 0 and not result.timed_out]
-        if not successful_results:
-            raise ValidationError("Validation requires at least one successful command result as evidence")
+        validation_results = [result for result in successful_results if self._result_is_validation_evidence(result)]
+        if not validation_results:
+            raise ValidationError("Validation requires at least one successful validation command result as evidence")
         self.repo.set_validation_status(run, ValidationStatus.HUMAN_CONFIRMED, confirmed=True)
         self.repo.update_run_status(run, RunStatus.READY_FOR_ACTIVITY)
-        self.audit.record("validation_evidence", {"evidence": evidence, "result_count": len(successful_results)}, run.id)
+        self.audit.record("validation_evidence", {"evidence": evidence, "result_count": len(validation_results)}, run.id)
         self.audit.record("human_validation_confirmation", {"confirmed": True}, run.id)
         self._event(run.id, "validation_confirmed", {"status": RunStatus.READY_FOR_ACTIVITY.value})
         return self.state(run.id)
@@ -344,6 +393,23 @@ class RunManager:
     def _observations(self, run_id: str) -> list[dict[str, Any]]:
         results = self.repo.list_command_results(run_id)
         return [redact_payload({"command": result.command, "exit_code": result.exit_code, "stdout": result.stdout, "stderr": result.stderr, "timed_out": result.timed_out}) for result in results]
+
+    def _is_concrete_validation_evidence(self, evidence: str) -> bool:
+        text = evidence.strip().lower()
+        if len(text) < 12:
+            return False
+        concrete_terms = ("http", "200", "ok", "active", "running", "respond", "success", "passed", "reachable", "restored", "validated")
+        return any(term in text for term in concrete_terms)
+
+    def _result_is_validation_evidence(self, result) -> bool:
+        action = self.repo.get_action(result.action_id)
+        if action is None:
+            return False
+        action_text = " ".join(filter(None, [action.intent, action.expected_signal])).lower()
+        command_text = " ".join(filter(None, [action.command, result.command])).lower()
+        if any(term in action_text for term in ("validat", "verify", "confirm", "test", "respond", "restored", "customer benefit")):
+            return True
+        return any(term in command_text for term in ("curl", "health", "is-active", "smoke", "wget --spider"))
 
     def _require_ssh_confirmed(self, run: Run) -> None:
         if not run.ssh_confirmed:

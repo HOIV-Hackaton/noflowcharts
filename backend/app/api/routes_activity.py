@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
 
-from app.core.errors import AppError, to_http_exception
+from app.core.errors import AppError, ValidationError, to_http_exception
 from app.db.session import get_session
-from app.schemas.phoenix import Activity, StatusUpdate, Ticket
+from app.schemas.phoenix import Activity, StatusUpdate, Ticket, TicketStatus
 from app.schemas.runs import ActivityDraftRead, ActivityDraftUpdate, ActivityReviewRequest, ActivitySubmitRequest
 from app.services.run_manager import RunManager
 
@@ -50,6 +50,8 @@ def submit_activity(run_id: str, request: ActivitySubmitRequest, manager: RunMan
 @router.patch("/api/tickets/{ticket_id}/status", response_model=Ticket)
 def set_ticket_status(ticket_id: int, request: StatusUpdate, manager: RunManager = Depends(get_run_manager)) -> Ticket:
     try:
+        if request.status == TicketStatus.DONE:
+            raise ValidationError("Ticket status DONE can only be set after successful activity submission")
         return manager.phoenix.set_ticket_status(ticket_id, request.status)
     except AppError as exc:
         raise to_http_exception(exc) from exc

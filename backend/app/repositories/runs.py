@@ -3,14 +3,18 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app.core.redaction import redact_payload
+from app.core.config import get_settings
 from app.db.models import Action, ActivityDraft, AuditEvent, CommandResult, Run, WebSocketEvent, utc_now
 from app.schemas.runs import ActionStatus, ActivityReviewStatus, CommandClassification, ConfirmationStatus, RunStatus, ValidationStatus
+
+
+MAX_STREAM_CHARS = 32 * 1024
 
 
 class RunRepository:
     def __init__(self, session: Session, secrets: list[str] | None = None):
         self.session = session
-        self.secrets = secrets or []
+        self.secrets = secrets if secrets is not None else get_settings().configured_secrets()
 
     def create_run(self, ticket_id: int, customer_system_snapshot: dict[str, Any] | None = None) -> Run:
         run = Run(ticket_id=ticket_id, customer_system_snapshot=customer_system_snapshot)
@@ -148,10 +152,10 @@ class RunRepository:
     ) -> CommandResult:
         result = CommandResult(
             action_id=action.id,
-            command=command,
+            command=redact_payload(command, self.secrets),
             exit_code=exit_code,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=_truncate_stream(redact_payload(stdout, self.secrets)),
+            stderr=_truncate_stream(redact_payload(stderr, self.secrets)),
             timed_out=timed_out,
             ended_at=utc_now(),
         )
@@ -224,3 +228,9 @@ class RunRepository:
             statement = statement.where(WebSocketEvent.event_id > last_event_id)
         statement = statement.order_by(WebSocketEvent.event_id)
         return list(self.session.exec(statement))
+
+
+def _truncate_stream(value: str) -> str:
+    if len(value) <= MAX_STREAM_CHARS:
+        return value
+    return value[:MAX_STREAM_CHARS] + "\n[truncated]"
