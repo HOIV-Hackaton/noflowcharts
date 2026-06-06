@@ -4,6 +4,8 @@ from app.agent import providers
 from app.agent.providers import AzureOpenAiProvider
 from app.core.config import Settings
 from app.core.errors import AgentError, ConfigurationError
+from app.services import embeddings
+from app.services.embeddings import AzureOpenAiEmbeddingProvider
 from app.services.activity_generator import ActivityGenerator, GeneratedActivityDraft
 
 
@@ -63,6 +65,60 @@ def test_azure_provider_redacts_secrets_on_failure(monkeypatch):
 
     with pytest.raises(AgentError) as exc_info:
         AzureOpenAiProvider(settings=settings).complete_json([])
+
+    assert "azure-secret" not in str(exc_info.value)
+    assert "[REDACTED]" in str(exc_info.value)
+
+
+def test_embedding_provider_creates_embedding_with_deployment(monkeypatch):
+    created = {}
+
+    class FakeEmbeddings:
+        def create(self, **kwargs):
+            created.update(kwargs)
+            embedding = type("Embedding", (), {"embedding": [0.1, 0.2, 0.3]})()
+            return type("EmbeddingResponse", (), {"data": [embedding]})()
+
+    class FakeAzureOpenAI:
+        def __init__(self, **kwargs):
+            self.embeddings = FakeEmbeddings()
+
+    monkeypatch.setattr(embeddings, "AzureOpenAI", FakeAzureOpenAI)
+    settings = Settings(
+        _env_file=None,
+        azure_openai_endpoint="https://example.openai.azure.com",
+        azure_openai_api_key="azure-secret",
+        azure_openai_embedding_deployment="text-embedding-3-large",
+        azure_openai_api_version="2024-02-01",
+    )
+
+    vector = AzureOpenAiEmbeddingProvider(settings=settings).embed("Ticket title\n\ndescription")
+
+    assert vector == [0.1, 0.2, 0.3]
+    assert created["model"] == "text-embedding-3-large"
+    assert created["input"] == "Ticket title\n\ndescription"
+
+
+def test_embedding_provider_redacts_secrets_on_failure(monkeypatch):
+    class FailingEmbeddings:
+        def create(self, **kwargs):
+            raise RuntimeError("bad azure-secret")
+
+    class FakeAzureOpenAI:
+        def __init__(self, **kwargs):
+            self.embeddings = FailingEmbeddings()
+
+    monkeypatch.setattr(embeddings, "AzureOpenAI", FakeAzureOpenAI)
+    settings = Settings(
+        _env_file=None,
+        azure_openai_endpoint="https://example.openai.azure.com",
+        azure_openai_api_key="azure-secret",
+        azure_openai_embedding_deployment="text-embedding-3-large",
+        azure_openai_api_version="2024-02-01",
+    )
+
+    with pytest.raises(AgentError) as exc_info:
+        AzureOpenAiEmbeddingProvider(settings=settings).embed("text")
 
     assert "azure-secret" not in str(exc_info.value)
     assert "[REDACTED]" in str(exc_info.value)
