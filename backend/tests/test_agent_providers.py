@@ -8,7 +8,13 @@ from app.services.activity_generator import ActivityGenerator, GeneratedActivity
 
 
 def test_missing_azure_config_fails_only_when_provider_is_used():
-    settings = Settings(_env_file=None)
+    settings = Settings(
+        _env_file=None,
+        azure_openai_endpoint="",
+        azure_openai_api_key="",
+        azure_openai_deployment="",
+        azure_openai_api_version="",
+    )
 
     with pytest.raises(ConfigurationError):
         AzureOpenAiProvider(settings=settings)

@@ -1,9 +1,11 @@
-from pydantic import BaseModel, Field, ValidationError
+from typing import Any
+
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.agent.providers import LlmProvider, get_llm_provider
+from app.core.config import get_settings
 from app.core.errors import AgentError
 from app.core.redaction import redact_payload
-from app.core.config import get_settings
 from app.schemas.runs import CommandClassification
 
 
@@ -18,6 +20,13 @@ class CommandProposal(BaseModel):
     evidence_basis: str | None = None
     evidence_gap: str | None = None
 
+    @field_validator("command_class_hint", mode="before")
+    @classmethod
+    def ignore_invalid_command_class_hint(cls, value: Any) -> Any:
+        if value is None or value in {item.value for item in CommandClassification}:
+            return value
+        return None
+
 
 PLANNER_SYSTEM_PROMPT = """You are the backend troubleshooting planner for an AI-assisted service desk.
 
@@ -29,12 +38,19 @@ Operating rules:
 - Do not assume context. Use only the ticket, customer system, observations, and safety policy supplied in the user message.
 - Diagnose before fixing. When uncertain, choose a read-only diagnostic command that tests the most likely hypothesis or narrows the search space.
 - Be very conservative with mutation. Propose a fix only after observations support a concrete technical cause.
+- Do not repeat a command when recent observations already contain its answer; use those observations to choose the next smallest diagnostic or fix.
 - Propose the smallest targeted command that advances the investigation or fix. Avoid compound shell, pipes, sudo, package installs, broad file edits, broad restarts, and blanket permission changes unless clearly necessary.
 - For the first command, or whenever recent observations do not identify a concrete service/config/path, the command must be read-only, must not use sudo, and must not use shell control operators.
 - The command string must be a single simple command. Do not use &&, ||, ;, pipes, command substitution, newlines, or fallback chains.
+- Prefer read-only commands without sudo when they provide enough evidence. Use sudo -n only for targeted privileged commands that truly need it, so commands fail fast instead of prompting.
 - Never propose commands that read secrets, dump environment files, delete customer data, clear logs/history, disable firewall/audit/security controls, reinitialize databases, or work around permissions by running services as root.
 - Prefer service-local and app-local checks: service status, recent logs, listening ports, config syntax, disk space, permissions on the exact affected path, and health endpoints inferred from evidence.
+- For Linux service incidents, first check the expected listener, then inspect the relevant systemd unit with systemctl cat, enabled/active state, and recent journal logs.
+- If an EnvironmentFile is involved, inspect only relevant non-secret keys like PORT or HOST rather than dumping the full file.
+- If a service is disabled, enable it separately from starting it. If a config value is wrong, make the smallest targeted edit and then restart only the affected service.
 - After a fix, propose validation that proves customer benefit is restored. When safe and proportionate, validate persistence with a relevant service restart, config check, or enabled-state check before activity creation.
+- For final validation after a fix, prefer read-only checks and, when safe and proportionate, evidence that the fix persists after a relevant service restart or equivalent configuration check.
+- Use bounded HTTP validation such as curl --max-time 5 -fsS. Run provided public validation scripts only after direct evidence indicates the fix is likely correct.
 - If the previous command failed or was blocked, explain that in intent and propose the safest next diagnostic or safer alternative. Do not repeat the same failed command unless retrying is clearly justified.
 
 Return JSON only with keys: intent, command, expected_signal, risk_level, command_class_hint, rollback_note, phase, evidence_basis, evidence_gap.

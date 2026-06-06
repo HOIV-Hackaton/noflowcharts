@@ -12,9 +12,16 @@ from app.services.ssh_runner import MAX_STREAM_CHARS, SshRunner
 class FakeChannel:
     def __init__(self, exit_code=0):
         self.exit_code = exit_code
+        self.closed = False
+
+    def exit_status_ready(self):
+        return True
 
     def recv_exit_status(self):
         return self.exit_code
+
+    def close(self):
+        self.closed = True
 
 
 class FakeStream:
@@ -92,6 +99,41 @@ def test_ssh_runner_reports_command_timeout(tmp_path, monkeypatch):
 
     assert result.timed_out is True
     assert result.exit_code is None
+
+
+def test_ssh_runner_times_out_when_channel_never_finishes(tmp_path, monkeypatch):
+    key_path = tmp_path / "key.pem"
+    key_path.write_text("fake", encoding="utf-8")
+
+    class HangingChannel(FakeChannel):
+        def exit_status_ready(self):
+            return False
+
+    class HangingClient(FakeSshClient):
+        def __init__(self):
+            super().__init__()
+            self.channel = HangingChannel()
+
+        def exec_command(self, command, timeout):
+            self.command = command
+            stdout = FakeStream(b"", exit_code=0)
+            stdout.channel = self.channel
+            stderr = FakeStream(b"")
+            return None, stdout, stderr
+
+    client = HangingClient()
+    runner = SshRunner(
+        settings=Settings(_env_file=None, ssh_private_key_path=str(key_path)),
+        client_factory=lambda: client,
+        command_timeout=0.01,
+    )
+    monkeypatch.setattr(runner, "_load_private_key", lambda path: "key")
+
+    result = runner.run(SystemInfo(ip="10.0.0.5", port=22, username="azureuser", os="Ubuntu"), "sleep 99")
+
+    assert result.timed_out is True
+    assert result.exit_code is None
+    assert client.channel.closed is True
 
 
 def test_ssh_errors_are_redacted(tmp_path, monkeypatch):
