@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.agent.planner import CommandProposal
+from app.agent.planner import CommandProposal, DiagnosticToolProposal
 from app.core.errors import PhoenixError, ValidationError
 from app.schemas.phoenix import Activity, ActivityCreate, CustomerSystem, SystemInfo, Ticket, TicketStatus
 from app.schemas.runs import ActivityDraftUpdate, ActivityReviewStatus, ActivitySubmitRequest, RunStatus
@@ -113,6 +113,24 @@ class FakePlanner:
         return CommandProposal(intent="Check service", command=self.command, expected_signal="Service state is visible")
 
 
+class FakeAutoDiagnosticPlanner(FakePlanner):
+    def __init__(self, proposals):
+        super().__init__()
+        self.proposals = list(proposals)
+        self.diagnostic_observations = []
+
+    def propose_diagnostic_tool(self, ticket, customer_system, observations, related_ticket=None):
+        self.diagnostic_observations.append(observations)
+        if self.proposals:
+            return self.proposals.pop(0)
+        return DiagnosticToolProposal(
+            mode="command_proposal",
+            command="systemctl status nginx",
+            intent="Hand off to technician review.",
+            expected_signal="Technician reviews next step.",
+        )
+
+
 class FakeValidationPlanner(FakePlanner):
     def __init__(self):
         super().__init__("curl -fsS http://localhost/health")
@@ -171,12 +189,13 @@ class FakeTicketMemoryService:
         self.created.append((ticket, draft, commands))
 
 
-def make_manager(session, planner=None, ssh_runner=None, phoenix=None, activity_generator=None, ticket_memory_service=None):
+def make_manager(session, planner=None, ssh_runner=None, phoenix=None, activity_generator=None, ticket_memory_service=None, diagnostic_toolbox=None):
     manager = RunManager(
         session,
         phoenix_client=phoenix or FakePhoenix(),
         planner=planner or FakePlanner(),
         ssh_runner=ssh_runner or FakeSshRunner(),
+        diagnostic_toolbox=diagnostic_toolbox,
         activity_generator=activity_generator,
         ticket_memory_service=ticket_memory_service,
     )
@@ -405,6 +424,100 @@ def test_safer_alternative_requires_ssh_and_blocked_action_and_does_not_execute(
         assert alternative.current_action.status == "proposed"
         assert ssh_runner.commands == []
         assert planner.observations[-1]["blocked_command"] == "rm -rf /etc"
+
+
+def test_safe_autodiagnosis_runs_allowlisted_tools_without_human_approval():
+    with make_session() as session:
+        ssh_runner = FakeSshRunner()
+        planner = FakeAutoDiagnosticPlanner(
+            [
+                DiagnosticToolProposal(
+                    mode="diagnostic_tool",
+                    tool="get_uptime",
+                    arguments={},
+                    intent="Check whether the system is responsive.",
+                    expected_signal="Uptime is returned.",
+                ),
+                DiagnosticToolProposal(
+                    mode="diagnostic_tool",
+                    tool="curl_local",
+                    arguments={"port": 8080, "path": "/health"},
+                    intent="Check the local customer-facing health endpoint.",
+                    expected_signal="Endpoint responds successfully.",
+                ),
+                DiagnosticToolProposal(
+                    mode="command_proposal",
+                    command="sudo -n systemctl restart nginx",
+                    intent="Restart nginx after diagnostics indicate it is inactive.",
+                    expected_signal="Service restart exits successfully.",
+                    risk_level="medium",
+                ),
+            ]
+        )
+        manager = make_manager(session, planner=planner, ssh_runner=ssh_runner)
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+
+        state = manager.start_safe_autodiagnosis(run_id)
+
+        assert ssh_runner.commands == [
+            ("10.0.0.5", "uptime"),
+            ("10.0.0.5", "curl --max-time 5 -fsS http://localhost:8080/health"),
+        ]
+        assert len(state.command_results) == 2
+        assert state.current_action.command == "sudo -n systemctl restart nginx"
+        assert state.current_action.typed_confirmation_status == "pending"
+        assert planner.diagnostic_observations[1][0]["source"] == "auto_diagnostic"
+
+
+def test_safe_autodiagnosis_blocks_unsafe_tool_requests_before_ssh():
+    with make_session() as session:
+        ssh_runner = FakeSshRunner()
+        planner = FakeAutoDiagnosticPlanner(
+            [
+                DiagnosticToolProposal(
+                    mode="diagnostic_tool",
+                    tool="read_text_file",
+                    arguments={"path": "/home/azureuser/.ssh/id_rsa"},
+                    intent="Unsafe key read should be blocked.",
+                    expected_signal="No command should execute.",
+                )
+            ]
+        )
+        manager = make_manager(session, planner=planner, ssh_runner=ssh_runner)
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+
+        state = manager.start_safe_autodiagnosis(run_id)
+
+        assert ssh_runner.commands == []
+        assert state.command_results == []
+        assert state.current_action is None
+
+
+def test_safe_autodiagnosis_stops_at_twelve_steps():
+    with make_session() as session:
+        ssh_runner = FakeSshRunner()
+        planner = FakeAutoDiagnosticPlanner(
+            [
+                DiagnosticToolProposal(
+                    mode="diagnostic_tool",
+                    tool="get_uptime",
+                    arguments={},
+                    intent=f"Diagnostic {index}",
+                    expected_signal="Uptime is returned.",
+                )
+                for index in range(20)
+            ]
+        )
+        manager = make_manager(session, planner=planner, ssh_runner=ssh_runner)
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+
+        state = manager.start_safe_autodiagnosis(run_id)
+
+        assert len(ssh_runner.commands) == 12
+        assert len(state.command_results) == 12
 
 
 def test_start_run_stores_related_ticket_context_and_planner_receives_it():

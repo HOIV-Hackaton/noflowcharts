@@ -28,6 +28,19 @@ class CommandProposal(BaseModel):
         return None
 
 
+class DiagnosticToolProposal(BaseModel):
+    mode: str = Field(pattern="^(diagnostic_tool|command_proposal)$")
+    intent: str = Field(min_length=1)
+    expected_signal: str = Field(min_length=1)
+    tool: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    command: str | None = None
+    risk_level: str | None = None
+    rollback_note: str | None = None
+    evidence_basis: str | None = None
+    evidence_gap: str | None = None
+
+
 PLANNER_SYSTEM_PROMPT = """You are the backend troubleshooting planner for an AI-assisted service desk.
 
 Your job is to propose exactly one Ubuntu shell command for a human technician to review. The backend will enforce approval and safety checks; you must still avoid unsafe or low-value commands.
@@ -77,6 +90,45 @@ Field guidance:
 """
 
 
+DIAGNOSTIC_TOOL_SYSTEM_PROMPT = """You are the safe auto-diagnosis planner for an AI-assisted service desk.
+
+You may request exactly one backend diagnostic tool call, or stop auto-diagnosis by proposing one human-approved command. The backend validates every tool argument and will reject unsafe requests.
+
+Auto-diagnostic tools are read-only, local, bounded, redacted, and do not require per-command approval after the technician starts safe autodiagnosis. Do not request fixes, sudo, restarts, package operations, permission changes, database clients, external network calls, or shell commands through diagnostic tools.
+
+Allowed diagnostic tools and arguments:
+- get_uptime {}
+- get_memory {}
+- get_disk_usage {}
+- list_listening_tcp_ports {}
+- list_processes {}
+- get_service_status {service}
+- get_service_active_state {service}
+- get_service_enabled_state {service}
+- get_service_unit {service}
+- get_service_properties {service, properties:[names]}
+- get_recent_journal {service, lines}
+- curl_local {port, path} or {url}; localhost/127.0.0.1 HTTP only
+- list_directory {path}
+- stat_path {path}
+- read_text_file {path, max_lines}
+- tail_file {path, lines}
+- head_file {path, lines}
+- grep_file {path, pattern, max_matches}
+- grep_directory {path, pattern, max_matches}; only narrow app/config directories
+
+Use observations to infer service names, ports, and paths, but keep requests narrow. Config and .env files may be read because the backend redacts sensitive values. Never request private keys, .ssh paths, /etc/shadow, /proc/*/environ, /run/secrets, database data directories, or broad recursive searches.
+
+Return JSON only.
+
+For a diagnostic tool call:
+{"mode":"diagnostic_tool","tool":"get_service_status","arguments":{"service":"nginx.service"},"intent":"...","expected_signal":"...","evidence_basis":"...","evidence_gap":"..."}
+
+When a fix or mutation is needed, stop auto-diagnosis with a command proposal for human review:
+{"mode":"command_proposal","command":"sudo -n systemctl restart nginx","intent":"...","expected_signal":"...","risk_level":"medium","rollback_note":"...","evidence_basis":"...","evidence_gap":"..."}
+"""
+
+
 class Planner:
     def __init__(self, provider: LlmProvider | None = None):
         self.provider = provider or get_llm_provider()
@@ -116,6 +168,43 @@ class Planner:
             return CommandProposal.model_validate(payload)
         except ValidationError as exc:
             raise AgentError(f"Planner returned invalid command proposal: {exc}") from exc
+
+    def propose_diagnostic_tool(
+        self,
+        ticket: dict,
+        customer_system: dict,
+        observations: list[dict],
+        related_ticket: dict | None = None,
+    ) -> DiagnosticToolProposal:
+        messages = [
+            {"role": "system", "content": DIAGNOSTIC_TOOL_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": str(
+                    redact_payload(
+                        {
+                            "ticket": ticket,
+                            "customer_system": customer_system,
+                            "related_ticket": related_ticket,
+                            "recent_observations": observations[-12:],
+                            "anti_loop_context": _anti_loop_context(observations),
+                            "remaining_auto_diagnostic_budget": max(0, 12 - len([item for item in observations if item.get("source") == "auto_diagnostic"])),
+                        },
+                        get_settings().configured_secrets(),
+                    )
+                ),
+            },
+        ]
+        try:
+            payload = self.provider.complete_json(messages)
+            proposal = DiagnosticToolProposal.model_validate(payload)
+            if proposal.mode == "diagnostic_tool" and not proposal.tool:
+                raise AgentError("Diagnostic planner omitted tool name")
+            if proposal.mode == "command_proposal" and not proposal.command:
+                raise AgentError("Diagnostic planner omitted command proposal")
+            return proposal
+        except ValidationError as exc:
+            raise AgentError(f"Planner returned invalid diagnostic proposal: {exc}") from exc
 
 
 SAFETY_POLICY_SUMMARY = (
