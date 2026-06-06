@@ -43,6 +43,14 @@ def next_action(run_id: str, manager: RunManager = Depends(get_run_manager)) -> 
         raise to_http_exception(exc) from exc
 
 
+@router.post("/{run_id}/autodiagnosis/start", response_model=RunStateRead)
+def start_safe_autodiagnosis(run_id: str, manager: RunManager = Depends(get_run_manager)) -> RunStateRead:
+    try:
+        return manager.start_safe_autodiagnosis(run_id)
+    except AppError as exc:
+        raise to_http_exception(exc) from exc
+
+
 @router.post("/{run_id}/confirm-risk", response_model=RunStateRead)
 def confirm_risk(run_id: str, request: RiskConfirmation, manager: RunManager = Depends(get_run_manager)) -> RunStateRead:
     try:

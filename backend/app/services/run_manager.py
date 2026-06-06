@@ -28,6 +28,8 @@ from app.schemas.runs import (
 )
 from app.services.audit_log import AuditLog
 from app.services.activity_generator import ActivityGenerator
+from app.services.diagnostic_policy import MAX_AUTO_DIAGNOSTIC_STEPS
+from app.services.diagnostic_tools import DiagnosticToolbox
 from app.services.events import persist_and_publish_ws_event_sync
 from app.services.safety import classify_command
 from app.services.ssh_runner import SshRunner
@@ -45,6 +47,7 @@ class RunManager:
         phoenix_client: PhoenixClient | None = None,
         planner: Planner | None = None,
         ssh_runner: SshRunner | None = None,
+        diagnostic_toolbox: DiagnosticToolbox | None = None,
         activity_generator: ActivityGenerator | None = None,
         ticket_memory_service: TicketMemoryService | None = None,
     ):
@@ -54,6 +57,7 @@ class RunManager:
         self.phoenix = phoenix_client or PhoenixClient()
         self.planner = planner
         self.ssh_runner = ssh_runner or SshRunner()
+        self.diagnostic_toolbox = diagnostic_toolbox or DiagnosticToolbox(self.ssh_runner)
         self.activity_generator = activity_generator
         self.ticket_memory_service = ticket_memory_service
 
@@ -116,6 +120,96 @@ class RunManager:
             self.audit.record("command_proposed", {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
             self._event(run.id, "command_proposed", {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value})
         return self.state(run.id)
+
+    def start_safe_autodiagnosis(self, run_id: str) -> RunStateRead:
+        run = self._run(run_id)
+        self._require_ssh_confirmed(run)
+        if run.status not in {RunStatus.DIAGNOSING.value, RunStatus.PENDING.value}:
+            raise ValidationError("Safe autodiagnosis can only start during diagnosis")
+
+        self.repo.update_run_status(run, RunStatus.DIAGNOSING)
+        self.audit.record("safe_autodiagnosis_started", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS}, run.id)
+        self._event(run.id, "safe_autodiagnosis_started", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS})
+
+        planner = self.planner or Planner()
+        for _ in range(MAX_AUTO_DIAGNOSTIC_STEPS - self._auto_diagnostic_count(run.id)):
+            run = self._run(run_id)
+            if run.status != RunStatus.DIAGNOSING.value:
+                self.audit.record("safe_autodiagnosis_stopped", {"reason": "run_left_diagnosis", "status": run.status}, run.id)
+                self._event(run.id, "safe_autodiagnosis_stopped", {"reason": "run_left_diagnosis", "status": run.status})
+                return self.state(run.id)
+
+            snapshot = self._snapshot(run)
+            observations = self._observations(run.id)
+            proposal = planner.propose_diagnostic_tool(
+                ticket=snapshot.get("ticket", {}),
+                customer_system=snapshot.get("customer_system", {}),
+                observations=observations,
+                related_ticket=snapshot.get("related_ticket"),
+            )
+            self.audit.record(
+                "agent_diagnostic_requested",
+                {"mode": proposal.mode, "tool": proposal.tool, "arguments": proposal.arguments, "intent": proposal.intent},
+                run.id,
+            )
+
+            if proposal.mode == "command_proposal":
+                assert proposal.command is not None
+                command = CommandProposal(
+                    intent=proposal.intent,
+                    command=proposal.command,
+                    expected_signal=proposal.expected_signal,
+                    risk_level=proposal.risk_level,
+                    rollback_note=proposal.rollback_note,
+                    evidence_basis=proposal.evidence_basis,
+                    evidence_gap=proposal.evidence_gap,
+                )
+                self._add_proposed_action(run, command, event_type="safe_autodiagnosis_handed_to_human")
+                self.audit.record("safe_autodiagnosis_stopped", {"reason": "human_approval_required", "command": proposal.command}, run.id)
+                self._event(run.id, "safe_autodiagnosis_stopped", {"reason": "human_approval_required"})
+                return self.state(run.id)
+
+            assert proposal.tool is not None
+            try:
+                diagnostic = self.diagnostic_toolbox.run(self._customer_system(run).system, proposal.tool, proposal.arguments)
+            except (SafetyError, ValidationError) as exc:
+                self.audit.record("agent_diagnostic_blocked", {"tool": proposal.tool, "arguments": proposal.arguments, "reason": exc.message}, run.id)
+                self._event(run.id, "agent_diagnostic_blocked", {"tool": proposal.tool, "reason": exc.message})
+                self.audit.record("safe_autodiagnosis_stopped", {"reason": "diagnostic_blocked"}, run.id)
+                return self.state(run.id)
+
+            self.audit.record("agent_diagnostic_allowed", {"tool": proposal.tool, "rule_id": diagnostic.rule_id, "command": diagnostic.command}, run.id)
+            action = self.repo.add_action(
+                run,
+                command=diagnostic.command,
+                classification=CommandClassification.READ_ONLY,
+                intent=proposal.intent,
+                risk_reason=f"Auto-diagnostic allowlist rule {diagnostic.rule_id}: {diagnostic.reason}",
+                expected_signal=proposal.expected_signal,
+                typed_confirmation_status=ConfirmationStatus.NOT_REQUIRED,
+            )
+            self.repo.update_action_status(action, ActionStatus.COMPLETED if diagnostic.exit_code == 0 and not diagnostic.timed_out else ActionStatus.FAILED)
+            self.repo.add_command_result(action, diagnostic.command, diagnostic.exit_code, diagnostic.stdout, diagnostic.stderr, diagnostic.timed_out)
+            self.repo.set_current_action(run, None)
+            self.repo.update_run_status(run, RunStatus.DIAGNOSING)
+            self.audit.record(
+                "agent_diagnostic_result",
+                {
+                    "tool": diagnostic.tool,
+                    "rule_id": diagnostic.rule_id,
+                    "command": diagnostic.command,
+                    "exit_code": diagnostic.exit_code,
+                    "timed_out": diagnostic.timed_out,
+                    "stdout": diagnostic.stdout,
+                    "stderr": diagnostic.stderr,
+                },
+                run.id,
+            )
+            self._event(run.id, "agent_diagnostic_result", {"tool": diagnostic.tool, "rule_id": diagnostic.rule_id, "exit_code": diagnostic.exit_code})
+
+        self.audit.record("agent_diagnostic_limit_reached", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS}, run_id)
+        self._event(run_id, "agent_diagnostic_limit_reached", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS})
+        return self.state(run_id)
 
     def request_safer_alternative(self, run_id: str, action_id: int | None = None) -> RunStateRead:
         run = self._run(run_id)
@@ -409,7 +503,49 @@ class RunManager:
 
     def _observations(self, run_id: str) -> list[dict[str, Any]]:
         results = self.repo.list_command_results(run_id)
-        return [redact_payload({"command": result.command, "exit_code": result.exit_code, "stdout": result.stdout, "stderr": result.stderr, "timed_out": result.timed_out}) for result in results]
+        observations = []
+        for result in results:
+            action = self.repo.get_action(result.action_id)
+            source = "auto_diagnostic" if action and (action.risk_reason or "").startswith("Auto-diagnostic allowlist rule") else "approved_command"
+            observations.append(
+                redact_payload(
+                    {
+                        "source": source,
+                        "command": result.command,
+                        "intent": action.intent if action else None,
+                        "exit_code": result.exit_code,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "timed_out": result.timed_out,
+                    }
+                )
+            )
+        return observations
+
+    def _auto_diagnostic_count(self, run_id: str) -> int:
+        return sum(1 for observation in self._observations(run_id) if observation.get("source") == "auto_diagnostic")
+
+    def _add_proposed_action(self, run: Run, proposal: CommandProposal, event_type: str = "command_proposed") -> Action:
+        safety = classify_command(proposal.command)
+        typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
+        action = self.repo.add_action(
+            run,
+            command=proposal.command,
+            classification=safety.classification,
+            intent=proposal.intent,
+            risk_reason=safety.reason,
+            expected_signal=proposal.expected_signal,
+            typed_confirmation_status=typed_status,
+        )
+        self.audit.record("command_classified", {"command": proposal.command, "classification": safety.classification.value, "reason": safety.reason}, run.id)
+        if safety.blocked:
+            self.repo.update_action_status(action, ActionStatus.BLOCKED)
+            self.audit.record("blocked_command", {"command": proposal.command, "reason": safety.reason}, run.id)
+            self._event(run.id, "command_blocked", {"action_id": action.id, "reason": safety.reason})
+        else:
+            self.audit.record(event_type, {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
+            self._event(run.id, event_type, {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value})
+        return action
 
     def _is_concrete_validation_evidence(self, evidence: str) -> bool:
         text = evidence.strip().lower()
