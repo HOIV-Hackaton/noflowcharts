@@ -51,6 +51,10 @@ def test_sudo_is_risky_and_requires_typed_confirmation():
         "psql -c 'drop database customer_prod'",
         "rm -rf /var/lib/mysql",
         "sudo -u postgres psql -c 'alter user app superuser'",
+        "journalctl -u nginx -f",
+        "tail -f /var/log/syslog",
+        "watch systemctl status nginx",
+        "systemctl edit nginx",
     ],
 )
 def test_hard_fail_patterns_are_blocked(command):
