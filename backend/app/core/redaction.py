@@ -9,7 +9,10 @@ SECRET_PATTERNS = [
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
     re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]+"),
     re.compile(r"(?i)((?:api[_-]?key|token|secret|password|passwd|pwd)\s*[=:]\s*)[^\s'\"&]+"),
+    re.compile(r"(?i)((?:api[_-]?key|token|secret|password|passwd|pwd)\s*:\s*)[^\n,}]+"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
+    re.compile(r"(?im)^(\s*[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*=\s*).+$"),
+    re.compile(r"(?is)-----BEGIN [^-]*-----.*?-----END [^-]*-----"),
 ]
 
 

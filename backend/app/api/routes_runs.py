@@ -93,6 +93,14 @@ def retry_action(run_id: str, request: ActionDecision, manager: RunManager = Dep
         raise to_http_exception(exc) from exc
 
 
+@router.post("/{run_id}/safer-alternative", response_model=RunStateRead)
+def safer_alternative(run_id: str, request: ActionDecision, manager: RunManager = Depends(get_run_manager)) -> RunStateRead:
+    try:
+        return manager.request_safer_alternative(run_id, action_id=request.action_id)
+    except AppError as exc:
+        raise to_http_exception(exc) from exc
+
+
 @router.post("/{run_id}/validation/confirm", response_model=RunStateRead)
 def confirm_validation(run_id: str, request: ValidationConfirmation, manager: RunManager = Depends(get_run_manager)) -> RunStateRead:
     try:

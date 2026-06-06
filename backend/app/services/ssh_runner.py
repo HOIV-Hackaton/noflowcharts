@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+import socket
 from typing import Any
 
 import paramiko
@@ -67,7 +68,7 @@ class SshRunner:
                 stderr=_truncate(_decode_stream(stderr)),
                 timed_out=False,
             )
-        except TimeoutError:
+        except (TimeoutError, socket.timeout):
             return SshCommandResult(command=command, exit_code=None, stdout="", stderr="Command timed out", timed_out=True)
         except Exception as exc:
             message = redact_text(str(exc), self.settings.configured_secrets())

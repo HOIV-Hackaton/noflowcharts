@@ -1,8 +1,10 @@
 from pathlib import Path
+import socket
 
 import pytest
 
 from app.core.config import Settings
+from app.core.errors import ConfigurationError, SshError
 from app.schemas.phoenix import SystemInfo
 from app.services.ssh_runner import MAX_STREAM_CHARS, SshRunner
 
@@ -73,3 +75,69 @@ def test_ssh_runner_requires_private_key_path():
         runner.run(SystemInfo(ip="10.0.0.5", port=22, username="azureuser", os="Ubuntu"), "uptime")
 
     assert "SSH_PRIVATE_KEY_PATH" in str(exc.value)
+
+
+def test_ssh_runner_reports_command_timeout(tmp_path, monkeypatch):
+    key_path = tmp_path / "key.pem"
+    key_path.write_text("fake", encoding="utf-8")
+
+    class TimeoutClient(FakeSshClient):
+        def exec_command(self, command, timeout):
+            raise socket.timeout("timed out")
+
+    runner = SshRunner(settings=Settings(_env_file=None, ssh_private_key_path=str(key_path)), client_factory=TimeoutClient)
+    monkeypatch.setattr(runner, "_load_private_key", lambda path: "key")
+
+    result = runner.run(SystemInfo(ip="10.0.0.5", port=22, username="azureuser", os="Ubuntu"), "sleep 99")
+
+    assert result.timed_out is True
+    assert result.exit_code is None
+
+
+def test_ssh_errors_are_redacted(tmp_path, monkeypatch):
+    key_path = tmp_path / "key.pem"
+    key_path.write_text("fake", encoding="utf-8")
+
+    class FailingClient(FakeSshClient):
+        def connect(self, **kwargs):
+            raise RuntimeError("bad secret-token")
+
+    settings = Settings(_env_file=None, ssh_private_key_path=str(key_path), phoenix_api_token="secret-token")
+    runner = SshRunner(settings=settings, client_factory=FailingClient)
+    monkeypatch.setattr(runner, "_load_private_key", lambda path: "key")
+
+    with pytest.raises(SshError) as exc_info:
+        runner.run(SystemInfo(ip="10.0.0.5", port=22, username="azureuser", os="Ubuntu"), "uptime")
+
+    assert "secret-token" not in str(exc_info.value)
+    assert "[REDACTED]" in str(exc_info.value)
+
+
+def test_phoenix_username_preferred_and_env_fallback_used_only_when_missing(tmp_path, monkeypatch):
+    key_path = tmp_path / "key.pem"
+    key_path.write_text("fake", encoding="utf-8")
+    fake_client = FakeSshClient()
+    runner = SshRunner(
+        settings=Settings(_env_file=None, ssh_private_key_path=str(key_path), ssh_username="fallback"),
+        client_factory=lambda: fake_client,
+    )
+    monkeypatch.setattr(runner, "_load_private_key", lambda path: "key")
+
+    runner.run(SystemInfo(ip="10.0.0.5", port=22, username="phoenix", os="Ubuntu"), "uptime")
+    assert fake_client.connect_kwargs["username"] == "phoenix"
+
+    runner.run(SystemInfo(ip="10.0.0.5", port=22, username="", os="Ubuntu"), "uptime")
+    assert fake_client.connect_kwargs["username"] == "fallback"
+
+
+def test_ssh_runner_requires_existing_key_and_username(tmp_path):
+    missing_key = tmp_path / "missing.pem"
+    runner = SshRunner(settings=Settings(_env_file=None, ssh_private_key_path=str(missing_key)))
+    with pytest.raises(ConfigurationError):
+        runner.run(SystemInfo(ip="10.0.0.5", port=22, username="azureuser", os="Ubuntu"), "uptime")
+
+    key_path = tmp_path / "key.pem"
+    key_path.write_text("fake", encoding="utf-8")
+    runner = SshRunner(settings=Settings(_env_file=None, ssh_private_key_path=str(key_path), ssh_username=None))
+    with pytest.raises(ConfigurationError):
+        runner.run(SystemInfo(ip="10.0.0.5", port=22, username="", os="Ubuntu"), "uptime")
