@@ -36,6 +36,29 @@ class ActionStatus(StrEnum):
     BLOCKED = "blocked"
 
 
+class TerminalSessionStatus(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+class TerminalCommandSource(StrEnum):
+    MANUAL = "manual"
+    AGENT = "agent"
+
+
+class TerminalCommandStatus(StrEnum):
+    SUBMITTED = "submitted"
+    CONFIRMATION_REQUIRED = "confirmation_required"
+    BLOCKED = "blocked"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    EDITED = "edited"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class ConfirmationStatus(StrEnum):
     NOT_REQUIRED = "not_required"
     PENDING = "pending"
@@ -109,6 +132,47 @@ class WebSocketEventRead(BaseModel):
     type: str
     timestamp: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class TerminalSessionRead(BaseModel):
+    id: int
+    run_id: str
+    status: TerminalSessionStatus
+    opened_at: datetime
+    closed_at: datetime | None = None
+    last_seen_at: datetime
+    close_reason: str | None = None
+
+
+class TerminalCommandRead(BaseModel):
+    id: int
+    run_id: str
+    terminal_session_id: int | None = None
+    source: TerminalCommandSource
+    status: TerminalCommandStatus
+    original_command: str
+    final_command: str | None = None
+    edited_from: str | None = None
+    edited_to: str | None = None
+    classification: CommandClassification | None = None
+    risk_reason: str | None = None
+    exit_code: int | None = None
+    output: str = ""
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    redacted: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
+class TerminalTranscriptRead(BaseModel):
+    id: int
+    run_id: str
+    terminal_session_id: int | None = None
+    stream: str
+    data: str
+    created_at: datetime
+    redacted: bool = True
 
 
 class ActivityDraftRead(BaseModel):

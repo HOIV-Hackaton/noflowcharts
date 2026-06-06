@@ -29,6 +29,7 @@ from app.services.activity_generator import ActivityGenerator
 from app.services.events import persist_and_publish_ws_event_sync
 from app.services.safety import classify_command
 from app.services.ssh_runner import SshRunner
+from app.services.terminal_manager import terminal_manager
 
 
 RISK_CONFIRMATION_PREFIX = "RUN "
@@ -272,6 +273,7 @@ class RunManager:
     def abort(self, run_id: str) -> RunStateRead:
         run = self._run(run_id)
         self.repo.update_run_status(run, RunStatus.ABORTED)
+        terminal_manager.close_run_sync(run.id, "run_aborted")
         self.audit.record("abort", {"ticket_id": run.ticket_id}, run.id)
         self._event(run.id, "run_aborted", {"status": RunStatus.ABORTED.value})
         return self.state(run.id)
@@ -281,14 +283,15 @@ class RunManager:
         self._require_ready_for_activity(run)
         snapshot = self._snapshot(run)
         actions = [self._action_payload(action) for action in self.repo.list_actions(run.id)]
+        terminal_commands = [self._terminal_command_payload(command) for command in self.repo.list_terminal_commands(run.id)]
         command_results = [self._command_result_payload(result) for result in self.repo.list_command_results(run.id)]
         validation_events = [event.payload for event in self.audit.for_run(run.id) if event.type in {"validation_evidence", "human_validation_confirmation"}]
         activity_generator = self.activity_generator or ActivityGenerator()
         generated = activity_generator.generate(
             ticket=snapshot.get("ticket", {}),
             customer_system=snapshot.get("customer_system", {}),
-            actions=actions,
-            command_results=command_results,
+            actions=actions + terminal_commands,
+            command_results=command_results + terminal_commands,
             validation={"status": run.validation_status, "confirmed": run.validation_confirmed, "events": validation_events},
         )
         draft = self.repo.upsert_activity_draft(run, **generated.model_dump())
@@ -453,6 +456,23 @@ class RunManager:
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "timed_out": result.timed_out,
+            }
+        )
+
+    def _terminal_command_payload(self, command) -> dict[str, Any]:
+        return redact_payload(
+            {
+                "id": command.id,
+                "source": command.source,
+                "status": command.status,
+                "command": command.final_command or command.original_command,
+                "original_command": command.original_command,
+                "edited_from": command.edited_from,
+                "edited_to": command.edited_to,
+                "classification": command.classification,
+                "risk_reason": command.risk_reason,
+                "exit_code": command.exit_code,
+                "output": command.output,
             }
         )
 

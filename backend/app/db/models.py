@@ -5,7 +5,17 @@ from uuid import uuid4
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
-from app.schemas.runs import ActionStatus, ActivityReviewStatus, CommandClassification, ConfirmationStatus, RunStatus, ValidationStatus
+from app.schemas.runs import (
+    ActionStatus,
+    ActivityReviewStatus,
+    CommandClassification,
+    ConfirmationStatus,
+    RunStatus,
+    TerminalCommandSource,
+    TerminalCommandStatus,
+    TerminalSessionStatus,
+    ValidationStatus,
+)
 
 
 def utc_now() -> datetime:
@@ -81,3 +91,44 @@ class WebSocketEvent(SQLModel, table=True):
     type: str = Field(index=True)
     timestamp: datetime = Field(default_factory=utc_now, index=True)
     payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class TerminalSession(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: str = Field(foreign_key="run.id", index=True)
+    status: str = Field(default=TerminalSessionStatus.OPEN.value, index=True)
+    opened_at: datetime = Field(default_factory=utc_now)
+    closed_at: datetime | None = None
+    last_seen_at: datetime = Field(default_factory=utc_now, index=True)
+    close_reason: str | None = None
+
+
+class TerminalCommand(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: str = Field(foreign_key="run.id", index=True)
+    terminal_session_id: int | None = Field(default=None, foreign_key="terminalsession.id", index=True)
+    source: str = Field(default=TerminalCommandSource.MANUAL.value, index=True)
+    status: str = Field(default=TerminalCommandStatus.SUBMITTED.value, index=True)
+    original_command: str
+    final_command: str | None = None
+    edited_from: str | None = None
+    edited_to: str | None = None
+    classification: str | None = None
+    risk_reason: str | None = None
+    exit_code: int | None = None
+    output: str = ""
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    redacted: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class TerminalTranscriptEvent(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: str = Field(foreign_key="run.id", index=True)
+    terminal_session_id: int | None = Field(default=None, foreign_key="terminalsession.id", index=True)
+    stream: str = Field(default="stdout")
+    data: str
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    redacted: bool = Field(default=True)

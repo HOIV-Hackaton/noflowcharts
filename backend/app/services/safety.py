@@ -40,6 +40,39 @@ READ_ONLY_COMMANDS = {
     "uptime",
 }
 
+INTERACTIVE_COMMANDS = {
+    "ftp",
+    "htop",
+    "less",
+    "man",
+    "more",
+    "mysql",
+    "nano",
+    "psql",
+    "scp",
+    "sftp",
+    "ssh",
+    "top",
+    "vi",
+    "vim",
+}
+
+NESTED_SHELL_COMMANDS = {
+    "ash",
+    "bash",
+    "dash",
+    "fish",
+    "irb",
+    "node",
+    "perl",
+    "php",
+    "python",
+    "python3",
+    "ruby",
+    "sh",
+    "zsh",
+}
+
 MUTATING_COMMANDS = {
     "apt",
     "apt-get",
@@ -95,7 +128,18 @@ def classify_command(command: str) -> SafetyResult:
         return SafetyResult(CommandClassification.BLOCKED, "Commands that read likely secret material are blocked", blocked=True)
 
     base = _base_command(tokens)
+    if base in INTERACTIVE_COMMANDS:
+        return SafetyResult(CommandClassification.BLOCKED, f"Interactive command '{base}' is blocked in the logged terminal", blocked=True)
+
+    if base in NESTED_SHELL_COMMANDS:
+        return SafetyResult(CommandClassification.BLOCKED, f"Nested shell or interpreter '{base}' is blocked in the logged terminal", blocked=True)
+
     if base == "sudo":
+        sudo_target = _sudo_target(tokens)
+        if sudo_target in INTERACTIVE_COMMANDS:
+            return SafetyResult(CommandClassification.BLOCKED, f"Interactive command '{sudo_target}' is blocked in the logged terminal", blocked=True)
+        if sudo_target in NESTED_SHELL_COMMANDS:
+            return SafetyResult(CommandClassification.BLOCKED, f"Nested shell or interpreter '{sudo_target}' is blocked in the logged terminal", blocked=True)
         return SafetyResult(
             CommandClassification.RISKY_MUTATING,
             "sudo requires typed technician confirmation",
@@ -134,6 +178,16 @@ def _tokens(command: str) -> list[str]:
 
 def _base_command(tokens: list[str]) -> str:
     return tokens[0].split("/")[-1] if tokens else ""
+
+
+def _sudo_target(tokens: list[str]) -> str:
+    for token in tokens[1:]:
+        if token == "--":
+            continue
+        if token.startswith("-"):
+            continue
+        return token.split("/")[-1]
+    return ""
 
 
 def _contains_shell_control(tokens: list[str]) -> bool:
