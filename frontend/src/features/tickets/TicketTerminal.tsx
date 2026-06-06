@@ -526,6 +526,9 @@ export function TicketTerminal({
         >
           Disconnect
         </Button>
+        <p className="terminal-safety-note">
+          Commands that can open pagers or hang the terminal are automatically converted to non-interactive form or blocked.
+        </p>
       </div>
       <div className={["terminal-shell", connectionState !== "connected" ? "terminal-shell-disabled" : ""].join(" ")}>
         {connectionState === "disconnected" && !terminalHasContent ? (
@@ -610,7 +613,10 @@ function handleTerminalStatusMessage(
       terminal.writeln("\r\n\x1b[90mAgent is waiting for technician guidance.\x1b[0m");
       break;
     case "command_blocked":
-      terminal.writeln(`\r\n\x1b[31mCommand blocked: ${message.reason ?? "safety policy"}\x1b[0m`);
+      setPendingCommand(null);
+      terminal.writeln("\r\n\x1b[41m\x1b[97m COMMAND BLOCKED BEFORE EXECUTION \x1b[0m");
+      terminal.writeln(`\x1b[31mSafety reason: ${message.reason ?? "safety policy"}\x1b[0m`);
+      terminal.writeln("\x1b[90mNo command was run. Review the terminal command history for original/final command details.\x1b[0m");
       break;
     case "command_cancelled":
       terminal.writeln("\r\n\x1b[90mCommand cancelled.\x1b[0m");

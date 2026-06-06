@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     azure_openai_endpoint: str | None = None
     azure_openai_api_key: str | None = None
     azure_openai_deployment: str | None = None
+    azure_openai_embedding_deployment: str | None = None
     azure_openai_api_version: str | None = None
 
     model_config = SettingsConfigDict(
@@ -55,6 +56,19 @@ class Settings(BaseSettings):
             missing.append("AZURE_OPENAI_API_VERSION")
         if missing:
             raise RuntimeError(f"Missing required Azure OpenAI setting(s): {', '.join(missing)}")
+
+    def require_azure_openai_embeddings(self) -> None:
+        missing = []
+        if not self.azure_openai_endpoint:
+            missing.append("AZURE_OPENAI_ENDPOINT")
+        if not self.azure_openai_api_key:
+            missing.append("AZURE_OPENAI_API_KEY")
+        if not self.azure_openai_embedding_deployment:
+            missing.append("AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
+        if not self.uses_foundry_project_endpoint() and not self.azure_openai_api_version:
+            missing.append("AZURE_OPENAI_API_VERSION")
+        if missing:
+            raise RuntimeError(f"Missing required Azure OpenAI embedding setting(s): {', '.join(missing)}")
 
     def uses_foundry_project_endpoint(self) -> bool:
         endpoint = self.azure_openai_endpoint or ""

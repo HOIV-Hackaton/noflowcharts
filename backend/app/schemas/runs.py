@@ -189,6 +189,14 @@ class ActivityDraftRead(BaseModel):
     updated_at: datetime
 
 
+class RelatedTicketRead(BaseModel):
+    ticket_id: int
+    title: str
+    description: str
+    rationale: str | None = None
+    confidence: str | None = None
+
+
 class ActivityDraftUpdate(BaseModel):
     summary: str | None = None
     root_cause: str | None = None
@@ -234,3 +242,4 @@ class RunStateRead(BaseModel):
     current_action: ActionRead | None = None
     command_results: list[CommandResultRead] = Field(default_factory=list)
     activity_draft: ActivityDraftRead | None = None
+    related_ticket: RelatedTicketRead | None = None

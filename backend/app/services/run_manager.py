@@ -6,7 +6,7 @@ from sqlmodel import Session
 from app.agent.planner import SAFETY_POLICY_SUMMARY, CommandProposal, Planner
 from app.clients.phoenix import PhoenixClient
 from app.core.errors import SafetyError, ValidationError
-from app.core.redaction import redact_payload
+from app.core.redaction import redact_payload, redact_text
 from app.db.models import Action, ActivityDraft, Run, utc_now
 from app.repositories.runs import RunRepository
 from app.schemas.phoenix import Activity, ActivityCreate, CustomerSystem, TicketStatus
@@ -20,6 +20,7 @@ from app.schemas.runs import (
     CommandClassification,
     CommandResultRead,
     ConfirmationStatus,
+    RelatedTicketRead,
     RunRead,
     RunStateRead,
     RunStatus,
@@ -27,9 +28,12 @@ from app.schemas.runs import (
 )
 from app.services.audit_log import AuditLog
 from app.services.activity_generator import ActivityGenerator
+from app.services.diagnostic_policy import MAX_AUTO_DIAGNOSTIC_STEPS
+from app.services.diagnostic_tools import DiagnosticToolbox
 from app.services.events import persist_and_publish_ws_event_sync
 from app.services.safety import classify_command
 from app.services.ssh_runner import SshRunner
+from app.services.ticket_memory import RelatedTicketContext, TicketMemoryService
 from app.services.terminal_manager import terminal_manager
 
 
@@ -43,7 +47,9 @@ class RunManager:
         phoenix_client: PhoenixClient | None = None,
         planner: Planner | None = None,
         ssh_runner: SshRunner | None = None,
+        diagnostic_toolbox: DiagnosticToolbox | None = None,
         activity_generator: ActivityGenerator | None = None,
+        ticket_memory_service: TicketMemoryService | None = None,
     ):
         self.session = session
         self.repo = RunRepository(session)
@@ -51,12 +57,17 @@ class RunManager:
         self.phoenix = phoenix_client or PhoenixClient()
         self.planner = planner
         self.ssh_runner = ssh_runner or SshRunner()
+        self.diagnostic_toolbox = diagnostic_toolbox or DiagnosticToolbox(self.ssh_runner)
         self.activity_generator = activity_generator
+        self.ticket_memory_service = ticket_memory_service
 
     def start_run(self, ticket_id: int) -> RunStateRead:
         ticket = self.phoenix.get_ticket(ticket_id)
         customer_system = self.phoenix.get_customer_system(ticket_id)
         snapshot = {"ticket": ticket.model_dump(mode="json"), "customer_system": customer_system.model_dump(mode="json")}
+        related_context = self._prepare_related_ticket(ticket)
+        if related_context is not None:
+            snapshot["related_ticket"] = related_context.model_dump(mode="json")
         run = self.repo.create_run(ticket_id=ticket_id, customer_system_snapshot=snapshot)
         self.audit.record("ticket_loaded", {"ticket_id": ticket_id, "title": ticket.title}, run.id)
         self.audit.record("customer_system_loaded", {"ticket_id": ticket_id, "system": customer_system.model_dump(mode="json")}, run.id)
@@ -87,6 +98,7 @@ class RunManager:
                 customer_system=snapshot.get("customer_system", {}),
                 observations=observations,
                 safety_policy=SAFETY_POLICY_SUMMARY,
+                related_ticket=snapshot.get("related_ticket"),
             )
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
@@ -109,6 +121,96 @@ class RunManager:
             self._event(run.id, "command_proposed", {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value})
         return self.state(run.id)
 
+    def start_safe_autodiagnosis(self, run_id: str) -> RunStateRead:
+        run = self._run(run_id)
+        self._require_ssh_confirmed(run)
+        if run.status not in {RunStatus.DIAGNOSING.value, RunStatus.PENDING.value}:
+            raise ValidationError("Safe autodiagnosis can only start during diagnosis")
+
+        self.repo.update_run_status(run, RunStatus.DIAGNOSING)
+        self.audit.record("safe_autodiagnosis_started", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS}, run.id)
+        self._event(run.id, "safe_autodiagnosis_started", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS})
+
+        planner = self.planner or Planner()
+        for _ in range(MAX_AUTO_DIAGNOSTIC_STEPS - self._auto_diagnostic_count(run.id)):
+            run = self._run(run_id)
+            if run.status != RunStatus.DIAGNOSING.value:
+                self.audit.record("safe_autodiagnosis_stopped", {"reason": "run_left_diagnosis", "status": run.status}, run.id)
+                self._event(run.id, "safe_autodiagnosis_stopped", {"reason": "run_left_diagnosis", "status": run.status})
+                return self.state(run.id)
+
+            snapshot = self._snapshot(run)
+            observations = self._observations(run.id)
+            proposal = planner.propose_diagnostic_tool(
+                ticket=snapshot.get("ticket", {}),
+                customer_system=snapshot.get("customer_system", {}),
+                observations=observations,
+                related_ticket=snapshot.get("related_ticket"),
+            )
+            self.audit.record(
+                "agent_diagnostic_requested",
+                {"mode": proposal.mode, "tool": proposal.tool, "arguments": proposal.arguments, "intent": proposal.intent},
+                run.id,
+            )
+
+            if proposal.mode == "command_proposal":
+                assert proposal.command is not None
+                command = CommandProposal(
+                    intent=proposal.intent,
+                    command=proposal.command,
+                    expected_signal=proposal.expected_signal,
+                    risk_level=proposal.risk_level,
+                    rollback_note=proposal.rollback_note,
+                    evidence_basis=proposal.evidence_basis,
+                    evidence_gap=proposal.evidence_gap,
+                )
+                self._add_proposed_action(run, command, event_type="safe_autodiagnosis_handed_to_human")
+                self.audit.record("safe_autodiagnosis_stopped", {"reason": "human_approval_required", "command": proposal.command}, run.id)
+                self._event(run.id, "safe_autodiagnosis_stopped", {"reason": "human_approval_required"})
+                return self.state(run.id)
+
+            assert proposal.tool is not None
+            try:
+                diagnostic = self.diagnostic_toolbox.run(self._customer_system(run).system, proposal.tool, proposal.arguments)
+            except (SafetyError, ValidationError) as exc:
+                self.audit.record("agent_diagnostic_blocked", {"tool": proposal.tool, "arguments": proposal.arguments, "reason": exc.message}, run.id)
+                self._event(run.id, "agent_diagnostic_blocked", {"tool": proposal.tool, "reason": exc.message})
+                self.audit.record("safe_autodiagnosis_stopped", {"reason": "diagnostic_blocked"}, run.id)
+                return self.state(run.id)
+
+            self.audit.record("agent_diagnostic_allowed", {"tool": proposal.tool, "rule_id": diagnostic.rule_id, "command": diagnostic.command}, run.id)
+            action = self.repo.add_action(
+                run,
+                command=diagnostic.command,
+                classification=CommandClassification.READ_ONLY,
+                intent=proposal.intent,
+                risk_reason=f"Auto-diagnostic allowlist rule {diagnostic.rule_id}: {diagnostic.reason}",
+                expected_signal=proposal.expected_signal,
+                typed_confirmation_status=ConfirmationStatus.NOT_REQUIRED,
+            )
+            self.repo.update_action_status(action, ActionStatus.COMPLETED if diagnostic.exit_code == 0 and not diagnostic.timed_out else ActionStatus.FAILED)
+            self.repo.add_command_result(action, diagnostic.command, diagnostic.exit_code, diagnostic.stdout, diagnostic.stderr, diagnostic.timed_out)
+            self.repo.set_current_action(run, None)
+            self.repo.update_run_status(run, RunStatus.DIAGNOSING)
+            self.audit.record(
+                "agent_diagnostic_result",
+                {
+                    "tool": diagnostic.tool,
+                    "rule_id": diagnostic.rule_id,
+                    "command": diagnostic.command,
+                    "exit_code": diagnostic.exit_code,
+                    "timed_out": diagnostic.timed_out,
+                    "stdout": diagnostic.stdout,
+                    "stderr": diagnostic.stderr,
+                },
+                run.id,
+            )
+            self._event(run.id, "agent_diagnostic_result", {"tool": diagnostic.tool, "rule_id": diagnostic.rule_id, "exit_code": diagnostic.exit_code})
+
+        self.audit.record("agent_diagnostic_limit_reached", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS}, run_id)
+        self._event(run_id, "agent_diagnostic_limit_reached", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS})
+        return self.state(run_id)
+
     def request_safer_alternative(self, run_id: str, action_id: int | None = None) -> RunStateRead:
         run = self._run(run_id)
         self._require_ssh_confirmed(run)
@@ -130,6 +232,7 @@ class RunManager:
                 }
             ],
             safety_policy=SAFETY_POLICY_SUMMARY,
+            related_ticket=snapshot.get("related_ticket"),
         )
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
@@ -357,6 +460,7 @@ class RunManager:
         self.phoenix.set_ticket_status(run.ticket_id, TicketStatus.DONE)
         self.audit.record("ticket_set_done", {"ticket_id": run.ticket_id}, run.id)
         self._event(run.id, "ticket_done", {"ticket_id": run.ticket_id, "status": TicketStatus.DONE.value})
+        self._create_completed_ticket_memory(run, draft)
         return created
 
     def audit_events(self, run_id: str):
@@ -373,6 +477,7 @@ class RunManager:
             current_action=ActionRead.model_validate(action, from_attributes=True) if action else None,
             command_results=[CommandResultRead.model_validate(result, from_attributes=True) for result in results],
             activity_draft=ActivityDraftRead.model_validate(draft, from_attributes=True) if draft else None,
+            related_ticket=self._related_ticket_read(run),
         )
 
     def _run(self, run_id: str) -> Run:
@@ -398,7 +503,49 @@ class RunManager:
 
     def _observations(self, run_id: str) -> list[dict[str, Any]]:
         results = self.repo.list_command_results(run_id)
-        return [redact_payload({"command": result.command, "exit_code": result.exit_code, "stdout": result.stdout, "stderr": result.stderr, "timed_out": result.timed_out}) for result in results]
+        observations = []
+        for result in results:
+            action = self.repo.get_action(result.action_id)
+            source = "auto_diagnostic" if action and (action.risk_reason or "").startswith("Auto-diagnostic allowlist rule") else "approved_command"
+            observations.append(
+                redact_payload(
+                    {
+                        "source": source,
+                        "command": result.command,
+                        "intent": action.intent if action else None,
+                        "exit_code": result.exit_code,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "timed_out": result.timed_out,
+                    }
+                )
+            )
+        return observations
+
+    def _auto_diagnostic_count(self, run_id: str) -> int:
+        return sum(1 for observation in self._observations(run_id) if observation.get("source") == "auto_diagnostic")
+
+    def _add_proposed_action(self, run: Run, proposal: CommandProposal, event_type: str = "command_proposed") -> Action:
+        safety = classify_command(proposal.command)
+        typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
+        action = self.repo.add_action(
+            run,
+            command=proposal.command,
+            classification=safety.classification,
+            intent=proposal.intent,
+            risk_reason=safety.reason,
+            expected_signal=proposal.expected_signal,
+            typed_confirmation_status=typed_status,
+        )
+        self.audit.record("command_classified", {"command": proposal.command, "classification": safety.classification.value, "reason": safety.reason}, run.id)
+        if safety.blocked:
+            self.repo.update_action_status(action, ActionStatus.BLOCKED)
+            self.audit.record("blocked_command", {"command": proposal.command, "reason": safety.reason}, run.id)
+            self._event(run.id, "command_blocked", {"action_id": action.id, "reason": safety.reason})
+        else:
+            self.audit.record(event_type, {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
+            self._event(run.id, event_type, {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value})
+        return action
 
     def _is_concrete_validation_evidence(self, evidence: str) -> bool:
         text = evidence.strip().lower()
@@ -518,6 +665,64 @@ class RunManager:
         missing = [field for field in required_fields if not (getattr(draft, field) or "").strip()]
         if missing:
             raise ValidationError(f"Activity draft is missing required field(s): {', '.join(missing)}")
+
+    def _prepare_related_ticket(self, ticket) -> RelatedTicketContext | None:
+        try:
+            service = self.ticket_memory_service or TicketMemoryService(self.session)
+            context = service.prepare_ticket_relation(ticket)
+            if service.last_candidate_payloads:
+                self.audit.record("related_ticket_candidates_found", {"ticket_id": ticket.id, "candidates": service.last_candidate_payloads})
+            if service.last_decision_payload is not None:
+                self.audit.record("related_ticket_decision", service.last_decision_payload)
+            return context
+        except Exception as exc:
+            self.audit.record("related_ticket_lookup_failed", {"ticket_id": ticket.id, "error": redact_text(str(exc))})
+            return None
+
+    def _create_completed_ticket_memory(self, run: Run, draft: ActivityDraft) -> None:
+        snapshot = self._snapshot(run)
+        ticket = snapshot.get("ticket") or {}
+        if not ticket:
+            return
+        try:
+            service = self.ticket_memory_service or TicketMemoryService(self.session)
+            commands = self._completed_memory_commands(run.id)
+            service.create_completed_memory(ticket, draft, commands)
+            self.audit.record("ticket_memory_created", {"ticket_id": run.ticket_id, "command_count": len(commands)}, run.id)
+        except Exception as exc:
+            self.audit.record("ticket_memory_create_failed", {"ticket_id": run.ticket_id, "error": redact_text(str(exc))}, run.id)
+
+    def _completed_memory_commands(self, run_id: str) -> list[str]:
+        commands: list[str] = []
+        for result in self.repo.list_command_results(run_id):
+            if result.command.strip():
+                commands.append(result.command)
+        for command in self.repo.list_terminal_commands(run_id):
+            if command.exit_code is None:
+                continue
+            selected = command.final_command or command.original_command
+            if selected.strip():
+                commands.append(selected)
+        sanitized: list[str] = []
+        seen = set()
+        for command in commands:
+            redacted = redact_payload(command, self.repo.secrets)
+            if redacted not in seen:
+                seen.add(redacted)
+                sanitized.append(redacted)
+        return sanitized
+
+    def _related_ticket_read(self, run: Run) -> RelatedTicketRead | None:
+        related = self._snapshot(run).get("related_ticket")
+        if not related:
+            return None
+        return RelatedTicketRead(
+            ticket_id=related["ticket_id"],
+            title=related.get("title", ""),
+            description=related.get("description", ""),
+            rationale=related.get("rationale"),
+            confidence=related.get("confidence"),
+        )
 
     def _action_payload(self, action: Action) -> dict[str, Any]:
         return redact_payload(

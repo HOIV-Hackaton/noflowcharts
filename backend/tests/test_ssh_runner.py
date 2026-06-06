@@ -146,6 +146,25 @@ def test_candidate_private_key_paths_use_configured_key_first_then_sibling_pems(
     assert paths == [configured_key, other_key, third_key]
 
 
+def test_candidate_private_key_paths_keeps_inaccessible_configured_key_and_sibling_fallbacks(tmp_path, monkeypatch):
+    configured_key = tmp_path / "case1_key.pem"
+    fallback_key = tmp_path / "case2_key.pem"
+    configured_key.write_text("fake", encoding="utf-8")
+    fallback_key.write_text("fake", encoding="utf-8")
+    original_exists = Path.exists
+
+    def fake_exists(path):
+        if path == configured_key:
+            raise PermissionError("permission denied")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    paths = candidate_private_key_paths(Settings(_env_file=None, ssh_private_key_path=str(configured_key)))
+
+    assert paths == [configured_key, fallback_key]
+
+
 def test_ssh_runner_tries_sibling_key_after_auth_failure(tmp_path, monkeypatch):
     primary_key = tmp_path / "case1_key.pem"
     fallback_key = tmp_path / "case2_key.pem"

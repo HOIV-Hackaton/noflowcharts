@@ -55,6 +55,7 @@ INTERACTIVE_COMMANDS = {
     "top",
     "vi",
     "vim",
+    "watch",
 }
 
 NESTED_SHELL_COMMANDS = {
@@ -131,6 +132,12 @@ def classify_command(command: str) -> SafetyResult:
     if base in INTERACTIVE_COMMANDS:
         return SafetyResult(CommandClassification.BLOCKED, f"Interactive command '{base}' is blocked in the logged terminal", blocked=True)
 
+    if _is_follow_mode(tokens):
+        return SafetyResult(CommandClassification.BLOCKED, "Follow/watch commands do not terminate in the logged terminal", blocked=True)
+
+    if base == "systemctl" and _systemctl_subcommand(tokens) in {"edit", "rescue", "emergency"}:
+        return SafetyResult(CommandClassification.BLOCKED, "Interactive systemctl subcommands are blocked in the logged terminal", blocked=True)
+
     if base in NESTED_SHELL_COMMANDS:
         return SafetyResult(CommandClassification.BLOCKED, f"Nested shell or interpreter '{base}' is blocked in the logged terminal", blocked=True)
 
@@ -140,6 +147,10 @@ def classify_command(command: str) -> SafetyResult:
             return SafetyResult(CommandClassification.BLOCKED, f"Interactive command '{sudo_target}' is blocked in the logged terminal", blocked=True)
         if sudo_target in NESTED_SHELL_COMMANDS:
             return SafetyResult(CommandClassification.BLOCKED, f"Nested shell or interpreter '{sudo_target}' is blocked in the logged terminal", blocked=True)
+        if _is_follow_mode(tokens):
+            return SafetyResult(CommandClassification.BLOCKED, "Follow/watch commands do not terminate in the logged terminal", blocked=True)
+        if sudo_target == "systemctl" and _systemctl_subcommand(tokens) in {"edit", "rescue", "emergency"}:
+            return SafetyResult(CommandClassification.BLOCKED, "Interactive systemctl subcommands are blocked in the logged terminal", blocked=True)
         return SafetyResult(
             CommandClassification.RISKY_MUTATING,
             "sudo requires typed technician confirmation",
@@ -206,6 +217,35 @@ def _is_read_only(tokens: list[str]) -> bool:
 def _looks_mutating(tokens: list[str]) -> bool:
     mutating_flags = {"-w", "--write", "--delete", "--remove", "--force"}
     return any(token in mutating_flags for token in tokens)
+
+
+def _is_follow_mode(tokens: list[str]) -> bool:
+    base = _base_command(tokens)
+    command_tokens = tokens
+    if base == "sudo":
+        target = _sudo_target(tokens)
+        command_tokens = tokens[tokens.index(target) :] if target in tokens else tokens
+        base = target
+    if base in {"journalctl", "tail"}:
+        return any(token in {"-f", "--follow"} or (token.startswith("-") and "f" in token and not token.startswith("--")) for token in command_tokens[1:])
+    return False
+
+
+def _systemctl_subcommand(tokens: list[str]) -> str | None:
+    command_tokens = tokens
+    base = _base_command(tokens)
+    if base == "sudo":
+        target = _sudo_target(tokens)
+        command_tokens = tokens[tokens.index(target) :] if target in tokens else []
+    if not command_tokens or _base_command(command_tokens) != "systemctl":
+        return None
+    for token in command_tokens[1:]:
+        if token == "--":
+            continue
+        if token.startswith("-"):
+            continue
+        return token
+    return None
 
 
 def _blocked_reason(command: str) -> str | None:
