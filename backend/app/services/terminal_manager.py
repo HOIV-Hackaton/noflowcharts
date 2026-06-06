@@ -1,5 +1,6 @@
 import asyncio
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +23,7 @@ from app.services.terminal_session import SshPtySession, monotonic_seconds
 IDLE_TIMEOUT_SECONDS = 15 * 60
 EXIT_MARKER_RE = re.compile(r"__NOFLOW_EXIT:(\d+):(-?\d+)__")
 SECRET_PROMPT_RE = re.compile(r"(?i)(password|passphrase|token|secret|api\s*key|private\s*key|sudo password)\s*:")
+NONINTERACTIVE_ENV = "SYSTEMD_PAGER=cat SYSTEMD_COLORS=0 PAGER=cat LESS=FRXMK"
 
 
 @dataclass
@@ -176,7 +178,8 @@ class TerminalManager:
                 await self._broadcast(runtime, {"type": "terminal_output", "data": char})
 
     async def _submit_manual(self, runtime: TerminalRuntime, command: str) -> None:
-        safety = self.safety_reviewer.review(command, self._context(runtime.run_id))
+        final_command = _make_command_non_interactive(command)
+        safety = self.safety_reviewer.review(final_command, self._context(runtime.run_id))
         with Session(engine) as session:
             repo = RunRepository(session)
             terminal_command = repo.add_terminal_command(
@@ -184,11 +187,11 @@ class TerminalManager:
                 TerminalCommandSource.MANUAL,
                 command,
                 terminal_session_id=runtime.db_session_id,
-                final_command=command,
+                final_command=final_command,
                 classification=safety.classification,
                 risk_reason=safety.reason,
             )
-            self._audit(runtime.run_id, "manual_command_submitted", {"command_id": terminal_command.id, "command": command})
+            self._audit(runtime.run_id, "manual_command_submitted", {"command_id": terminal_command.id, "command": final_command, "original_command": command})
             self._audit(
                 runtime.run_id,
                 "manual_command_classified",
@@ -203,10 +206,10 @@ class TerminalManager:
                 repo.update_terminal_command(terminal_command, TerminalCommandStatus.CONFIRMATION_REQUIRED, risk_reason=safety.reason)
                 runtime.pending_confirmation = terminal_command.id
                 self._audit(runtime.run_id, "manual_command_confirmation_required", {"command_id": terminal_command.id, "reason": safety.reason})
-                await self._broadcast(runtime, {"type": "confirmation_required", "command_id": terminal_command.id, "command": command, "reason": safety.reason})
+                await self._broadcast(runtime, {"type": "confirmation_required", "command_id": terminal_command.id, "command": final_command, "reason": safety.reason})
                 return
             command_id = terminal_command.id
-        await self._execute(runtime, command_id, command, TerminalCommandSource.MANUAL)
+        await self._execute(runtime, command_id, final_command, TerminalCommandSource.MANUAL)
 
     async def _confirm_manual(self, runtime: TerminalRuntime, command_id: int) -> None:
         if runtime.pending_confirmation != command_id:
@@ -245,7 +248,7 @@ class TerminalManager:
             SAFETY_POLICY_SUMMARY,
             context.get("related_ticket"),
         )
-        command = _make_agent_command_non_interactive(proposal.command)
+        command = _make_command_non_interactive(proposal.command)
         safety = self.safety_reviewer.review(command, context)
         status = TerminalCommandStatus.BLOCKED if safety.decision == "block" else TerminalCommandStatus.SUBMITTED
         with Session(engine) as session:
@@ -253,14 +256,14 @@ class TerminalManager:
             terminal_command = repo.add_terminal_command(
                 runtime.run_id,
                 TerminalCommandSource.AGENT,
-                command,
+                proposal.command,
                 terminal_session_id=runtime.db_session_id,
                 final_command=command,
                 status=status,
                 classification=safety.classification,
                 risk_reason=safety.reason,
             )
-        self._audit(runtime.run_id, "agent_command_proposed", {"command_id": terminal_command.id, "command": command, "intent": proposal.intent})
+        self._audit(runtime.run_id, "agent_command_proposed", {"command_id": terminal_command.id, "command": command, "original_command": proposal.command, "intent": proposal.intent})
         if safety.decision == "block":
             self._audit(runtime.run_id, "agent_command_blocked", {"command_id": terminal_command.id, "reason": safety.reason})
             await self._broadcast(runtime, {"type": "command_blocked", "command_id": terminal_command.id, "reason": safety.reason})
@@ -313,7 +316,8 @@ class TerminalManager:
     async def _edit_agent(self, runtime: TerminalRuntime, command_id: int, command: str) -> None:
         if not command.strip():
             raise ValidationError("Edited command must not be empty")
-        safety = self.safety_reviewer.review(command, self._context(runtime.run_id))
+        final_command = _make_command_non_interactive(command)
+        safety = self.safety_reviewer.review(final_command, self._context(runtime.run_id))
         with Session(engine) as session:
             repo = RunRepository(session)
             terminal_command = repo.get_terminal_command(command_id)
@@ -322,17 +326,17 @@ class TerminalManager:
             repo.update_terminal_command(
                 terminal_command,
                 TerminalCommandStatus.EDITED if safety.decision != "block" else TerminalCommandStatus.BLOCKED,
-                final_command=command,
+                final_command=final_command,
                 edited_from=terminal_command.final_command or terminal_command.original_command,
-                edited_to=command,
+                edited_to=final_command,
                 classification=safety.classification,
                 risk_reason=safety.reason,
             )
-        self._audit(runtime.run_id, "agent_command_edited", {"command_id": command_id, "from": terminal_command.original_command, "to": command})
+        self._audit(runtime.run_id, "agent_command_edited", {"command_id": command_id, "from": terminal_command.original_command, "to": final_command, "original_edit": command})
         if safety.decision == "block":
             await self._broadcast(runtime, {"type": "command_blocked", "command_id": command_id, "reason": safety.reason})
         else:
-            await self._broadcast(runtime, {"type": "agent_proposal", "command_id": command_id, "command": command, "classification": safety.classification.value, "reason": safety.reason})
+            await self._broadcast(runtime, {"type": "agent_proposal", "command_id": command_id, "command": final_command, "classification": safety.classification.value, "reason": safety.reason})
 
     async def _execute(self, runtime: TerminalRuntime, command_id: int, command: str, source: TerminalCommandSource) -> None:
         with Session(engine) as session:
@@ -344,7 +348,7 @@ class TerminalManager:
         event_prefix = "agent" if source == TerminalCommandSource.AGENT else "manual"
         self._audit(runtime.run_id, f"{event_prefix}_command_running", {"command_id": command_id, "command": command})
         await self._broadcast(runtime, {"type": "command_running", "command_id": command_id})
-        wrapped = f"{command}\nprintf '\\n__NOFLOW_EXIT:{command_id}:%s__\\n' \"$?\"\n"
+        wrapped = _wrap_command_for_pty(command, command_id)
         await asyncio.to_thread(runtime.pty.write, wrapped)
 
     async def _reader(self, runtime: TerminalRuntime) -> None:
@@ -456,8 +460,75 @@ class TerminalManager:
 terminal_manager = TerminalManager()
 
 
-def _make_agent_command_non_interactive(command: str) -> str:
-    parts = command.split()
-    if len(parts) >= 2 and parts[0] == "systemctl" and parts[1] in {"status", "list-units", "list-unit-files"} and "--no-pager" not in parts:
-        return " ".join([parts[0], "--no-pager", *parts[1:]])
+def _wrap_command_for_pty(command: str, command_id: int) -> str:
+    command = _make_command_non_interactive(command)
+    return f"{NONINTERACTIVE_ENV} {command}\nprintf '\\n__NOFLOW_EXIT:{command_id}:%s__\\n' \"$?\"\n"
+
+
+def _make_command_non_interactive(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return command
+    if not parts:
+        return command
+
+    command_index = _main_command_index(parts)
+    if command_index is None:
+        return command
+
+    base = parts[command_index].split("/")[-1]
+    if base == "systemctl" and "--no-pager" not in parts:
+        parts.insert(command_index + 1, "--no-pager")
+        return shlex.join(parts)
+    if base == "journalctl":
+        changed = False
+        if "--no-pager" not in parts:
+            parts.insert(command_index + 1, "--no-pager")
+            changed = True
+        if not _has_journal_line_bound(parts[command_index + 1 :]) and not _has_follow_flag(parts[command_index + 1 :]):
+            parts[command_index + 1:command_index + 1] = ["-n", "120"]
+            changed = True
+        if changed:
+            return shlex.join(parts)
     return command
+
+
+def _main_command_index(parts: list[str]) -> int | None:
+    if parts[0].split("/")[-1] != "sudo":
+        return 0
+    index = 1
+    sudo_options_with_value = {"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt"}
+    while index < len(parts):
+        token = parts[index]
+        if token == "--":
+            index += 1
+            break
+        if token in sudo_options_with_value:
+            index += 2
+            continue
+        if token.startswith("--user=") or token.startswith("--group=") or token.startswith("--host=") or token.startswith("--prompt="):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    return index if index < len(parts) else None
+
+
+def _has_journal_line_bound(parts: list[str]) -> bool:
+    for index, token in enumerate(parts):
+        if token in {"-n", "--lines"}:
+            return True
+        if token.startswith("--lines="):
+            return True
+        if token.startswith("-") and not token.startswith("--") and "n" in token:
+            return True
+        if index > 0 and parts[index - 1] in {"-n", "--lines"}:
+            return True
+    return False
+
+
+def _has_follow_flag(parts: list[str]) -> bool:
+    return any(token in {"-f", "--follow"} or (token.startswith("-") and not token.startswith("--") and "f" in token) for token in parts)
