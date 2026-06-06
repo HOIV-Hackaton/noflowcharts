@@ -7,13 +7,12 @@ import {
 import {
 	DropdownMenu,
 	DropdownMenuContent,
-	DropdownMenuGroup,
 	DropdownMenuItem,
 	DropdownMenuLabel,
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LogOutIcon, ShieldCheckIcon } from "lucide-react";
+import { LogOutIcon } from "lucide-react";
 
 export function NavUser({
 	onLogout,
@@ -55,23 +54,14 @@ export function NavUser({
 					</span>
 				</DropdownMenuLabel>
 				<DropdownMenuSeparator />
-				<DropdownMenuGroup>
-					<DropdownMenuItem disabled>
-						<ShieldCheckIcon />
-						Human approval active
-					</DropdownMenuItem>
-				</DropdownMenuGroup>
-				<DropdownMenuSeparator />
-				<DropdownMenuGroup>
-					<DropdownMenuItem
-						className="w-full cursor-pointer"
-						onClick={onLogout}
-						variant="destructive"
-					>
-						<LogOutIcon />
-						Sign out
-					</DropdownMenuItem>
-				</DropdownMenuGroup>
+				<DropdownMenuItem
+					className="w-full cursor-pointer"
+					onClick={onLogout}
+					variant="destructive"
+				>
+					<LogOutIcon />
+					Sign out
+				</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);

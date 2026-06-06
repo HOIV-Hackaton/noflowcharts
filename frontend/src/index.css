@@ -136,7 +136,8 @@
   }
 
   .terminal-shell {
-    @apply min-h-0 overflow-hidden rounded-lg border bg-muted p-3 font-mono shadow-inner;
+    @apply min-h-0 overflow-hidden rounded-lg p-3 font-mono;
+    background-color: #09090b;
   }
 
   .terminal-panel-compact .terminal-shell {
@@ -145,10 +146,12 @@
 
   .terminal-grid {
     @apply h-full min-h-0 overflow-hidden rounded-md;
+    background-color: #09090b;
   }
 
   .terminal-grid .xterm {
     @apply h-full overflow-hidden tracking-normal;
+    background-color: #09090b;
   }
 
   .terminal-grid .xterm-screen,
@@ -165,7 +168,7 @@
   }
 
   .terminal-grid .xterm-viewport {
-    @apply bg-background;
+    background-color: #09090b !important;
     overflow-x: hidden !important;
     overflow-y: auto !important;
     scrollbar-color: #52525b transparent;
@@ -175,6 +178,10 @@
   .terminal-grid .xterm-viewport::-webkit-scrollbar:horizontal {
     display: none;
     height: 0;
+  }
+
+  .terminal-grid .xterm-scroll-area {
+    overflow-x: hidden !important;
   }
 
   .terminal-grid .xterm-scrollable-element > .scrollbar.vertical {

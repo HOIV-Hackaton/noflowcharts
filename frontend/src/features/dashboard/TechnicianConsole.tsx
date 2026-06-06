@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import type { DashboardStat, SidebarCounts, SidebarView } from "@/components/service-desk-ui";
+import { getQueueHeading } from "@/lib/queue";
 import { Toast } from "../../components/ui/Toast";
 import { emptyDraft, initialValidation, systems, tickets } from "../../data/mockData";
 import { useAuth } from "../auth/AuthProvider";
 import {
   createActions,
   createEvent,
+  formatDate,
   isDraftComplete,
 } from "../../lib/serviceDesk";
 import { backendApi, getApiErrorMessage, type BackendRunStateRead } from "../../services/backendApi";
@@ -16,6 +21,7 @@ import {
   mapAuditEvent,
   mapBackendCustomer,
   mapBackendAction,
+  mapBackendCommandResultAction,
   mapBackendCustomerSystem,
   mapBackendTicket,
   mapRunState,
@@ -76,6 +82,7 @@ export function TechnicianConsole() {
   const [runState, setRunState] = useState<RunState>("idle");
   const [analysisReady, setAnalysisReady] = useState(false);
   const [actions, setActions] = useState<ProposedAction[]>([]);
+  const [autodiagnosisRunning, setAutodiagnosisRunning] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [terminalCommands, setTerminalCommands] = useState<TerminalCommandLog[]>([]);
   const [terminalTranscript, setTerminalTranscript] = useState<TerminalTranscriptLine[]>([]);
@@ -89,6 +96,12 @@ export function TechnicianConsole() {
   const selectedSystem = selectedTicketId ? systemsByTicket[selectedTicketId] ?? null : null;
   const pendingActions = actions.filter((action) => action.status === "pending");
   const executedActions = actions.filter((action) => action.status === "executed");
+  const canStartAutodiagnosis =
+    backendReady &&
+    Boolean(backendRunId) &&
+    connectionStatus === "connected" &&
+    (runState === "idle" || runState === "analyzing") &&
+    submitStatus === "idle";
 
   useEffect(() => {
     let cancelled = false;
@@ -309,18 +322,17 @@ export function TechnicianConsole() {
     }
 
     setActions((currentActions) => {
-      if (!state.current_action) {
-        return currentActions;
+      let nextActions = currentActions;
+
+      for (const result of state.command_results) {
+        nextActions = upsertAction(nextActions, mapBackendCommandResultAction(result));
       }
 
-      const nextAction = mapBackendAction(state.current_action, state.command_results);
-      const existing = currentActions.find((action) => action.id === nextAction.id);
-
-      if (existing) {
-        return currentActions.map((action) => (action.id === nextAction.id ? nextAction : action));
+      if (state.current_action) {
+        nextActions = upsertAction(nextActions, mapBackendAction(state.current_action, state.command_results));
       }
 
-      return [...currentActions, nextAction];
+      return nextActions;
     });
   }, []);
 
@@ -412,9 +424,14 @@ export function TechnicianConsole() {
         syncRunState(confirmedState);
         await refreshAuditEvents(confirmedState.run.id);
         appendEvent("approval", "Connection approved", "Backend run created and SSH approval confirmed.");
+        setActiveTab("actions");
         return;
       } catch (error) {
-        setNotice(`Using mock connection approval. ${getApiErrorMessage(error)}`);
+        setBackendRunId(null);
+        setConnectionStatus("awaiting_approval");
+        setRunState("awaiting_connection_approval");
+        setNotice(`Connection approval failed. ${getApiErrorMessage(error)}`);
+        return;
       }
     }
 
@@ -453,6 +470,75 @@ export function TechnicianConsole() {
     appendEvent("analysis", "Analysis complete", "Hypotheses and proposed actions are ready.");
     setRunState("awaiting_action_approval");
     setActiveTab("analysis");
+  };
+
+  const startAutodiagnosis = async () => {
+    if (!backendReady || !backendRunId || autodiagnosisRunning) {
+      return;
+    }
+
+    if (connectionStatus !== "connected") {
+      setNotice("Approve the backend connection before starting safe autodiagnosis.");
+      return;
+    }
+
+    setAutodiagnosisRunning(true);
+    setAnalysisReady(true);
+    setRunState("analyzing");
+    appendEvent(
+      "analysis",
+      "Safe autodiagnosis started",
+      "Backend will auto-run only deterministic read-only diagnostic tools.",
+    );
+
+    try {
+      const state = await backendApi.startAutodiagnosis(backendRunId);
+      syncRunState(state);
+      await refreshAuditEvents(backendRunId);
+      setAnalysisReady(true);
+
+      const currentActionNeedsReview =
+        state.current_action !== null &&
+        (state.current_action.status === "proposed" ||
+          state.current_action.status === "edited" ||
+          state.current_action.status === "blocked");
+
+      if (state.current_action?.status === "blocked" || state.run.status === "failed") {
+        appendEvent(
+          "error",
+          "Safe autodiagnosis stopped",
+          "See audit log for the blocked request or error.",
+        );
+        setNotice("Safe autodiagnosis stopped. See audit log for the blocked request or error.");
+        setActiveTab("actions");
+        return;
+      }
+
+      if (currentActionNeedsReview) {
+        appendEvent("approval", "A proposed fix requires technician approval", "Safe autodiagnosis handed off to the normal approval flow.");
+        setNotice("A proposed fix requires technician approval.");
+        setActiveTab("actions");
+        return;
+      }
+
+      appendEvent(
+        "analysis",
+        "Safe autodiagnosis completed",
+        "Redacted diagnostic evidence was captured.",
+      );
+      setNotice("Safe autodiagnosis completed. Redacted diagnostic evidence was captured.");
+      setActiveTab("actions");
+    } catch (error) {
+      setNotice(`Safe autodiagnosis stopped. See audit log for the blocked request or error. ${getApiErrorMessage(error)}`);
+      appendEvent(
+        "error",
+        "Safe autodiagnosis stopped",
+        "See audit log for the blocked request or error.",
+      );
+      await refreshAuditEvents(backendRunId).catch(() => undefined);
+    } finally {
+      setAutodiagnosisRunning(false);
+    }
   };
 
   const updateActionCommand = (actionId: string, command: string) => {
@@ -758,6 +844,42 @@ export function TechnicianConsole() {
     }
   };
 
+  const resetEnvironment = async () => {
+    if (!backendReady) {
+      setNotice("Backend reset is unavailable in mock mode.");
+      return;
+    }
+
+    try {
+      const response = await backendApi.resetEnvironment();
+      const backendTickets = await backendApi.listTickets({
+        priority: priorityFilter === "all" ? null : priorityFilter,
+        sort: sortBy,
+        status: statusFilter === "all" ? null : statusFilter,
+      });
+      const assignedTo = session?.name ?? "Technician";
+      setTicketList(backendTickets.map((ticket) => mapBackendTicket(ticket, assignedTo)));
+      setLastTicketFetchAt(new Date().toISOString());
+      setSelectedTicketId(null);
+      setBackendRunId(null);
+      setActiveTab("overview");
+      setSystemLoaded(false);
+      setConnectionStatus("not_requested");
+      setRunState("idle");
+      setAnalysisReady(false);
+      setActions([]);
+      setEvents([]);
+      setTerminalCommands([]);
+      setTerminalTranscript([]);
+      setValidation(initialValidation);
+      setDraft(emptyDraft);
+      setSubmitStatus("idle");
+      setNotice(response.message || "VM reset requested.");
+    } catch (error) {
+      setNotice(`VM reset failed. ${getApiErrorMessage(error)}`);
+    }
+  };
+
   const handleSidebarView = (view: SidebarView) => {
     pushAppRoute(routeByView[view]);
     setSidebarView(view);
@@ -802,19 +924,65 @@ export function TechnicianConsole() {
     setEvents((currentEvents) => [...currentEvents, createEvent(type, title, detail)]);
   }
 
-  const pageTitle = selectedTicket ? `Ticket #${selectedTicket.id}` : getPageTitle(sidebarView);
+  const newestTicket = useMemo(
+    () =>
+      ticketList
+        .slice()
+        .sort((first, second) => new Date(second.updatedAt).getTime() - new Date(first.updatedAt).getTime())[0],
+    [ticketList],
+  );
+  const latestQueueUpdate = lastTicketFetchAt ?? newestTicket?.updatedAt ?? null;
+  const queueHeading = getQueueHeading(sidebarView, filteredTickets.length);
+  const pageTitle = selectedTicket
+    ? `Ticket #${selectedTicket.id}`
+    : sidebarView === "overview"
+      ? "Service desk overview"
+      : queueHeading.title;
+  const headerDescription = selectedTicket
+    ? undefined
+    : sidebarView === "overview"
+      ? latestQueueUpdate
+        ? `Last queue update ${formatDate(latestQueueUpdate)}.`
+        : "No tickets loaded yet."
+      : `${filteredTickets.length} visible tickets across the selected queue.`;
+  const headerBadges = selectedTicket ? undefined : (
+    <>
+      {sidebarView === "overview" ? <Badge variant="secondary">{ticketList.length} assigned</Badge> : null}
+      {pendingActions.length ? <Badge variant="destructive">{pendingActions.length} approvals</Badge> : null}
+    </>
+  );
+  const headerAction =
+    !selectedTicket && sidebarView !== "overview" ? (
+      <>
+        <Button onClick={refreshTickets} size="sm" type="button" variant="outline">
+          <RefreshCwIcon data-icon="inline-start" />
+          Refresh
+        </Button>
+        <Button
+          className="bg-destructive text-white hover:bg-destructive/90"
+          onClick={resetEnvironment}
+          size="sm"
+          type="button"
+          variant="destructive"
+        >
+          <RotateCcwIcon data-icon="inline-start" />
+          Reset
+        </Button>
+      </>
+    ) : undefined;
 
   return (
     <>
       <AppShell
         activeView={sidebarView}
-        backendReady={backendReady}
         counts={sidebarCounts}
+        headerAction={headerAction}
+        headerBadges={headerBadges}
+        headerDescription={headerDescription}
         onLogout={logout}
         onNavigate={handleSidebarView}
         onSelectTicket={selectTicket}
         pageTitle={pageTitle}
-        pendingApprovals={pendingActions.length}
         profile={{
           email: session?.email ?? "",
           name: session?.name ?? "Technician",
@@ -847,12 +1015,15 @@ export function TechnicianConsole() {
               onRejectAction={rejectAction}
               onRetryAction={retryAction}
               onRunValidation={runValidation}
+              onStartAutodiagnosis={startAutodiagnosis}
               onStartAnalysis={startAnalysis}
               onSubmitActivity={submitActivity}
               onTabChange={setActiveTab}
               onUpdateCommand={updateActionCommand}
               pendingActions={pendingActions}
+              autodiagnosisRunning={autodiagnosisRunning}
               backendRunId={backendRunId}
+              canStartAutodiagnosis={canStartAutodiagnosis}
               runState={runState}
               selectedSystem={selectedSystem}
               setLogFilter={setLogFilter}
@@ -866,7 +1037,6 @@ export function TechnicianConsole() {
           ) : sidebarView === "overview" ? (
             <DashboardOverview
               highPriorityTickets={highPriorityTickets}
-              latestFetchedAt={lastTicketFetchAt}
               onSelectTicket={selectTicket}
               stats={stats}
               tickets={ticketList}
@@ -875,12 +1045,10 @@ export function TechnicianConsole() {
             <DashboardHome
               filteredTickets={filteredTickets}
               onSelectTicket={selectTicket}
-              onRefreshTickets={refreshTickets}
               priorityFilter={priorityFilter}
               setPriorityFilter={setPriorityFilter}
               setSortBy={setSortBy}
               setStatusFilter={setStatusFilter}
-              sidebarView={sidebarView}
               sortBy={sortBy}
               stats={stats}
               statusFilter={statusFilter}
@@ -936,6 +1104,15 @@ function upsertTicket(tickets: Ticket[], ticket: Ticket) {
   }
 
   return tickets.map((candidate) => (candidate.id === ticket.id ? ticket : candidate));
+}
+
+function upsertAction(actions: ProposedAction[], action: ProposedAction) {
+  const exists = actions.some((candidate) => candidate.id === action.id);
+  if (!exists) {
+    return [...actions, action];
+  }
+
+  return actions.map((candidate) => (candidate.id === action.id ? action : candidate));
 }
 
 function getPageTitle(view: SidebarView) {

@@ -1,5 +1,4 @@
 import {
-  PageHeading,
   PriorityBars,
   StatsGrid,
   StatusLabel,
@@ -8,41 +7,29 @@ import {
 } from "@/components/service-desk-ui";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { formatDate } from "@/lib/serviceDesk";
 import type { Ticket } from "@/types";
 
 export function DashboardOverview({
   highPriorityTickets,
-  latestFetchedAt,
   onSelectTicket,
   stats,
   tickets: allTickets,
 }: {
   highPriorityTickets: Ticket[];
-  latestFetchedAt: string | null;
   onSelectTicket: (ticketId: number) => void;
   stats: DashboardStat[];
   tickets: Ticket[];
 }) {
   const pendingTickets = allTickets.filter((ticket) => ticket.status === "PENDING").length;
   const doneTickets = allTickets.filter((ticket) => ticket.status === "DONE").length;
-  const newestTicket = allTickets
-    .slice()
-    .sort((first, second) => new Date(second.updatedAt).getTime() - new Date(first.updatedAt).getTime())[0];
-  const newestUpdateValue = latestFetchedAt ?? newestTicket?.updatedAt ?? null;
   const total = Math.max(allTickets.length, 1);
+  const overviewStats = stats.filter((stat) => stat.label !== "Pending approval");
 
   return (
     <div className="flex flex-col gap-5">
-      <PageHeading
-        badges={<StatusLabel label={`${allTickets.length} assigned`} />}
-        description={newestUpdateValue ? `Last queue update ${formatDate(newestUpdateValue)}.` : "No tickets loaded yet."}
-        title="Service desk overview"
-      />
-
       <StatsGrid
         stats={[
-          ...stats,
+          ...overviewStats,
           {
             detail: `${pendingTickets} tickets are waiting on technician review.`,
             label: "Pending tickets",

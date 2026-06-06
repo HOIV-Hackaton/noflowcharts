@@ -1,14 +1,9 @@
-import { RefreshCwIcon } from "lucide-react";
-
 import {
-  PageHeading,
   PriorityBars,
   StatsGrid,
   TicketTable,
   type DashboardStat,
-  type SidebarView,
 } from "@/components/service-desk-ui";
-import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -17,49 +12,31 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getQueueHeading } from "@/lib/queue";
 import type { Priority, Ticket, TicketStatus } from "@/types";
 
 export function DashboardHome({
   filteredTickets,
   onSelectTicket,
-  onRefreshTickets,
   priorityFilter,
   setPriorityFilter,
   setSortBy,
   setStatusFilter,
-  sidebarView,
   sortBy,
   stats,
   statusFilter,
 }: {
   filteredTickets: Ticket[];
   onSelectTicket: (ticketId: number) => void;
-  onRefreshTickets: () => void;
   priorityFilter: "all" | Priority;
   setPriorityFilter: (filter: "all" | Priority) => void;
   setSortBy: (sort: "date" | "priority" | "customer") => void;
   setStatusFilter: (filter: "all" | TicketStatus) => void;
-  sidebarView: SidebarView;
   sortBy: "date" | "priority" | "customer";
   stats: DashboardStat[];
   statusFilter: "all" | TicketStatus;
 }) {
-  const queueHeading = getQueueHeading(sidebarView, filteredTickets.length);
-
   return (
     <div className="flex flex-col gap-5">
-      <PageHeading
-        action={
-          <Button onClick={onRefreshTickets} size="sm" type="button" variant="outline">
-            <RefreshCwIcon data-icon="inline-start" />
-            Refresh
-          </Button>
-        }
-        description={`${filteredTickets.length} visible tickets across the selected queue.`}
-        title={queueHeading.title}
-      />
-
       <StatsGrid stats={stats} />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">

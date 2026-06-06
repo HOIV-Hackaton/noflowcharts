@@ -84,6 +84,22 @@ export function mapBackendAction(action: BackendActionRead, results: BackendComm
   };
 }
 
+export function mapBackendCommandResultAction(result: BackendCommandResultRead): ProposedAction {
+  const failed = result.timed_out || (result.exit_code !== null && result.exit_code !== 0);
+
+  return {
+    command: result.command,
+    flags: ["backend-validated", "read-only", "redacted"],
+    id: String(result.action_id),
+    purpose: "Backend-owned safe autodiagnosis result. Raw output remains redacted in the audit log.",
+    result: summarizeCommandResult(result),
+    risk: "Low",
+    status: failed ? "failed" : "executed",
+    title: `Safe diagnostic #${result.action_id}`,
+    type: "diagnostic",
+  };
+}
+
 export function mapRunState(state: BackendRunStateRead): RunState {
   switch (state.run.status) {
     case "created":

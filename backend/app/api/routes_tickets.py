@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.clients.phoenix import PhoenixClient, get_phoenix_client
 from app.core.errors import AppError, to_http_exception
-from app.schemas.phoenix import Customer, CustomerSystem, Employee, Ticket, TicketStatus
+from app.schemas.phoenix import Customer, CustomerSystem, Employee, SimpleMessage, Ticket, TicketStatus
 
 
 router = APIRouter(prefix="/api", tags=["tickets"])
@@ -12,6 +12,14 @@ router = APIRouter(prefix="/api", tags=["tickets"])
 def get_me(client: PhoenixClient = Depends(get_phoenix_client)) -> Employee:
     try:
         return client.get_me()
+    except AppError as exc:
+        raise to_http_exception(exc) from exc
+
+
+@router.post("/me/reset", response_model=SimpleMessage)
+def reset_me(client: PhoenixClient = Depends(get_phoenix_client)) -> SimpleMessage:
+    try:
+        return client.reset_me()
     except AppError as exc:
         raise to_http_exception(exc) from exc
 

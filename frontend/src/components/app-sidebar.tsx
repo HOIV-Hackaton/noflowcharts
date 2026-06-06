@@ -1,45 +1,61 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import {
 	AlertTriangleIcon,
+	ChevronDownIcon,
 	ClipboardListIcon,
-	ClockIcon,
 	InboxIcon,
 	LayoutDashboardIcon,
 	SearchIcon,
-	ShieldCheckIcon,
+	TicketIcon,
 } from "lucide-react";
 
 import { NavUser } from "@/components/nav-user";
 import type { SidebarCounts, SidebarView } from "@/components/service-desk-ui";
 import { StatusLabel } from "@/components/service-desk-ui";
-import { Input } from "@/components/ui/input";
+import {
+	Command,
+	CommandDialog,
+	CommandEmpty,
+	CommandGroup,
+	CommandInput,
+	CommandItem,
+	CommandList,
+	CommandSeparator,
+	CommandShortcut,
+} from "@/components/ui/command";
+import { Kbd } from "@/components/ui/kbd";
+import {
+	Collapsible,
+	CollapsibleContent,
+	CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
 	Sidebar,
 	SidebarContent,
 	SidebarFooter,
 	SidebarGroup,
 	SidebarGroupContent,
-	SidebarGroupLabel,
-	SidebarHeader,
 	SidebarMenu,
-	SidebarMenuBadge,
 	SidebarMenuButton,
 	SidebarMenuItem,
+	SidebarMenuSub,
+	SidebarMenuSubButton,
+	SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 import type { Ticket } from "@/types";
 
-const navItems: Array<{
-	icon: typeof LayoutDashboardIcon;
+const ticketViews: Array<{
+	icon: typeof InboxIcon;
 	label: string;
-	view: SidebarView;
+	view: Exclude<SidebarView, "overview">;
 }> = [
-	{ icon: LayoutDashboardIcon, label: "Overview", view: "overview" },
 	{ icon: InboxIcon, label: "All tickets", view: "all" },
 	{ icon: ClipboardListIcon, label: "Assigned", view: "assigned" },
 	{ icon: AlertTriangleIcon, label: "High priority", view: "high" },
-	{ icon: ClockIcon, label: "Pending approval", view: "pending" },
+	{ icon: TicketIcon, label: "Pending approval", view: "pending" },
 ];
 
 export function AppSidebar({
@@ -67,104 +83,218 @@ export function AppSidebar({
 	setSearch: (search: string) => void;
 	tickets: Ticket[];
 }) {
-	const focusTickets = tickets
-		.filter((ticket) => ticket.priority === "Critical" || ticket.status === "PENDING")
-		.slice(0, 4);
+	const [commandOpen, setCommandOpen] = useState(false);
+	const [commandQuery, setCommandQuery] = useState(search);
+	const ticketsOpen = activeView !== "overview";
+
+	useEffect(() => {
+		const onKeyDown = (event: KeyboardEvent) => {
+			if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+				event.preventDefault();
+				setCommandOpen((open) => !open);
+			}
+		};
+
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, []);
+
+	useEffect(() => {
+		if (commandOpen) {
+			setCommandQuery(search);
+		}
+	}, [commandOpen, search]);
+
+	const matchingTickets = useMemo(() => {
+		const query = commandQuery.trim().toLowerCase();
+		if (!query) {
+			return tickets.slice(0, 7);
+		}
+
+		return tickets
+			.filter((ticket) =>
+				[
+					ticket.title,
+					ticket.customer,
+					ticket.priority,
+					ticket.status,
+					String(ticket.id),
+				].some((value) => value.toLowerCase().includes(query)),
+			)
+			.slice(0, 8);
+	}, [commandQuery, tickets]);
+
+	const navigate = (view: SidebarView) => {
+		onNavigate(view);
+		setCommandOpen(false);
+	};
+
+	const selectTicket = (ticketId: number) => {
+		onSelectTicket(ticketId);
+		setCommandOpen(false);
+	};
+
+	const applySearch = () => {
+		setSearch(commandQuery.trim());
+		onNavigate("all");
+		setCommandOpen(false);
+	};
 
 	return (
-		<Sidebar
-			className={cn(
-				"*:data-[slot=sidebar-inner]:bg-sidebar",
-				"**:data-[slot=sidebar-menu-button]:[&>span]:text-sidebar-foreground/75"
-			)}
-			collapsible="icon"
-			variant="sidebar"
-		>
-			<SidebarHeader className="h-16 justify-center border-b px-2">
-				<SidebarMenu>
-					<SidebarMenuItem>
-						<SidebarMenuButton asChild size="lg">
-							<button onClick={() => onNavigate("overview")} type="button">
-								<span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-									<ShieldCheckIcon />
+		<>
+			<Sidebar
+				className={cn(
+					"*:data-[slot=sidebar-inner]:bg-sidebar",
+					"**:data-[slot=sidebar-menu-button]:[&>span]:text-sidebar-foreground/75"
+				)}
+				collapsible="icon"
+				variant="sidebar"
+			>
+				<SidebarContent className="pt-3">
+					<SidebarGroup>
+						<SidebarGroupContent>
+							<button
+								className="mx-2 flex h-10 w-[calc(100%-1rem)] items-center gap-2 rounded-lg border border-input bg-input/30 px-3 text-left text-muted-foreground transition hover:bg-muted hover:text-foreground"
+								onClick={() => setCommandOpen(true)}
+								type="button"
+							>
+								<SearchIcon className="size-3.5 shrink-0" />
+								<span className="min-w-0 flex-1 truncate">
+									{search ? `Search: ${search}` : "Search tickets"}
 								</span>
-								<span className="grid text-left leading-tight">
-									<span className="font-medium text-sidebar-foreground">techbold</span>
-									<span className="text-xs text-muted-foreground">service desk</span>
+								<span className="flex items-center gap-1">
+									<Kbd>⌘</Kbd>
+									<Kbd>K</Kbd>
 								</span>
 							</button>
-						</SidebarMenuButton>
-					</SidebarMenuItem>
-				</SidebarMenu>
-			</SidebarHeader>
-			<SidebarContent>
-				<SidebarGroup>
-					<SidebarGroupLabel>Queue</SidebarGroupLabel>
-					<SidebarGroupContent>
-						<label className="relative mb-2 block px-2">
-							<SearchIcon className="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-muted-foreground" />
-							<Input
-								className="pl-8"
-								onChange={(event) => setSearch(event.target.value)}
-								placeholder="Search tickets"
-								value={search}
-							/>
-						</label>
-						<SidebarMenu>
-							{navItems.map((item) => {
-								const Icon = item.icon;
-								const count = item.view === "overview" ? null : counts[item.view];
+						</SidebarGroupContent>
+					</SidebarGroup>
 
-								return (
-									<SidebarMenuItem key={item.view}>
-										<SidebarMenuButton
-											isActive={activeView === item.view}
-											onClick={() => onNavigate(item.view)}
-										>
-											<Icon />
-											<span>{item.label}</span>
-										</SidebarMenuButton>
-										{count !== null ? <SidebarMenuBadge>{count}</SidebarMenuBadge> : null}
+					<SidebarGroup>
+						<SidebarGroupContent>
+							<SidebarMenu className="gap-1.5">
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										className="cursor-pointer"
+										isActive={activeView === "overview"}
+										onClick={() => onNavigate("overview")}
+									>
+										<LayoutDashboardIcon />
+										<span>Overview</span>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+								<Collapsible className="group/collapsible" defaultOpen={ticketsOpen}>
+									<SidebarMenuItem>
+										<CollapsibleTrigger asChild>
+											<SidebarMenuButton className="cursor-pointer" isActive={ticketsOpen}>
+												<TicketIcon />
+												<span>Tickets</span>
+												<ChevronDownIcon className="ml-auto transition-transform group-data-[state=open]/collapsible:rotate-180" />
+											</SidebarMenuButton>
+										</CollapsibleTrigger>
+										<CollapsibleContent>
+											<SidebarMenuSub className="mt-1 gap-1 border-l">
+												{ticketViews.map((item) => {
+													const Icon = item.icon;
+													return (
+														<SidebarMenuSubItem key={item.view}>
+															<SidebarMenuSubButton
+																isActive={activeView === item.view}
+																onClick={() => onNavigate(item.view)}
+																className="cursor-pointer gap-2"
+															>
+																<Icon />
+																<span>{item.label}</span>
+																<span className="ml-auto text-xs font-medium tabular-nums text-sidebar-foreground">
+																	{counts[item.view]}
+																</span>
+															</SidebarMenuSubButton>
+														</SidebarMenuSubItem>
+													);
+												})}
+											</SidebarMenuSub>
+										</CollapsibleContent>
 									</SidebarMenuItem>
+								</Collapsible>
+							</SidebarMenu>
+						</SidebarGroupContent>
+					</SidebarGroup>
+				</SidebarContent>
+				<SidebarFooter className="border-t p-2">
+					<NavUser onLogout={onLogout} user={profile} />
+				</SidebarFooter>
+			</Sidebar>
+
+			<CommandDialog
+				description="Search tickets and navigate the service desk."
+				onOpenChange={setCommandOpen}
+				open={commandOpen}
+				title="Service desk command search"
+			>
+				<Command>
+					<CommandInput
+						onValueChange={setCommandQuery}
+						placeholder="Search tickets or pages..."
+						value={commandQuery}
+					/>
+					<CommandList>
+						<CommandEmpty>No results found.</CommandEmpty>
+						<CommandGroup heading="Pages">
+							<CommandItem onSelect={() => navigate("overview")} value="overview dashboard">
+								<LayoutDashboardIcon />
+								Overview
+								<CommandShortcut>⌘1</CommandShortcut>
+							</CommandItem>
+							{ticketViews.map((item) => {
+								const Icon = item.icon;
+								return (
+									<CommandItem
+										key={item.view}
+										onSelect={() => navigate(item.view)}
+										value={`${item.label} ${item.view}`}
+									>
+										<Icon />
+										{item.label}
+										<CommandShortcut>{counts[item.view]}</CommandShortcut>
+									</CommandItem>
 								);
 							})}
-						</SidebarMenu>
-					</SidebarGroupContent>
-				</SidebarGroup>
-
-				<SidebarGroup>
-					<SidebarGroupLabel>Focus</SidebarGroupLabel>
-					<SidebarGroupContent>
-						<SidebarMenu>
-							{focusTickets.length ? (
-								focusTickets.map((ticket) => (
-									<SidebarMenuItem key={ticket.id}>
-										<SidebarMenuButton
-											className="h-auto items-start py-2"
-											onClick={() => onSelectTicket(ticket.id)}
-										>
-											<span className="grid min-w-0 gap-1">
-												<span className="truncate text-sm">{ticket.title}</span>
-												<span className="flex items-center gap-1">
-													<StatusLabel label={ticket.priority} />
-													<StatusLabel label={ticket.status} />
-												</span>
-											</span>
-										</SidebarMenuButton>
-									</SidebarMenuItem>
-								))
-							) : (
-								<SidebarMenuItem>
-									<SidebarMenuButton disabled>No priority tickets</SidebarMenuButton>
-								</SidebarMenuItem>
-							)}
-						</SidebarMenu>
-					</SidebarGroupContent>
-				</SidebarGroup>
-			</SidebarContent>
-			<SidebarFooter className="border-t p-2">
-				<NavUser onLogout={onLogout} user={profile} />
-			</SidebarFooter>
-		</Sidebar>
+						</CommandGroup>
+						<CommandSeparator />
+						<CommandGroup heading="Tickets">
+							{matchingTickets.map((ticket) => (
+								<CommandItem
+									key={ticket.id}
+									onSelect={() => selectTicket(ticket.id)}
+									value={`${ticket.id} ${ticket.title} ${ticket.customer} ${ticket.priority} ${ticket.status}`}
+								>
+									<span className="grid min-w-0 flex-1">
+										<span className="truncate">{ticket.title}</span>
+										<span className="truncate text-xs text-muted-foreground">
+											#{ticket.id} · {ticket.customer}
+										</span>
+									</span>
+									<span className="flex items-center gap-1">
+										<StatusLabel label={ticket.priority} />
+										<StatusLabel label={ticket.status} />
+									</span>
+								</CommandItem>
+							))}
+						</CommandGroup>
+						{commandQuery.trim() ? (
+							<>
+								<CommandSeparator />
+								<CommandGroup heading="Search">
+									<CommandItem onSelect={applySearch} value={`apply search ${commandQuery}`}>
+										<SearchIcon />
+										Apply ticket filter: “{commandQuery.trim()}”
+									</CommandItem>
+								</CommandGroup>
+							</>
+						) : null}
+					</CommandList>
+				</Command>
+			</CommandDialog>
+		</>
 	);
 }

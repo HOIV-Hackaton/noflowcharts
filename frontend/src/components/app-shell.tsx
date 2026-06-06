@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import type { ReactNode } from "react";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppHeader } from "@/components/app-header";
@@ -8,28 +9,30 @@ import type { Ticket } from "@/types";
 
 export function AppShell({
 	activeView,
-	backendReady,
 	children,
 	counts,
+	headerAction,
+	headerBadges,
+	headerDescription,
 	onLogout,
 	onNavigate,
 	onSelectTicket,
 	pageTitle,
-	pendingApprovals,
 	profile,
 	search,
 	setSearch,
 	tickets,
 }: {
 	activeView: SidebarView;
-	backendReady: boolean;
-	children: React.ReactNode;
+	children: ReactNode;
 	counts: SidebarCounts;
+	headerAction?: ReactNode;
+	headerBadges?: ReactNode;
+	headerDescription?: string;
 	onLogout: () => void;
 	onNavigate: (view: SidebarView) => void;
 	onSelectTicket: (ticketId: number) => void;
 	pageTitle: string;
-	pendingApprovals: number;
 	profile: {
 		email: string;
 		name: string;
@@ -55,9 +58,10 @@ export function AppShell({
 				/>
 				<SidebarInset>
 					<AppHeader
-						backendReady={backendReady}
+						action={headerAction}
+						badges={headerBadges}
+						description={headerDescription}
 						pageTitle={pageTitle}
-						pendingApprovals={pendingApprovals}
 					/>
 					<main
 						className={cn(

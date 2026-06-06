@@ -96,13 +96,6 @@ export function TicketTerminal({
       terminal.open(containerRef.current);
       lastFitSizeRef.current = { height: 0, width: 0 };
       fitTerminal(true);
-      terminal.writeln("techbold remote terminal");
-      terminal.writeln(
-        runId
-          ? "Connect to open an interactive SSH shell for this run."
-          : "Approve the backend connection before opening the terminal.",
-      );
-      terminal.writeln("");
     }
 
     const inputDisposable = terminal.onData((data) => {
@@ -222,12 +215,16 @@ export function TicketTerminal({
       terminal.writeln("\r\n\x1b[31mTerminal websocket failed.\x1b[0m");
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       socketRef.current = null;
       terminal.options.disableStdin = true;
       pendingConfirmationRef.current = null;
       setAgentStarted(false);
       setConnectionState("disconnected");
+      if (terminalHadErrorRef.current && event.reason) {
+        terminal.writeln(`\r\n\x1b[31m${event.reason}\x1b[0m`);
+        return;
+      }
       if (!terminalHadErrorRef.current) {
         terminal.writeln("\r\n\x1b[90mTerminal session closed.\x1b[0m");
       }
@@ -316,15 +313,13 @@ export function TicketTerminal({
   return (
     <section className={["terminal-panel", variant === "compact" ? "terminal-panel-compact" : ""].join(" ")}>
       <div className="terminal-controls">
-        <span className="sr-only" aria-live="polite">
-          Terminal is {connectionState}.
-        </span>
         <Button
           disabled={!runId || connectionState !== "disconnected"}
           onClick={connect}
+          title={!runId ? "Approve the backend connection to create a run before connecting." : undefined}
           type="button"
         >
-          Connect
+          {runId ? "Connect" : "Waiting for run"}
         </Button>
         <Button
           disabled={connectionState !== "connected"}
@@ -444,7 +439,7 @@ function handleTerminalStatusMessage(
       terminal.writeln(`\r\n\x1b[90mTerminal closed${message.reason ? `: ${message.reason}` : ""}.\x1b[0m`);
       break;
     case "terminal_opened":
-      terminal.writeln("\r\n\x1b[90mRemote terminal ready.\x1b[0m");
+      terminal.writeln("\r\n\x1b[90mConnected.\x1b[0m");
       break;
     case "error":
     case "output":

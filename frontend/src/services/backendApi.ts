@@ -205,6 +205,11 @@ export type BackendTerminalTranscriptRead = {
   redacted: boolean;
 };
 
+export type BackendResetResponse = {
+  detail: Record<string, unknown> | null;
+  message: string;
+};
+
 export class ApiError extends Error {
   status: number;
 
@@ -252,6 +257,10 @@ export const backendApi = {
     return request<Record<string, unknown>>("/health");
   },
 
+  resetEnvironment() {
+    return request<BackendResetResponse>("/api/me/reset", { method: "POST" });
+  },
+
   createRun(ticketId: number) {
     return request<BackendRunStateRead>("/api/runs", {
       data: { ticket_id: ticketId },
@@ -269,6 +278,10 @@ export const backendApi = {
 
   nextAction(runId: string) {
     return request<BackendRunStateRead>(`/api/runs/${runId}/next`, { method: "POST" });
+  },
+
+  startAutodiagnosis(runId: string) {
+    return request<BackendRunStateRead>(`/api/runs/${runId}/autodiagnosis/start`, { method: "POST" });
   },
 
   confirmRisk(runId: string, actionId: number | null, confirmationText: string) {

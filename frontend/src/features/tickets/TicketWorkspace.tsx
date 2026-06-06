@@ -5,7 +5,6 @@ import {
   CheckIcon,
   ClipboardCheckIcon,
   PlayIcon,
-  RotateCcwIcon,
   ShieldCheckIcon,
   XIcon,
 } from "lucide-react";
@@ -15,7 +14,6 @@ import {
   DefinitionTable,
   EmptyState,
   EventTable,
-  HeadingWithTags,
   LogFilter,
   StatusLabel,
 } from "@/components/ui/primitives";
@@ -81,12 +79,15 @@ export function TicketWorkspace(props: {
   onRejectAction: (actionId: string) => void;
   onRetryAction: (actionId: string) => void;
   onRunValidation: () => void;
+  onStartAutodiagnosis: () => void;
   onStartAnalysis: () => void;
   onSubmitActivity: () => void;
   onTabChange: (tabId: TabId) => void;
   onUpdateCommand: (actionId: string, command: string) => void;
   pendingActions: ProposedAction[];
+  autodiagnosisRunning: boolean;
   runState: RunState;
+  canStartAutodiagnosis: boolean;
   selectedSystem: CustomerSystem | null;
   setLogFilter: (filter: "all" | EventType) => void;
   submitStatus: "idle" | "submitted";
@@ -179,7 +180,7 @@ export function TicketWorkspace(props: {
       ) : null}
 
       <Tabs onValueChange={(value) => props.onTabChange(value as TabId)} value={props.activeTab}>
-        <TabsList className="max-w-full overflow-x-auto" variant="line">
+        <TabsList className="max-w-full gap-2 overflow-x-auto" variant="line">
           {tabs.map((tab) => (
             <TabsTrigger key={tab.id} value={tab.id}>
               {tab.label}
@@ -235,12 +236,11 @@ export function TicketWorkspace(props: {
         </TabsContent>
         <TabsContent className="min-h-[560px]" value="actions">
           <ActionsTab
-            actions={props.actions}
-            onApproveAction={props.onApproveAction}
-            onRejectAction={props.onRejectAction}
-            onRetryAction={props.onRetryAction}
-            onUpdateCommand={props.onUpdateCommand}
+            connectionStatus={props.connectionStatus}
+            onApproveConnection={props.onApproveConnection}
+            onLoadSystem={props.onLoadSystem}
             runId={props.backendRunId}
+            systemLoaded={props.systemLoaded}
           />
         </TabsContent>
         <TabsContent value="logs">
@@ -496,121 +496,54 @@ function AnalysisTab({
 }
 
 function ActionsTab({
-  actions,
-  onApproveAction,
-  onRejectAction,
-  onRetryAction,
-  onUpdateCommand,
+  connectionStatus,
+  onApproveConnection,
+  onLoadSystem,
   runId,
+  systemLoaded,
 }: {
-  actions: ProposedAction[];
-  onApproveAction: (actionId: string) => void;
-  onRejectAction: (actionId: string) => void;
-  onRetryAction: (actionId: string) => void;
-  onUpdateCommand: (actionId: string, command: string) => void;
+  connectionStatus: ConnectionStatus;
+  onApproveConnection: () => void;
+  onLoadSystem: () => void;
   runId: string | null;
+  systemLoaded: boolean;
 }) {
-  return (
-    <div className="grid h-full min-h-[560px] gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
-      <ActionReviewPanel
-        actions={actions}
-        onApproveAction={onApproveAction}
-        onRejectAction={onRejectAction}
-        onRetryAction={onRetryAction}
-        onUpdateCommand={onUpdateCommand}
-      />
-      <Card className="min-h-0">
-        <CardHeader>
-          <CardTitle>Remote terminal</CardTitle>
-          <CardDescription>Interactive run terminal with backend approval prompts.</CardDescription>
-        </CardHeader>
-        <CardContent className="min-h-0 flex-1">
-          <Suspense fallback={<EmptyState title="Loading terminal" detail="Preparing the remote terminal surface." />}>
-            <TicketTerminal runId={runId} />
-          </Suspense>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
+  const [connectionDialogOpen, setConnectionDialogOpen] = useState(false);
 
-function ActionReviewPanel({
-  actions,
-  onApproveAction,
-  onRejectAction,
-  onRetryAction,
-  onUpdateCommand,
-}: {
-  actions: ProposedAction[];
-  onApproveAction: (actionId: string) => void;
-  onRejectAction: (actionId: string) => void;
-  onRetryAction: (actionId: string) => void;
-  onUpdateCommand: (actionId: string, command: string) => void;
-}) {
   return (
-    <Card className="min-h-0">
-      <CardHeader>
-        <CardTitle>Action review</CardTitle>
-        <CardDescription>Every command requires explicit technician control.</CardDescription>
-      </CardHeader>
-      <CardContent className="flex max-h-[650px] flex-col gap-3 overflow-auto">
-        {actions.length ? (
-          actions.map((action) => (
-            <Card key={action.id} size="sm">
-              <CardHeader>
-                <HeadingWithTags
-                  badges={
-                    <>
-                      <StatusLabel label={action.type} />
-                      <StatusLabel label={action.risk} />
-                      <StatusLabel label={action.status} />
-                    </>
-                  }
-                >
-                  {action.title}
-                </HeadingWithTags>
-                <CardDescription>{action.purpose}</CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3">
-                <Textarea
-                  disabled={action.status !== "pending"}
-                  onChange={(event) => onUpdateCommand(action.id, event.target.value)}
-                  value={action.command}
-                />
-                {action.result ? <p className="text-sm text-muted-foreground">{action.result}</p> : null}
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    disabled={action.status !== "pending"}
-                    onClick={() => onApproveAction(action.id)}
-                    size="sm"
-                    type="button"
-                  >
-                    <CheckIcon data-icon="inline-start" />
-                    Approve
-                  </Button>
-                  <Button
-                    disabled={action.status !== "pending"}
-                    onClick={() => onRejectAction(action.id)}
-                    size="sm"
-                    type="button"
-                    variant="destructive"
-                  >
-                    <XIcon data-icon="inline-start" />
-                    Reject
-                  </Button>
-                  <Button onClick={() => onRetryAction(action.id)} size="sm" type="button" variant="outline">
-                    <RotateCcwIcon data-icon="inline-start" />
-                    Retry
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))
-        ) : (
-          <EmptyState title="No proposed actions" detail="Start the agent in the terminal to request a next step." />
-        )}
-      </CardContent>
-    </Card>
+    <div className="flex h-full min-h-[560px] min-w-0 flex-col gap-3">
+      {!runId ? (
+        <Card className="border-dashed" size="sm">
+          <CardContent className="flex flex-col gap-3">
+            <div>
+              <p className="font-medium text-foreground">Connection approval required</p>
+              <p className="text-sm text-muted-foreground">
+                Load system info and approve the backend SSH connection before opening the agent terminal.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={onLoadSystem} type="button" variant={systemLoaded ? "outline" : "default"}>
+                Load system info
+              </Button>
+              <Button disabled={!systemLoaded} onClick={() => setConnectionDialogOpen(true)} type="button">
+                {connectionStatus === "connected" ? "Prepare terminal" : "Approve connection"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+      <Suspense fallback={<EmptyState title="Loading terminal" detail="Preparing the remote terminal surface." />}>
+        <TicketTerminal runId={runId} />
+      </Suspense>
+      <ConfirmDialog
+        confirmLabel="Approve"
+        description="This approves backend SSH access for the selected customer system."
+        onConfirm={onApproveConnection}
+        onOpenChange={setConnectionDialogOpen}
+        open={connectionDialogOpen}
+        title="Approve connection?"
+      />
+    </div>
   );
 }
 

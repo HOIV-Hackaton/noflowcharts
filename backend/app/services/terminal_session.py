@@ -6,12 +6,14 @@ from threading import Event, Thread
 from typing import Any
 
 import paramiko
+from paramiko.ssh_exception import AuthenticationException
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError, ConfigurationError, SshError
 from app.core.redaction import redact_text
 from app.schemas.phoenix import SystemInfo
+from app.services.ssh_keys import candidate_private_key_paths
 
 
 class TerminalSession:
@@ -27,7 +29,7 @@ class TerminalSession:
 
     async def bridge(self, websocket: WebSocket, system: SystemInfo, cols: int = 120, rows: int = 32) -> None:
         await websocket.accept()
-        client = self.client_factory()
+        client = None
         channel = None
         stop_event = Event()
         output_queue: asyncio.Queue[dict[str, str]] = asyncio.Queue()
@@ -35,7 +37,7 @@ class TerminalSession:
 
         try:
             await websocket.send_json({"type": "status", "message": "Opening SSH terminal..."})
-            channel = await asyncio.to_thread(self._open_channel, client, system, cols, rows)
+            client, channel = await asyncio.to_thread(self._open_channel, system, cols, rows)
             await websocket.send_json({"type": "status", "message": "Remote terminal connected."})
 
             reader = Thread(
@@ -64,34 +66,61 @@ class TerminalSession:
             if callable(close):
                 close()
 
-    def _open_channel(self, client: Any, system: SystemInfo, cols: int, rows: int):
-        key_path = self._private_key_path()
+    def _open_channel(self, system: SystemInfo, cols: int, rows: int):
+        key_paths = self._private_key_paths()
         username = system.username or self.settings.ssh_username
         if not username:
             raise ConfigurationError("Missing SSH username from Phoenix system and SSH_USERNAME fallback")
 
+        last_auth_error: Exception | None = None
+        last_load_error: Exception | None = None
+        attempted_keys = 0
         try:
-            if hasattr(client, "set_missing_host_key_policy"):
-                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            key = self._load_private_key(key_path)
-            client.connect(
-                hostname=system.ip,
-                port=system.port,
-                username=username,
-                pkey=key,
-                timeout=self.connect_timeout,
-                banner_timeout=self.connect_timeout,
-                auth_timeout=self.connect_timeout,
-                look_for_keys=False,
-                allow_agent=False,
-            )
-            transport = client.get_transport()
-            if transport is None:
-                raise SshError("SSH transport was not established")
-            channel = transport.open_session()
-            channel.get_pty(term="xterm-256color", width=cols, height=rows)
-            channel.invoke_shell()
-            return channel
+            for key_path in key_paths:
+                try:
+                    key = self._load_private_key(key_path)
+                    attempted_keys += 1
+                except ConfigurationError as exc:
+                    last_load_error = exc
+                    continue
+                client = self.client_factory()
+                try:
+                    if hasattr(client, "set_missing_host_key_policy"):
+                        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    client.connect(
+                        hostname=system.ip,
+                        port=system.port,
+                        username=username,
+                        pkey=key,
+                        timeout=self.connect_timeout,
+                        banner_timeout=self.connect_timeout,
+                        auth_timeout=self.connect_timeout,
+                        look_for_keys=False,
+                        allow_agent=False,
+                    )
+                    transport = client.get_transport()
+                    if transport is None:
+                        raise SshError("SSH transport was not established")
+                    channel = transport.open_session()
+                    channel.get_pty(term="xterm-256color", width=cols, height=rows)
+                    channel.invoke_shell()
+                    return client, channel
+                except AuthenticationException as exc:
+                    last_auth_error = exc
+                    close = getattr(client, "close", None)
+                    if callable(close):
+                        close()
+                except Exception:
+                    close = getattr(client, "close", None)
+                    if callable(close):
+                        close()
+                    raise
+
+            if attempted_keys == 0 and last_load_error is not None:
+                raise last_load_error
+            if last_auth_error is not None:
+                raise SshError("SSH terminal failed: Authentication failed for configured SSH key(s)")
+            raise SshError("SSH terminal failed: no configured SSH private key could be used")
         except AppError:
             raise
         except Exception as exc:
@@ -149,16 +178,8 @@ class TerminalSession:
                 )
                 return
 
-    def _private_key_path(self) -> Path:
-        try:
-            self.settings.require_ssh_key()
-        except RuntimeError as exc:
-            raise ConfigurationError(str(exc)) from exc
-        assert self.settings.ssh_private_key_path is not None
-        path = Path(self.settings.ssh_private_key_path).expanduser()
-        if not path.exists():
-            raise ConfigurationError("Configured SSH private key path does not exist")
-        return path
+    def _private_key_paths(self) -> list[Path]:
+        return candidate_private_key_paths(self.settings)
 
     def _load_private_key(self, path: Path) -> paramiko.PKey:
         loaders = (
@@ -197,38 +218,64 @@ class SshPtySession:
         self.channel: Any | None = None
 
     def open(self) -> None:
-        key_path = self._private_key_path()
+        key_paths = self._private_key_paths()
         username = self.system.username or self.settings.ssh_username
         if not username:
             raise ConfigurationError("Missing SSH username from Phoenix system and SSH_USERNAME fallback")
 
-        client = self.client_factory()
+        last_auth_error: Exception | None = None
+        last_load_error: Exception | None = None
+        attempted_keys = 0
         try:
-            if hasattr(client, "set_missing_host_key_policy"):
-                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            key = self._load_private_key(key_path)
-            client.connect(
-                hostname=self.system.ip,
-                port=self.system.port,
-                username=username,
-                pkey=key,
-                timeout=self.connect_timeout,
-                banner_timeout=self.connect_timeout,
-                auth_timeout=self.connect_timeout,
-                look_for_keys=False,
-                allow_agent=False,
-            )
-            transport = getattr(client, "get_transport", lambda: None)()
-            if transport is not None and hasattr(transport, "set_keepalive"):
-                transport.set_keepalive(30)
-            self.channel = client.invoke_shell(term=self.term, width=self.cols, height=self.rows)
-            if hasattr(self.channel, "settimeout"):
-                self.channel.settimeout(0.0)
-            self.client = client
+            for key_path in key_paths:
+                try:
+                    key = self._load_private_key(key_path)
+                    attempted_keys += 1
+                except ConfigurationError as exc:
+                    last_load_error = exc
+                    continue
+                client = self.client_factory()
+                try:
+                    if hasattr(client, "set_missing_host_key_policy"):
+                        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    client.connect(
+                        hostname=self.system.ip,
+                        port=self.system.port,
+                        username=username,
+                        pkey=key,
+                        timeout=self.connect_timeout,
+                        banner_timeout=self.connect_timeout,
+                        auth_timeout=self.connect_timeout,
+                        look_for_keys=False,
+                        allow_agent=False,
+                    )
+                    transport = getattr(client, "get_transport", lambda: None)()
+                    if transport is not None and hasattr(transport, "set_keepalive"):
+                        transport.set_keepalive(30)
+                    self.channel = client.invoke_shell(term=self.term, width=self.cols, height=self.rows)
+                    if hasattr(self.channel, "settimeout"):
+                        self.channel.settimeout(0.0)
+                    self.client = client
+                    return
+                except AuthenticationException as exc:
+                    last_auth_error = exc
+                    close = getattr(client, "close", None)
+                    if callable(close):
+                        close()
+                except Exception:
+                    close = getattr(client, "close", None)
+                    if callable(close):
+                        close()
+                    raise
+
+            if attempted_keys == 0 and last_load_error is not None:
+                raise last_load_error
+            if last_auth_error is not None:
+                raise SshError("SSH terminal failed: Authentication failed for configured SSH key(s)")
+            raise SshError("SSH terminal failed: no configured SSH private key could be used")
+        except AppError:
+            raise
         except Exception as exc:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
             message = redact_text(str(exc), self.settings.configured_secrets())
             raise SshError(f"SSH terminal failed: {message}") from exc
 
@@ -274,16 +321,8 @@ class SshPtySession:
         self.channel = None
         self.client = None
 
-    def _private_key_path(self) -> Path:
-        try:
-            self.settings.require_ssh_key()
-        except RuntimeError as exc:
-            raise ConfigurationError(str(exc)) from exc
-        assert self.settings.ssh_private_key_path is not None
-        path = Path(self.settings.ssh_private_key_path).expanduser()
-        if not path.exists():
-            raise ConfigurationError("Configured SSH private key path does not exist")
-        return path
+    def _private_key_paths(self) -> list[Path]:
+        return candidate_private_key_paths(self.settings)
 
     def _load_private_key(self, path: Path) -> paramiko.PKey:
         loaders = (paramiko.Ed25519Key.from_private_key_file, paramiko.RSAKey.from_private_key_file, paramiko.ECDSAKey.from_private_key_file)
