@@ -97,10 +97,7 @@ class TerminalManager:
         elif message_type == "agent_edit":
             await self._edit_agent(runtime, int(message.get("command_id")), str(message.get("command") or ""))
         elif message_type == "agent_message":
-            runtime.agent_active = True
-            runtime.waiting_after_rejection = False
-            self._audit(runtime.run_id, "agent_guidance_received", {"message": str(message.get("message") or "")})
-            await self._broadcast(runtime, {"type": "agent_guidance_recorded"})
+            await self._record_agent_guidance(runtime, str(message.get("message") or ""))
         elif message_type == "agent_cancel":
             runtime.agent_active = False
             runtime.waiting_after_rejection = False
@@ -165,6 +162,9 @@ class TerminalManager:
                 runtime.input_buffer = ""
                 await self._broadcast(runtime, {"type": "terminal_output", "data": "\r\n"})
                 if command:
+                    if runtime.waiting_after_rejection:
+                        await self._record_agent_guidance(runtime, command)
+                        continue
                     if runtime.agent_active:
                         self._audit(runtime.run_id, "manual_intervention_during_agent", {"command": command})
                     await self._submit_manual(runtime, command)
@@ -245,21 +245,22 @@ class TerminalManager:
             SAFETY_POLICY_SUMMARY,
             context.get("related_ticket"),
         )
-        safety = self.safety_reviewer.review(proposal.command, context)
+        command = _make_agent_command_non_interactive(proposal.command)
+        safety = self.safety_reviewer.review(command, context)
         status = TerminalCommandStatus.BLOCKED if safety.decision == "block" else TerminalCommandStatus.SUBMITTED
         with Session(engine) as session:
             repo = RunRepository(session)
             terminal_command = repo.add_terminal_command(
                 runtime.run_id,
                 TerminalCommandSource.AGENT,
-                proposal.command,
+                command,
                 terminal_session_id=runtime.db_session_id,
-                final_command=proposal.command,
+                final_command=command,
                 status=status,
                 classification=safety.classification,
                 risk_reason=safety.reason,
             )
-        self._audit(runtime.run_id, "agent_command_proposed", {"command_id": terminal_command.id, "command": proposal.command, "intent": proposal.intent})
+        self._audit(runtime.run_id, "agent_command_proposed", {"command_id": terminal_command.id, "command": command, "intent": proposal.intent})
         if safety.decision == "block":
             self._audit(runtime.run_id, "agent_command_blocked", {"command_id": terminal_command.id, "reason": safety.reason})
             await self._broadcast(runtime, {"type": "command_blocked", "command_id": terminal_command.id, "reason": safety.reason})
@@ -269,12 +270,21 @@ class TerminalManager:
                 {
                     "type": "agent_proposal",
                     "command_id": terminal_command.id,
-                    "command": proposal.command,
+                    "command": command,
                     "intent": proposal.intent,
                     "classification": safety.classification.value,
                     "reason": safety.reason,
                 },
             )
+
+    async def _record_agent_guidance(self, runtime: TerminalRuntime, guidance: str) -> None:
+        guidance = guidance.strip()
+        if not guidance:
+            return
+        runtime.agent_active = True
+        runtime.waiting_after_rejection = False
+        self._audit(runtime.run_id, "agent_guidance_received", {"message": guidance})
+        await self._broadcast(runtime, {"type": "agent_guidance_recorded"})
 
     async def _accept_agent(self, runtime: TerminalRuntime, command_id: int) -> None:
         with Session(engine) as session:
@@ -423,6 +433,12 @@ class TerminalManager:
                 }
                 for command in terminal_commands[-12:]
             ]
+            guidance_events = [
+                event.payload.get("message")
+                for event in repo.list_audit_events(run_id)[-12:]
+                if event.type == "agent_guidance_received" and event.payload.get("message")
+            ]
+            observations.extend({"source": "technician", "status": "guidance", "guidance": message} for message in guidance_events[-4:])
             snapshot = run.customer_system_snapshot or {}
             return {
                 "ticket": snapshot.get("ticket", {}),
@@ -438,3 +454,10 @@ class TerminalManager:
 
 
 terminal_manager = TerminalManager()
+
+
+def _make_agent_command_non_interactive(command: str) -> str:
+    parts = command.split()
+    if len(parts) >= 2 and parts[0] == "systemctl" and parts[1] in {"status", "list-units", "list-unit-files"} and "--no-pager" not in parts:
+        return " ".join([parts[0], "--no-pager", *parts[1:]])
+    return command

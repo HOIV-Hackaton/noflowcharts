@@ -61,7 +61,11 @@ class ConfirmingReviewer:
 
 
 class FakePlanner:
+    def __init__(self):
+        self.observations = []
+
     def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
+        self.observations = observations
         return CommandProposal(intent="Check service status", command="systemctl status nginx", expected_signal="Service state is visible")
 
 
@@ -211,6 +215,37 @@ def test_agent_reject_records_without_writing_to_pty():
         logs = manager.logs(run_id)
         assert logs[-1].status == TerminalCommandStatus.REJECTED.value
         assert "not the right service" in logs[-1].risk_reason
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_agent_guidance_after_rejection_is_not_submitted_as_shell_command():
+    async def run_test():
+        planner = FakePlanner()
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=planner)
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        proposal = await wait_for(queue, "agent_proposal")
+        assert proposal["command"] == "systemctl --no-pager status nginx"
+        await manager.handle_message(runtime, {"type": "agent_reject", "command_id": proposal["command_id"], "reason": "not enough context"})
+        await wait_for(queue, "agent_waiting_for_guidance")
+
+        await manager.handle_message(runtime, {"type": "input", "data": "sorry try again\r"})
+        await wait_for(queue, "agent_guidance_recorded")
+
+        assert FakePty.instances[-1].writes == []
+        logs = manager.logs(run_id)
+        assert len(logs) == 1
+        context = manager._context(run_id)
+        assert {"source": "technician", "status": "guidance", "guidance": "sorry try again"} in context["observations"]
+
+        await manager.handle_message(runtime, {"type": "agent_next"})
+        await wait_for(queue, "agent_proposal")
+        assert any(observation.get("guidance") == "sorry try again" for observation in planner.observations)
         await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())

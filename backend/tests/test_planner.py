@@ -83,6 +83,34 @@ def test_planner_prompt_includes_service_playbook_guidance():
     assert "public validation command" in system_prompt
 
 
+def test_planner_includes_anti_loop_context_for_recent_observations():
+    provider = FakeProvider(
+        {
+            "intent": "Inspect the discovered customer status service instead of repeating listener checks",
+            "command": "systemctl --no-pager status customer-status.service",
+            "expected_signal": "Service state explains why port 8080 is not listening",
+        }
+    )
+    observations = [
+        {"command": "ss -ltn sport = :8080", "status": "completed", "exit_code": 0, "output": ""},
+        {"command": "systemctl list-unit-files --type=service --all | grep -iE 'status|api'", "status": "completed", "exit_code": 0, "output": "customer-status.service disabled enabled"},
+        {"command": "ss -ltn sport = :8080", "status": "completed", "exit_code": 0, "output": ""},
+        {"command": "lsof -nP -iTCP:8080 -sTCP:LISTEN", "status": "rejected", "exit_code": None, "output": ""},
+        {"source": "technician", "status": "guidance", "guidance": "try again, but don't use lsof"},
+    ]
+
+    Planner(provider=provider).propose_next_command({}, {}, observations, "policy")
+
+    system_prompt = provider.messages[0]["content"]
+    user_prompt = provider.messages[1]["content"]
+    assert "anti_loop_context" in user_prompt
+    assert "ss -ltn sport = :8080 returned no output" in user_prompt
+    assert "'repeated_commands': ['ss -ltn sport = :8080']" in user_prompt
+    assert "try again, but don't use lsof" in user_prompt
+    assert "Treat successful empty output" in system_prompt
+    assert "pivot to that resource" in system_prompt
+
+
 def test_planner_includes_related_ticket_as_historical_context_only():
     provider = FakeProvider(
         {
