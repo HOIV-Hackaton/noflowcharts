@@ -85,6 +85,34 @@ class ActivityDraft(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class TicketMemory(SQLModel, table=True):
+    ticket_id: int = Field(primary_key=True)
+    title: str
+    description: str
+    embedding: list[float] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(index=True)
+    activity_summary: str | None = None
+    root_cause: str | None = None
+    actions_taken: str | None = None
+    commands_summary: str | None = None
+    validation_result: str | None = None
+    commands: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    solved_at: datetime | None = None
+
+
+class TicketRelation(SQLModel, table=True):
+    ticket_id: int = Field(primary_key=True)
+    related_ticket_id: int | None = Field(default=None, index=True)
+    decision: str = Field(index=True)
+    rationale: str | None = None
+    confidence: str | None = None
+    candidate_count: int = 0
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class WebSocketEvent(SQLModel, table=True):
     event_id: int | None = Field(default=None, primary_key=True)
     run_id: str = Field(foreign_key="run.id", index=True)
