@@ -79,6 +79,8 @@ def test_planner_prompt_includes_service_playbook_guidance():
     assert "systemctl cat" in system_prompt
     assert "EnvironmentFile" in system_prompt
     assert "curl --max-time 5 -fsS" in system_prompt
+    assert "explicit customer-facing health URL" in system_prompt
+    assert "public validation command" in system_prompt
 
 
 def test_planner_ignores_invalid_optional_command_class_hint():

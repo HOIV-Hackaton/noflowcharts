@@ -1,8 +1,9 @@
+import re
 from typing import Any
 
 from sqlmodel import Session
 
-from app.agent.planner import SAFETY_POLICY_SUMMARY, Planner
+from app.agent.planner import SAFETY_POLICY_SUMMARY, CommandProposal, Planner
 from app.clients.phoenix import PhoenixClient
 from app.core.errors import SafetyError, ValidationError
 from app.core.redaction import redact_payload
@@ -77,13 +78,15 @@ class RunManager:
         self._require_ssh_confirmed(run)
         snapshot = self._snapshot(run)
         observations = self._observations(run.id)
-        planner = self.planner or Planner()
-        proposal = planner.propose_next_command(
-            ticket=snapshot.get("ticket", {}),
-            customer_system=snapshot.get("customer_system", {}),
-            observations=observations,
-            safety_policy=SAFETY_POLICY_SUMMARY,
-        )
+        proposal = self._ticket_validation_proposal(snapshot, observations)
+        if proposal is None:
+            planner = self.planner or Planner()
+            proposal = planner.propose_next_command(
+                ticket=snapshot.get("ticket", {}),
+                customer_system=snapshot.get("customer_system", {}),
+                observations=observations,
+                safety_policy=SAFETY_POLICY_SUMMARY,
+            )
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
         action = self.repo.add_action(
@@ -410,6 +413,88 @@ class RunManager:
         if any(term in action_text for term in ("validat", "verify", "confirm", "test", "respond", "restored", "customer benefit")):
             return True
         return any(term in command_text for term in ("curl", "health", "is-active", "smoke", "wget --spider"))
+
+    def _ticket_validation_proposal(self, snapshot: dict[str, Any], observations: list[dict[str, Any]]) -> CommandProposal | None:
+        ticket = snapshot.get("ticket", {})
+        description = " ".join(str(ticket.get(field, "")) for field in ("title", "description"))
+        health_url = self._extract_health_url(description)
+        health_command = f"curl --max-time 5 -fsS {health_url}" if health_url else None
+        validation_command = self._extract_ticket_validation_command(description)
+
+        if health_command and not self._command_was_observed(observations, health_command):
+            return CommandProposal(
+                intent="Run the ticket-specified customer-facing health check before deeper diagnostics or changes.",
+                command=health_command,
+                expected_signal="The command exits 0 and returns the expected health payload, such as ok; failure means the incident is still active and needs diagnosis.",
+                risk_level="low",
+                command_class_hint=CommandClassification.READ_ONLY,
+                phase="validate",
+                evidence_basis="ticket provides an explicit local health endpoint",
+                evidence_gap="whether the customer-facing status API is currently reachable",
+            )
+
+        if (not health_command or self._command_succeeded(observations, health_command)) and validation_command:
+            if validation_command and not self._command_was_observed(observations, validation_command):
+                return CommandProposal(
+                    intent="Run the ticket-provided validation command after the available ticket-directed checks indicate it is the next required proof.",
+                    command=validation_command,
+                    expected_signal="The command exits 0 and reports that the ticket-required service or capability is healthy.",
+                    risk_level="medium",
+                    command_class_hint=CommandClassification.RISKY_MUTATING,
+                    rollback_note="No rollback is expected because this is the ticket-provided validation command, not a repair command.",
+                    phase="validate",
+                    evidence_basis="direct health endpoint validation succeeded" if health_command else "ticket provides an explicit validation command",
+                    evidence_gap="whether the ticket's required validation passes",
+                )
+
+        return None
+
+    def _extract_health_url(self, text: str) -> str | None:
+        match = re.search(r"https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/[^\s)`,]*health[^\s)`,]*", text, flags=re.IGNORECASE)
+        return match.group(0).rstrip(".,") if match else None
+
+    def _extract_ticket_validation_command(self, text: str) -> str | None:
+        lines = text.splitlines()
+        for index, raw_line in enumerate(lines):
+            line = raw_line.strip().lower()
+            if "validation" not in line and line != "run:":
+                continue
+            for candidate_line in lines[index + 1 : index + 5]:
+                command = self._normalize_ticket_command(candidate_line.strip())
+                if command:
+                    return command
+        return None
+
+    def _normalize_ticket_command(self, line: str) -> str | None:
+        command = line.strip().strip("`").strip()
+        if not command or command.startswith("#"):
+            return None
+        if command.startswith(("- ", "* ")):
+            command = command[2:].strip()
+        if command.startswith("sudo ") and not command.startswith("sudo -n "):
+            command = "sudo -n " + command.removeprefix("sudo ").strip()
+        if self._is_simple_ticket_validation_command(command):
+            return command
+        return None
+
+    def _is_simple_ticket_validation_command(self, command: str) -> bool:
+        if any(operator in command for operator in ("&&", "||", ";", "|", "$", "`", "\n")):
+            return False
+        allowed_prefixes = (
+            "curl ",
+            "wget --spider ",
+            "systemctl is-active ",
+            "sudo -n systemctl is-active ",
+            "sudo -n /",
+            "/",
+        )
+        return command.startswith(allowed_prefixes)
+
+    def _command_was_observed(self, observations: list[dict[str, Any]], command: str) -> bool:
+        return any(observation.get("command") == command for observation in observations)
+
+    def _command_succeeded(self, observations: list[dict[str, Any]], command: str) -> bool:
+        return any(observation.get("command") == command and observation.get("exit_code") == 0 and not observation.get("timed_out") for observation in observations)
 
     def _require_ssh_confirmed(self, run: Run) -> None:
         if not run.ssh_confirmed:
