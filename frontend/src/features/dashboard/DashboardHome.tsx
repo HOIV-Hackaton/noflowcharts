@@ -60,7 +60,7 @@ export function DashboardHome({
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <select
             aria-label="Status filter"
-            className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary/60 focus:bg-card focus:ring-2 focus:ring-primary/15 sm:w-[150px]"
+            className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/15 sm:w-[150px]"
             onChange={(event) => setStatusFilter(event.target.value as "all" | TicketStatus)}
             value={statusFilter}
           >
@@ -71,7 +71,7 @@ export function DashboardHome({
           </select>
           <select
             aria-label="Priority filter"
-            className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary/60 focus:bg-card focus:ring-2 focus:ring-primary/15 sm:w-[150px]"
+            className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/15 sm:w-[150px]"
             onChange={(event) => setPriorityFilter(event.target.value as "all" | Priority)}
             value={priorityFilter}
           >
@@ -83,7 +83,7 @@ export function DashboardHome({
           </select>
           <select
             aria-label="Ticket sort"
-            className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary/60 focus:bg-card focus:ring-2 focus:ring-primary/15 sm:w-[140px]"
+            className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/15 sm:w-[140px]"
             onChange={(event) => setSortBy(event.target.value as "date" | "priority" | "customer")}
             value={sortBy}
           >

@@ -55,24 +55,19 @@ Reusable components should be extracted when behavior or structure appears in mo
 
 ## Visual Style Guide
 
-The dashboard follows the generated x.ai-inspired design system in `../DESIGN.md`, installed with:
-
-```bash
-npx getdesign@latest add x.ai
-```
+The dashboard follows the Vercel-inspired design system in `../DESIGN.md`.
 
 Required visual direction:
 
-- Use a near-black app canvas with charcoal cards and hairline borders.
+- Use a near-white app canvas (`#fafafa`) with white cards and Vercel hairline borders (`#ebebeb`).
 - Use Inter for all typography: display, body, labels, chips, controls, technical captions, and table headers.
 - Keep typography lightweight, geometric, and restrained with regular weights by default and medium weight only for compact controls that need scanability.
-- Use white outline pill buttons as the default interactive vocabulary.
-- Use white-filled pill buttons only for primary/committing actions.
-- Use semantic colored buttons for technician decisions: green for approve/submit/validate, red for reject/abort/sign out, amber for retry/caution, and blue for informational workflow actions such as load/start/generate.
-- Avoid decorative gradients, shadows, colorful dashboard chrome, and light-mode surfaces.
-- Use accent colors sparingly for operational emphasis only. Priority chips must follow clear severity semantics: critical red, high orange, medium/pending amber, low/complete green, open blue, and idle/draft/not-run neutral gray.
-- Form fields should sit on the near-black canvas with hairline borders and only lift to the card surface on focus.
-- Cards should use tight 8px rounding, no drop shadows, and a single hairline border.
+- Use filled, borderless, small-radius buttons. Primary uses ink (`#171717`); info uses Link Blue (`#0070f3`); success/complete uses green (`#00a67d`); destructive uses Error (`#ee0000`); caution uses Warning (`#f5a623`).
+- Avoid decorative gradients, heavy shadows, and colorful dashboard chrome. Gradients are reserved only for data/hero-scale accent moments.
+- Use accent colors sparingly for operational emphasis only. Priority-only chips (`Critical`, `High`, `Medium`, `Low`) use white fill with a current-color border and text color. Status chips use semantic soft fills: red for critical/high/error, yellow for pending/awaiting, amber for warning/caution, green for done/connected/passed/success, blue for open/info, grey for idle/draft/not-run.
+- Badges use two treatments: soft status chips with text only, and compact metric chips with pastel fill plus colored text.
+- Form fields sit on white/canvas-soft surfaces with hairline borders.
+- Cards should use tight 8px rounding, minimal shadow at most, and a single hairline border.
 
 ## Primary User
 

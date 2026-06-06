@@ -66,6 +66,30 @@ class FakePhoenix:
             created_at=datetime.now(UTC),
         )
 
+class TicketValidationPhoenix(FakePhoenix):
+    def get_ticket(self, ticket_id):
+        ticket = super().get_ticket(ticket_id)
+        ticket.description = """
+The customer reports that the internal status API is not reachable at:
+http://localhost:8080/health
+
+Public validation:
+sudo /usr/local/bin/status-smoke-test.sh
+"""
+        return ticket
+
+
+class ValidationOnlyPhoenix(FakePhoenix):
+    def get_ticket(self, ticket_id):
+        ticket = super().get_ticket(ticket_id)
+        ticket.description = """
+Customer report: the batch processor health is degraded.
+
+Run:
+/usr/local/bin/batch-smoke-test.sh
+"""
+        return ticket
+
 
 class FailingActivityPhoenix(FakePhoenix):
     def create_activity(self, activity: ActivityCreate):
@@ -189,6 +213,44 @@ def test_run_manager_requires_approval_before_command_execution():
 
         assert ssh_runner.commands == [("10.0.0.5", "systemctl status nginx")]
         assert state.command_results[0].stdout == "active"
+
+def test_run_manager_prefers_ticket_health_and_public_validation_before_generic_planner():
+    with make_session() as session:
+        ssh_runner = FakeSshRunner()
+        manager = make_manager(
+            session,
+            phoenix=TicketValidationPhoenix(),
+            planner=FakePlanner("ss -ltn sport = :8080"),
+            ssh_runner=ssh_runner,
+        )
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+
+        state = manager.propose_next(run_id)
+        assert state.current_action.command == "curl --max-time 5 -fsS http://localhost:8080/health"
+
+        _, action_id = manager.approve(run_id, state.current_action.id)
+        manager.execute_action(run_id, action_id)
+
+        state = manager.propose_next(run_id)
+        assert state.current_action.command == "sudo -n /usr/local/bin/status-smoke-test.sh"
+        assert state.current_action.typed_confirmation_status == "pending"
+        assert ssh_runner.commands == [("10.0.0.5", "curl --max-time 5 -fsS http://localhost:8080/health")]
+
+
+def test_run_manager_can_propose_explicit_validation_command_without_health_url():
+    with make_session() as session:
+        manager = make_manager(
+            session,
+            phoenix=ValidationOnlyPhoenix(),
+            planner=FakePlanner("systemctl status batch-processor"),
+        )
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+
+        state = manager.propose_next(run_id)
+
+        assert state.current_action.command == "/usr/local/bin/batch-smoke-test.sh"
 
 
 def test_run_manager_requires_typed_confirmation_for_risky_command():

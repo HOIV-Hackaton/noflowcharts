@@ -67,12 +67,12 @@ export function BlocksSidebar({
       aria-label="Service desk navigation"
     >
       <button
-        className="flex h-9 w-full items-center justify-between rounded-lg border border-border bg-background px-3 text-left text-[13px] text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
+        className="flex h-9 w-full items-center justify-between rounded-md border border-border bg-card px-3 text-left text-[13px] text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
         onClick={() => setCommandOpen(true)}
         type="button"
       >
         <span className="truncate">{search ? `Filter: ${search}` : "Search tickets..."}</span>
-        <kbd className="ml-2 rounded-full border border-border bg-background px-1.5 py-0.5 font-mono text-[10px] font-normal">
+        <kbd className="ml-2 rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] font-normal text-foreground">
           ⌘K
         </kbd>
       </button>
@@ -124,7 +124,7 @@ export function BlocksSidebar({
           onClick={() => setProfileOpen((current) => !current)}
           type="button"
         >
-          <span className="flex aspect-square size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-xs font-normal text-foreground">
+          <span className="flex aspect-square size-8 shrink-0 items-center justify-center rounded-md border border-border bg-card text-xs font-normal text-foreground">
             {profile.name.slice(0, 1)}
           </span>
           <span className="grid min-w-0 flex-1 text-left leading-tight">
@@ -141,7 +141,7 @@ export function BlocksSidebar({
               <p className="truncate text-xs text-muted-foreground">{profile.role}</p>
             </div>
             <button
-              className="mt-1 block w-full rounded-full px-2 py-2 text-left text-[13px] font-normal text-primary hover:bg-primary/10"
+              className="mt-1 block w-full rounded px-2 py-2 text-left text-[13px] font-normal text-primary hover:bg-primary/10"
               onClick={() => {
                 setProfileOpen(false);
                 setSignOutOpen(true);
@@ -268,7 +268,7 @@ function BlocksCommandMenu({
       }}
       role="presentation"
     >
-      <div className="w-full max-w-xl overflow-hidden rounded-xl border border-border bg-card" role="dialog" aria-modal="true" aria-labelledby="command-menu-title">
+      <div className="w-full max-w-xl overflow-hidden rounded-lg border border-border bg-card" role="dialog" aria-modal="true" aria-labelledby="command-menu-title">
         <div className="sr-only">
           <h2 id="command-menu-title">Command menu</h2>
           <p>Use the command menu to navigate and search tickets.</p>
@@ -283,7 +283,7 @@ function BlocksCommandMenu({
             value={inputValue}
           />
           <button className="flex shrink-0 items-center" onClick={close} type="button">
-            <kbd className="rounded-full border border-border bg-background px-2 py-1 font-mono text-[10px] text-muted-foreground">
+            <kbd className="rounded border border-border bg-muted px-2 py-1 font-mono text-[10px] text-foreground">
               Esc
             </kbd>
           </button>
@@ -367,19 +367,19 @@ export function BlocksConfirmDialog({
   const toneClasses = {
     danger: {
       button: "button button-danger",
-      icon: "border-severity-critical/45 bg-severity-critical/10 text-severity-critical",
+      icon: "bg-accent-error-soft text-accent-error",
     },
     default: {
       button: "button button-dark",
-      icon: "border-state-open/45 bg-state-open/10 text-state-open",
+      icon: "bg-accent-link-soft text-accent-link-deep",
     },
     success: {
       button: "button button-success",
-      icon: "border-severity-low/45 bg-severity-low/10 text-severity-low",
+      icon: "bg-accent-success-soft text-accent-success-deep",
     },
     warning: {
       button: "button button-warning",
-      icon: "border-severity-medium/45 bg-severity-medium/10 text-severity-medium",
+      icon: "bg-accent-warning-soft text-accent-warning-deep",
     },
   }[tone];
 
@@ -388,12 +388,12 @@ export function BlocksConfirmDialog({
       <section
         aria-labelledby="confirm-dialog-title"
         aria-modal="true"
-        className="flex w-full max-w-sm flex-col items-center rounded-xl border border-border bg-card p-5 text-center"
+        className="flex w-full max-w-sm flex-col items-center rounded-lg border border-border bg-card p-5 text-center"
         role="dialog"
       >
         <div
           className={[
-            "mb-4 flex size-11 items-center justify-center rounded-full border",
+            "mb-4 flex size-11 items-center justify-center rounded-md",
             toneClasses.icon,
           ].join(" ")}
         >
@@ -444,7 +444,7 @@ function CommandItem({
         {description ? <span className="block truncate text-xs text-muted-foreground">{description}</span> : null}
       </span>
       {meta ? (
-        <span className="ml-auto rounded-full border border-border bg-background px-2 py-1 font-mono text-[10px] text-muted-foreground">
+        <span className="ml-auto rounded border border-border bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground">
           {meta}
         </span>
       ) : null}
@@ -468,7 +468,7 @@ function BlocksSidebarItem({
   return (
     <button
       className={[
-        "group flex h-8 w-full items-center justify-between rounded-full px-2 text-left text-[13px] transition",
+        "group flex h-8 w-full items-center justify-between rounded px-2 text-left text-[13px] transition",
         variant === "child" ? "font-normal text-muted-foreground" : "font-normal text-foreground",
         active
           ? "bg-muted text-foreground"
@@ -479,7 +479,7 @@ function BlocksSidebarItem({
     >
       <span className="truncate">{label}</span>
       {typeof count === "number" ? (
-        <span className="ml-2 min-w-5 rounded-full bg-background px-1.5 py-0.5 text-center font-mono text-[11px] font-normal text-muted-foreground">
+        <span className="ml-2 min-w-4 text-right font-mono text-[12px] font-normal text-muted-foreground">
           {count}
         </span>
       ) : null}
@@ -504,19 +504,25 @@ export function BlocksTicketTable({
         <col className="w-[14%]" />
         <col className="w-[5%]" />
       </colgroup>
-      <thead className="bg-background">
-        <tr className="border-b bg-background hover:bg-background">
+      <thead className="bg-muted">
+        <tr className="border-b bg-muted hover:bg-muted">
           <TableHead>Ticket</TableHead>
           <TableHead>Customer</TableHead>
           <TableHead>Priority</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Updated</TableHead>
-          <th className="h-11 w-12 border-b border-border bg-background px-4" />
+          <th className="h-11 w-12 border-b border-border bg-muted px-4" />
         </tr>
       </thead>
       <tbody>
         {tickets.length ? (
-          tickets.map((ticket) => (
+          tickets.map((ticket, index) => {
+            const cellClass = [
+              "h-14 px-4 align-middle",
+              index === tickets.length - 1 ? "" : "border-b border-border",
+            ].join(" ");
+
+            return (
             <tr
               className="group cursor-pointer outline-none transition hover:bg-muted/40 focus-visible:bg-muted/50"
               key={ticket.id}
@@ -530,29 +536,30 @@ export function BlocksTicketTable({
               role="button"
               tabIndex={0}
             >
-              <td className="h-14 border-b border-border px-4 align-middle">
+              <td className={cellClass}>
                 <strong className="block font-normal text-foreground">{ticket.title}</strong>
                 <span className="font-mono text-xs text-muted-foreground">#{ticket.id}</span>
               </td>
-              <td className="h-14 border-b border-border px-4 align-middle text-muted-foreground">
+              <td className={[cellClass, "text-muted-foreground"].join(" ")}>
                 {ticket.customer}
               </td>
-              <td className="h-14 border-b border-border px-4 align-middle">
+              <td className={cellClass}>
                 <BlocksStatusBadge label={ticket.priority} />
               </td>
-              <td className="h-14 border-b border-border px-4 align-middle">
+              <td className={cellClass}>
                 <BlocksStatusBadge label={ticket.status} />
               </td>
-              <td className="h-14 border-b border-border px-4 align-middle text-muted-foreground">
+              <td className={[cellClass, "text-muted-foreground"].join(" ")}>
                 {formatTicketDate(ticket.updatedAt)}
               </td>
-              <td className="h-14 border-b border-border px-4 text-right align-middle">
-                <span className="inline-flex size-7 items-center justify-center rounded-full border border-border text-muted-foreground transition group-hover:text-foreground">
+              <td className={[cellClass, "text-right"].join(" ")}>
+                <span className="inline-flex size-7 items-center justify-center rounded bg-muted text-muted-foreground transition group-hover:text-foreground">
                   <ArrowRightIcon />
                 </span>
               </td>
             </tr>
-          ))
+            );
+          })
         ) : (
           <tr>
             <td className="h-24 px-4 text-center text-muted-foreground" colSpan={6}>
@@ -567,7 +574,7 @@ export function BlocksTicketTable({
 
 function TableHead({ children }: { children: string }) {
   return (
-    <th className="h-11 border-b border-border bg-background px-4 text-left font-mono text-xs font-normal uppercase text-muted-foreground">
+    <th className="h-11 border-b border-border bg-muted px-4 text-left font-mono text-xs font-normal uppercase text-muted-foreground">
       {children}
     </th>
   );
@@ -577,7 +584,7 @@ function BlocksStatusBadge({ label }: { label: string }) {
   return (
     <span
       className={[
-        "inline-flex whitespace-nowrap rounded-full border px-2.5 py-1 font-mono text-[11px] font-normal uppercase leading-none",
+        "status-label",
         getStatusBadgeClass(label),
       ].join(" ")}
     >
@@ -653,14 +660,14 @@ function BlocksChartStatCard({
           <strong
             className={[
               "mt-1 block max-w-full truncate text-[clamp(1.35rem,1.8vw,1.7rem)] font-normal leading-tight tabular-nums",
-              styles.value,
+              "text-foreground",
             ].join(" ")}
           >
             {stat.value}
           </strong>
         </div>
         {change ? (
-          <span className={["mt-8 whitespace-nowrap text-sm font-medium tabular-nums", styles.change].join(" ")}>
+          <span className={["metric-chip mt-8 whitespace-nowrap text-sm font-medium tabular-nums", styles.change].join(" ")}>
             {change}
           </span>
         ) : null}
@@ -691,7 +698,7 @@ function BlocksSimpleStatCard({
       ].join(" ")}
     >
       <div>
-        <p className="font-mono text-[11px] font-normal uppercase tracking-normal text-muted-foreground">{stat.label}</p>
+        <p className="font-mono text-[11px] font-normal uppercase tracking-normal text-foreground">{stat.label}</p>
         {isStatus ? (
           <div className="mt-3">
             <BlocksStatusBadge label={String(stat.value)} />
@@ -701,7 +708,7 @@ function BlocksSimpleStatCard({
             className={[
               "mt-3 block max-w-full truncate font-normal leading-tight tabular-nums",
               density === "compact" ? "text-xl" : "text-[clamp(1.45rem,2vw,2rem)]",
-              styles.value,
+              "text-foreground",
             ].join(" ")}
           >
             {stat.value}
@@ -709,7 +716,7 @@ function BlocksSimpleStatCard({
         )}
       </div>
       {change ? (
-        <span className={["mt-3 block font-mono text-[11px] font-normal uppercase", styles.change].join(" ")}>
+        <span className={["metric-chip mt-3 self-start text-[13px] font-medium", styles.change].join(" ")}>
           {change}
         </span>
       ) : null}
@@ -719,26 +726,22 @@ function BlocksSimpleStatCard({
 
 const statToneStyles = {
   positive: {
-    chart: "#a0c3ec",
-    change: "text-accent-breeze",
-    value: "text-accent-breeze",
+    chart: "#00a67d",
+    change: "bg-accent-success-soft text-accent-success-deep",
   },
   negative: {
-    chart: "#ff7a17",
-    change: "text-accent-sunset",
-    value: "text-accent-sunset",
+    chart: "#ff4d4d",
+    change: "bg-accent-error-soft text-accent-error",
   },
   neutral: {
-    chart: "#8a8f98",
-    change: "text-muted-foreground",
-    value: "text-foreground",
+    chart: "#0070f3",
+    change: "bg-muted text-muted-foreground",
   },
 } satisfies Record<
   BlocksStatTone,
   {
     chart: string;
     change: string;
-    value: string;
   }
 >;
 

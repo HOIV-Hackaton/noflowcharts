@@ -8,15 +8,15 @@ export function getStatusBadgeClass(label: string) {
     normalized.includes("error") ||
     normalized.includes("abort")
   ) {
-    return "border-severity-critical/45 bg-severity-critical/10 text-severity-critical";
+    return "bg-accent-error-soft text-accent-error";
   }
 
   if (normalized.includes("high")) {
-    return "border-severity-high/45 bg-severity-high/10 text-severity-high";
+    return "bg-accent-error-soft text-accent-error";
   }
 
   if (normalized.includes("medium") || normalized.includes("pending") || normalized.includes("awaiting")) {
-    return "border-severity-medium/45 bg-severity-medium/10 text-severity-medium";
+    return "bg-accent-pending-soft text-accent-pending-deep";
   }
 
   if (
@@ -28,11 +28,11 @@ export function getStatusBadgeClass(label: string) {
     normalized.includes("executed") ||
     normalized.includes("done")
   ) {
-    return "border-severity-low/45 bg-severity-low/10 text-severity-low";
+    return "bg-accent-success-soft text-accent-success-deep";
   }
 
   if (normalized.includes("open") || normalized.includes("approval") || normalized.includes("analysis")) {
-    return "border-state-open/45 bg-state-open/10 text-state-open";
+    return "bg-accent-link-soft text-accent-link-deep";
   }
 
   if (
@@ -43,8 +43,8 @@ export function getStatusBadgeClass(label: string) {
     normalized.includes("incomplete") ||
     normalized.includes("disconnected")
   ) {
-    return "border-state-neutral/45 bg-state-neutral/10 text-state-neutral";
+    return "bg-muted text-muted-foreground";
   }
 
-  return "border-border bg-background text-muted-foreground";
+  return "bg-muted text-muted-foreground";
 }

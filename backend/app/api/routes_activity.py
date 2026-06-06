@@ -1,18 +1,13 @@
 from fastapi import APIRouter, Depends
-from sqlmodel import Session
 
+from app.api.dependencies import get_run_manager
 from app.core.errors import AppError, ValidationError, to_http_exception
-from app.db.session import get_session
 from app.schemas.phoenix import Activity, StatusUpdate, Ticket, TicketStatus
 from app.schemas.runs import ActivityDraftRead, ActivityDraftUpdate, ActivityReviewRequest, ActivitySubmitRequest
 from app.services.run_manager import RunManager
 
 
 router = APIRouter(tags=["activity"])
-
-
-def get_run_manager(session: Session = Depends(get_session)) -> RunManager:
-    return RunManager(session)
 
 
 @router.post("/api/runs/{run_id}/activity/draft", response_model=ActivityDraftRead)

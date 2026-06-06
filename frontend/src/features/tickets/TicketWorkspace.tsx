@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import {
   BlocksConfirmDialog,
   BlocksStatsGrid,
   type BlocksStat,
 } from "../../components/blocks";
+import { MarkdownContent } from "../../components/ui/MarkdownContent";
 import {
   DefinitionTable,
   EmptyState,
@@ -27,6 +28,10 @@ import type {
   Ticket,
   ValidationResult,
 } from "../../types";
+
+const TicketTerminal = lazy(() =>
+  import("./TicketTerminal").then((module) => ({ default: module.TicketTerminal })),
+);
 
 export function TicketWorkspace(props: {
   activeTab: TabId;
@@ -67,7 +72,7 @@ export function TicketWorkspace(props: {
     props.systemLoaded && props.connectionStatus === "awaiting_approval"
       ? "Connection approval required"
       : props.pendingActions.length
-        ? `${props.pendingActions.length} action approvals required`
+        ? "Action approval required"
         : "";
   const overviewStats: BlocksStat[] = [
     { label: "Pending approvals", value: props.pendingActions.length, kind: "metric", tone: "neutral" },
@@ -81,7 +86,7 @@ export function TicketWorkspace(props: {
   ];
 
   return (
-    <>
+    <section className="ticket-workspace">
       <TicketBreadcrumb onBackToTickets={props.onBackToTickets} ticketId={props.ticket.id} />
       <PageHeader
         title={props.ticket.title}
@@ -156,15 +161,7 @@ export function TicketWorkspace(props: {
           />
         ) : null}
         {props.activeTab === "actions" ? (
-          <ActionsTab
-            actions={props.actions}
-            onApprove={props.onApproveAction}
-            onReject={props.onRejectAction}
-            onRetry={props.onRetryAction}
-            onRunValidation={props.onRunValidation}
-            onUpdateCommand={props.onUpdateCommand}
-            validation={props.validation}
-          />
+          <ActionsTab ticketId={props.ticket.id} />
         ) : null}
         {props.activeTab === "logs" ? (
           <LogsTab
@@ -195,7 +192,7 @@ export function TicketWorkspace(props: {
         title="Abort run?"
         tone="danger"
       />
-    </>
+    </section>
   );
 }
 
@@ -244,7 +241,7 @@ function OverviewTab({
           <div className="section-heading">
             <HeadingWithTags badges={<StatusLabel label={formatRunState(runState)} />}>Customer report</HeadingWithTags>
           </div>
-          <p className="report-text">{ticket.report}</p>
+          <MarkdownContent omitFirstHeading="Customer report">{ticket.report}</MarkdownContent>
         </section>
 
         <section className="min-w-0">
@@ -414,153 +411,12 @@ function AnalysisTab({
   );
 }
 
-function ActionsTab({
-  actions,
-  onApprove,
-  onReject,
-  onRetry,
-  onRunValidation,
-  onUpdateCommand,
-  validation,
-}: {
-  actions: ProposedAction[];
-  onApprove: (actionId: string) => void;
-  onReject: (actionId: string) => void;
-  onRetry: (actionId: string) => void;
-  onRunValidation: () => void;
-  onUpdateCommand: (actionId: string, command: string) => void;
-  validation: ValidationResult;
-}) {
-  const [actionToApprove, setActionToApprove] = useState<ProposedAction | null>(null);
-
-  if (!actions.length) {
-    return <EmptyState title="No proposed actions" detail="Run analysis to create the approval queue." />;
-  }
-
-  const confirmActionApproval = () => {
-    if (!actionToApprove) {
-      return;
-    }
-
-    onApprove(actionToApprove.id);
-    setActionToApprove(null);
-  };
-
+function ActionsTab({ ticketId }: { ticketId: number }) {
   return (
-    <section className="section-block">
-      <div className="section-heading">
-        <div>
-          <HeadingWithTags badges={<StatusLabel label={`validation: ${validation.status}`} />}>
-            Action approval table
-          </HeadingWithTags>
-          <p className="body-copy">Each system-affecting command requires technician approval.</p>
-        </div>
-        <div className="inline-actions">
-          <button
-            className="button button-success"
-            disabled={!actions.some((action) => action.status === "executed")}
-            onClick={onRunValidation}
-            type="button"
-          >
-            Run validation
-          </button>
-        </div>
-      </div>
-
-      <div className="table-scroll">
-        <table className="data-table actions-table">
-          <colgroup>
-            <col className="w-[10%]" />
-            <col className="w-[24%]" />
-            <col className="w-[31%]" />
-            <col className="w-[10%]" />
-            <col className="w-[10%]" />
-            <col className="w-[15%]" />
-          </colgroup>
-          <thead>
-            <tr>
-              <th>Type</th>
-              <th>Action</th>
-              <th>Command preview</th>
-              <th>Risk</th>
-              <th>Status</th>
-              <th>Controls</th>
-            </tr>
-          </thead>
-          <tbody>
-            {actions.map((action) => (
-              <tr key={action.id}>
-                <td>{action.type}</td>
-                <td>
-                  <strong>{action.title}</strong>
-                  <p className="caption">{action.purpose}</p>
-                  {action.flags.length ? <p className="caption">Flags: {action.flags.join(", ")}</p> : null}
-                </td>
-                <td>
-                  <textarea
-                    disabled={action.status !== "pending"}
-                    onChange={(event) => onUpdateCommand(action.id, event.target.value)}
-                    rows={3}
-                    value={action.command}
-                  />
-                  {action.result ? <p className="caption">{action.result}</p> : null}
-                </td>
-                <td>
-                  <StatusLabel label={action.risk} />
-                </td>
-                <td>
-                  <StatusLabel label={action.status} />
-                </td>
-                <td>
-                  <div className="row-controls">
-                    <button
-                      className="text-button text-button-success"
-                      disabled={action.status !== "pending"}
-                      onClick={() => setActionToApprove(action)}
-                      type="button"
-                    >
-                      Approve
-                    </button>
-                    <button
-                      className="text-button text-button-danger"
-                      disabled={action.status !== "pending"}
-                      onClick={() => onReject(action.id)}
-                      type="button"
-                    >
-                      Reject
-                    </button>
-                    <button
-                      className="text-button text-button-warning"
-                      disabled={action.status === "pending"}
-                      onClick={() => onRetry(action.id)}
-                      type="button"
-                    >
-                      Retry
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <BlocksConfirmDialog
-        confirmLabel="Approve"
-        description={
-          actionToApprove
-            ? `${actionToApprove.title}: ${actionToApprove.command}`
-            : "Approve this proposed action."
-        }
-        onConfirm={confirmActionApproval}
-        onOpenChange={(open) => {
-          if (!open) {
-            setActionToApprove(null);
-          }
-        }}
-        open={Boolean(actionToApprove)}
-        title="Approve action?"
-        tone="success"
-      />
+    <section className="action-terminal-tab">
+      <Suspense fallback={<EmptyState title="Loading terminal" detail="Preparing the remote terminal surface." />}>
+        <TicketTerminal ticketId={ticketId} />
+      </Suspense>
     </section>
   );
 }
