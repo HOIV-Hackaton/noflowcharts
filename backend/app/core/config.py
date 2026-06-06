@@ -50,10 +50,14 @@ class Settings(BaseSettings):
             missing.append("AZURE_OPENAI_API_KEY")
         if not self.azure_openai_deployment:
             missing.append("AZURE_OPENAI_DEPLOYMENT")
-        if not self.azure_openai_api_version:
+        if not self.uses_foundry_project_endpoint() and not self.azure_openai_api_version:
             missing.append("AZURE_OPENAI_API_VERSION")
         if missing:
             raise RuntimeError(f"Missing required Azure OpenAI setting(s): {', '.join(missing)}")
+
+    def uses_foundry_project_endpoint(self) -> bool:
+        endpoint = self.azure_openai_endpoint or ""
+        return ".services.ai.azure.com" in endpoint and "/api/projects/" in endpoint
 
     def configured_secrets(self) -> list[str]:
         return [
