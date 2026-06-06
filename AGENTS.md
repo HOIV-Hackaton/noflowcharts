@@ -83,6 +83,12 @@ If a dependency is approved, use the smallest suitable dependency and explain wh
 
 Do not introduce a new framework or architecture pattern without approval.
 
+## Testing Requirements
+
+Every code change must include relevant tests or update existing tests to cover the changed behavior.
+
+If tests are not practical for a specific change, explain why and state exactly what manual verification was performed.
+
 ## Safety Requirements To Preserve
 
 The product must keep a human in control.
