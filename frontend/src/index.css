@@ -135,6 +135,10 @@
     @apply flex flex-wrap items-center justify-end gap-2;
   }
 
+  .terminal-safety-note {
+    @apply w-full text-right text-xs text-muted-foreground;
+  }
+
   .terminal-shell {
     @apply min-h-0 overflow-hidden rounded-lg p-3 font-mono;
     background-color: #09090b;
