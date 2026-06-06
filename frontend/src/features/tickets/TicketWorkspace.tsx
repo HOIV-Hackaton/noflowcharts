@@ -6,6 +6,7 @@ import {
   ClipboardCheckIcon,
   PlayIcon,
   ShieldCheckIcon,
+  TerminalIcon,
   XIcon,
 } from "lucide-react";
 
@@ -199,6 +200,7 @@ export function TicketWorkspace(props: {
             connectionStatus={props.connectionStatus}
             onGenerateDraft={props.onGenerateDraft}
             onLoadSystem={props.onLoadSystem}
+            onOpenTerminal={() => props.onTabChange("actions")}
             onRunValidation={props.onRunValidation}
             onStartAnalysis={props.onStartAnalysis}
             pendingApprovals={props.pendingActions.length}
@@ -211,8 +213,8 @@ export function TicketWorkspace(props: {
         <TabsContent value="system">
           <SystemTab
             connectionStatus={props.connectionStatus}
-            onApproveConnection={props.onApproveConnection}
             onLoadSystem={props.onLoadSystem}
+            onOpenTerminal={() => props.onTabChange("actions")}
             system={props.selectedSystem}
             systemLoaded={props.systemLoaded}
           />
@@ -284,6 +286,7 @@ function OverviewTab({
   connectionStatus,
   onGenerateDraft,
   onLoadSystem,
+  onOpenTerminal,
   onRunValidation,
   onStartAnalysis,
   pendingApprovals,
@@ -296,6 +299,7 @@ function OverviewTab({
   connectionStatus: ConnectionStatus;
   onGenerateDraft: () => void;
   onLoadSystem: () => void;
+  onOpenTerminal: () => void;
   onRunValidation: () => void;
   onStartAnalysis: () => void;
   pendingApprovals: number;
@@ -355,6 +359,14 @@ function OverviewTab({
               <ShieldCheckIcon data-icon="inline-start" />
               {systemLoaded ? "Reload system info" : "Load system info"}
             </Button>
+            <Button
+              onClick={onOpenTerminal}
+              type="button"
+              variant={systemLoaded && connectionStatus !== "connected" ? "default" : "outline"}
+            >
+              <TerminalIcon data-icon="inline-start" />
+              Open terminal
+            </Button>
             <Button onClick={onStartAnalysis} type="button" variant="outline">
               <PlayIcon data-icon="inline-start" />
               Start analysis
@@ -376,19 +388,17 @@ function OverviewTab({
 
 function SystemTab({
   connectionStatus,
-  onApproveConnection,
   onLoadSystem,
+  onOpenTerminal,
   system,
   systemLoaded,
 }: {
   connectionStatus: ConnectionStatus;
-  onApproveConnection: () => void;
   onLoadSystem: () => void;
+  onOpenTerminal: () => void;
   system: CustomerSystem | null;
   systemLoaded: boolean;
 }) {
-  const [connectionDialogOpen, setConnectionDialogOpen] = useState(false);
-
   return (
     <div className="flex flex-col gap-4">
       <Card>
@@ -414,27 +424,16 @@ function SystemTab({
           )}
           <div className="flex flex-wrap items-center gap-2">
             <Button onClick={onLoadSystem} type="button" variant="outline">
-              Load system info
-            </Button>
-            <Button
-              disabled={!systemLoaded || connectionStatus === "connected"}
-              onClick={() => setConnectionDialogOpen(true)}
-              type="button"
-            >
               <ShieldCheckIcon data-icon="inline-start" />
-              Approve connection
+              {systemLoaded ? "Reload system info" : "Load system info"}
+            </Button>
+            <Button onClick={onOpenTerminal} type="button" variant={systemLoaded ? "default" : "outline"}>
+              <TerminalIcon data-icon="inline-start" />
+              Open terminal
             </Button>
           </div>
         </CardContent>
       </Card>
-      <ConfirmDialog
-        confirmLabel="Approve"
-        description="This approves backend SSH access for the selected customer system."
-        onConfirm={onApproveConnection}
-        onOpenChange={setConnectionDialogOpen}
-        open={connectionDialogOpen}
-        title="Approve connection?"
-      />
     </div>
   );
 }

@@ -16,7 +16,7 @@ export const tabs: Array<{ id: TabId; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "system", label: "System" },
   { id: "analysis", label: "Analysis" },
-  { id: "actions", label: "Actions" },
+  { id: "actions", label: "Terminal" },
   { id: "logs", label: "Logs" },
   { id: "activity", label: "Activity" },
 ];

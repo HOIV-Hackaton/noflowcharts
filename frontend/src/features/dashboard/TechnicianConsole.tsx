@@ -49,6 +49,7 @@ import { DashboardOverview } from "./DashboardOverview";
 import { TicketWorkspace } from "../tickets/TicketWorkspace";
 
 type AppRouteState = {
+  tab: TabId;
   ticketId: number | null;
   view: SidebarView;
 };
@@ -71,7 +72,7 @@ export function TechnicianConsole() {
   const [lastTicketFetchAt, setLastTicketFetchAt] = useState<string | null>(null);
   const [backendRunId, setBackendRunId] = useState<string | null>(null);
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(() => initialRoute.ticketId);
-  const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const [activeTab, setActiveTab] = useState<TabId>(() => initialRoute.tab);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | TicketStatus>("all");
   const [priorityFilter, setPriorityFilter] = useState<"all" | Priority>("all");
@@ -277,10 +278,10 @@ export function TechnicianConsole() {
     };
   }, [backendReady, selectedTicketId, session?.name]);
 
-  const resetTicketWorkspace = useCallback((ticketId: number) => {
+  const resetTicketWorkspace = useCallback((ticketId: number, tab: TabId = "overview") => {
     setSelectedTicketId(ticketId);
     setBackendRunId(null);
-    setActiveTab("overview");
+    setActiveTab(tab);
     setSystemLoaded(false);
     setConnectionStatus("not_requested");
     setRunState("idle");
@@ -301,11 +302,12 @@ export function TechnicianConsole() {
       setSidebarView(route.view);
 
       if (route.ticketId) {
-        resetTicketWorkspace(route.ticketId);
+        resetTicketWorkspace(route.ticketId, route.tab);
         return;
       }
 
       setSelectedTicketId(null);
+      setActiveTab("overview");
     };
 
     syncRoute();
@@ -363,10 +365,18 @@ export function TechnicianConsole() {
   }, []);
 
   const selectTicket = (ticketId: number) => {
-    pushAppRoute(`/app/tickets/${ticketId}`);
+    pushAppRoute(ticketRoute(ticketId, "overview"));
     setSidebarView("all");
-    resetTicketWorkspace(ticketId);
+    resetTicketWorkspace(ticketId, "overview");
   };
+
+  const setTicketTab = useCallback((tab: TabId) => {
+    setActiveTab(tab);
+
+    if (selectedTicketId) {
+      replaceAppRoute(ticketRoute(selectedTicketId, tab));
+    }
+  }, [selectedTicketId]);
 
   const loadSystemInfo = async () => {
     if (!selectedTicket) {
@@ -403,7 +413,6 @@ export function TechnicianConsole() {
     setConnectionStatus("awaiting_approval");
     setRunState("awaiting_connection_approval");
     appendEvent("approval", "System info loaded", "Redacted customer system context loaded.");
-    setActiveTab("system");
   };
 
   const approveConnection = async () => {
@@ -424,7 +433,7 @@ export function TechnicianConsole() {
         syncRunState(confirmedState);
         await refreshAuditEvents(confirmedState.run.id);
         appendEvent("approval", "Connection approved", "Backend run created and SSH approval confirmed.");
-        setActiveTab("actions");
+        setTicketTab("actions");
         return;
       } catch (error) {
         setBackendRunId(null);
@@ -457,7 +466,7 @@ export function TechnicianConsole() {
         await refreshAuditEvents(backendRunId);
         setAnalysisReady(true);
         appendEvent("analysis", "Terminal agent ready", "Open the terminal and start the backend agent.");
-        setActiveTab("actions");
+        setTicketTab("actions");
         return;
       } catch (error) {
         setNotice(`Using mock analysis. ${getApiErrorMessage(error)}`);
@@ -469,7 +478,7 @@ export function TechnicianConsole() {
     setActions(createActions(selectedTicket));
     appendEvent("analysis", "Analysis complete", "Hypotheses and proposed actions are ready.");
     setRunState("awaiting_action_approval");
-    setActiveTab("analysis");
+    setTicketTab("analysis");
   };
 
   const startAutodiagnosis = async () => {
@@ -510,14 +519,14 @@ export function TechnicianConsole() {
           "See audit log for the blocked request or error.",
         );
         setNotice("Safe autodiagnosis stopped. See audit log for the blocked request or error.");
-        setActiveTab("actions");
+        setTicketTab("actions");
         return;
       }
 
       if (currentActionNeedsReview) {
         appendEvent("approval", "A proposed fix requires technician approval", "Safe autodiagnosis handed off to the normal approval flow.");
         setNotice("A proposed fix requires technician approval.");
-        setActiveTab("actions");
+        setTicketTab("actions");
         return;
       }
 
@@ -527,7 +536,7 @@ export function TechnicianConsole() {
         "Redacted diagnostic evidence was captured.",
       );
       setNotice("Safe autodiagnosis completed. Redacted diagnostic evidence was captured.");
-      setActiveTab("actions");
+      setTicketTab("actions");
     } catch (error) {
       setNotice(`Safe autodiagnosis stopped. See audit log for the blocked request or error. ${getApiErrorMessage(error)}`);
       appendEvent(
@@ -736,7 +745,7 @@ export function TechnicianConsole() {
         setDraft(mapActivityDraft(draftResponse));
         await refreshAuditEvents(backendRunId);
         appendEvent("output", "Activity draft generated", "Backend generated the ERP activity draft.");
-        setActiveTab("activity");
+        setTicketTab("activity");
         return;
       } catch (error) {
         setNotice(`Using mock activity draft. ${getApiErrorMessage(error)}`);
@@ -758,7 +767,7 @@ export function TechnicianConsole() {
 
     setDraft(nextDraft);
     appendEvent("output", "Activity draft generated", "Draft fields populated from mock audit data.");
-    setActiveTab("activity");
+    setTicketTab("activity");
   };
 
   const submitActivity = async () => {
@@ -1018,7 +1027,7 @@ export function TechnicianConsole() {
               onStartAutodiagnosis={startAutodiagnosis}
               onStartAnalysis={startAnalysis}
               onSubmitActivity={submitActivity}
-              onTabChange={setActiveTab}
+              onTabChange={setTicketTab}
               onUpdateCommand={updateActionCommand}
               pendingActions={pendingActions}
               autodiagnosisRunning={autodiagnosisRunning}
@@ -1065,36 +1074,67 @@ export function TechnicianConsole() {
 function getAppRouteState(): AppRouteState {
   const pathname = window.location.pathname.replace(/\/$/, "") || "/";
   const ticketMatch = pathname.match(/^\/app\/tickets\/(\d+)$/);
+  const tab = getTicketTabFromQuery();
 
   if (ticketMatch) {
-    return { ticketId: Number(ticketMatch[1]), view: "all" };
+    return { tab, ticketId: Number(ticketMatch[1]), view: "all" };
   }
 
   if (pathname === "/app/tickets/assigned") {
-    return { ticketId: null, view: "assigned" };
+    return { tab: "overview", ticketId: null, view: "assigned" };
   }
 
   if (pathname === "/app/tickets/high-priority") {
-    return { ticketId: null, view: "high" };
+    return { tab: "overview", ticketId: null, view: "high" };
   }
 
   if (pathname === "/app/tickets/pending") {
-    return { ticketId: null, view: "pending" };
+    return { tab: "overview", ticketId: null, view: "pending" };
   }
 
   if (pathname === "/app/tickets") {
-    return { ticketId: null, view: "all" };
+    return { tab: "overview", ticketId: null, view: "all" };
   }
 
-  return { ticketId: null, view: "overview" };
+  return { tab: "overview", ticketId: null, view: "overview" };
 }
 
 function pushAppRoute(path: string) {
-  if (window.location.pathname === path) {
+  if (currentAppRoute() === path) {
     return;
   }
 
   window.history.pushState(null, "", path);
+}
+
+function replaceAppRoute(path: string) {
+  if (currentAppRoute() === path) {
+    return;
+  }
+
+  window.history.replaceState(null, "", path);
+}
+
+function currentAppRoute() {
+  return `${window.location.pathname}${window.location.search}`;
+}
+
+function ticketRoute(ticketId: number, tab: TabId) {
+  const search = new URLSearchParams();
+  if (tab !== "overview") {
+    search.set("tab", tab);
+  }
+  const query = search.toString();
+  return `/app/tickets/${ticketId}${query ? `?${query}` : ""}`;
+}
+
+function getTicketTabFromQuery(): TabId {
+  const tab = new URLSearchParams(window.location.search).get("tab");
+  return isTicketTab(tab) ? tab : "overview";
+}
+
+function isTicketTab(tab: string | null): tab is TabId {
+  return tab === "overview" || tab === "system" || tab === "analysis" || tab === "actions" || tab === "logs" || tab === "activity";
 }
 
 function upsertTicket(tickets: Ticket[], ticket: Ticket) {

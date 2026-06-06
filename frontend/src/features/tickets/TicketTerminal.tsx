@@ -44,10 +44,12 @@ export function TicketTerminal({
   const resizeFrameRef = useRef<number | null>(null);
   const [connectionState, setConnectionState] = useState<"disconnected" | "connecting" | "connected">("disconnected");
   const [agentStarted, setAgentStarted] = useState(false);
+  const [terminalHasContent, setTerminalHasContent] = useState(false);
 
   useEffect(() => {
     setConnectionState("disconnected");
     setAgentStarted(false);
+    setTerminalHasContent(false);
     pendingConfirmationRef.current = null;
     terminalHadErrorRef.current = false;
 
@@ -172,6 +174,7 @@ export function TicketTerminal({
     terminalHadErrorRef.current = false;
     pendingConfirmationRef.current = null;
     setConnectionState("connecting");
+    setTerminalHasContent(true);
     terminal.writeln("\r\nOpening backend terminal bridge...");
     const socket = new WebSocket(runTerminalWebSocketUrl(runId, terminal.cols, terminal.rows));
     socketRef.current = socket;
@@ -189,12 +192,14 @@ export function TicketTerminal({
       }
 
       if (message.type === "output" || message.type === "terminal_output") {
+        setTerminalHasContent(true);
         terminal.write(message.data);
         return;
       }
 
       if (message.type === "error") {
         terminalHadErrorRef.current = true;
+        setTerminalHasContent(true);
         terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
         return;
       }
@@ -222,10 +227,12 @@ export function TicketTerminal({
       setAgentStarted(false);
       setConnectionState("disconnected");
       if (terminalHadErrorRef.current && event.reason) {
+        setTerminalHasContent(true);
         terminal.writeln(`\r\n\x1b[31m${event.reason}\x1b[0m`);
         return;
       }
       if (!terminalHadErrorRef.current) {
+        setTerminalHasContent(true);
         terminal.writeln("\r\n\x1b[90mTerminal session closed.\x1b[0m");
       }
     };
@@ -247,6 +254,7 @@ export function TicketTerminal({
     }
 
     socket.send(JSON.stringify({ type: agentStarted ? "agent_next" : "agent_start" }));
+    setTerminalHasContent(true);
     terminal.writeln(`\r\n\x1b[90m${agentStarted ? "Requesting next agent action..." : "Starting agent..."}\x1b[0m`);
     setAgentStarted(true);
   };
@@ -259,6 +267,7 @@ export function TicketTerminal({
     }
 
     socket.send(JSON.stringify({ type: "agent_cancel" }));
+    setTerminalHasContent(true);
     terminal.writeln("\r\n\x1b[90mCancelling agent mode...\x1b[0m");
     setAgentStarted(false);
   };
@@ -347,6 +356,15 @@ export function TicketTerminal({
         </Button>
       </div>
       <div className={["terminal-shell", connectionState !== "connected" ? "terminal-shell-disabled" : ""].join(" ")}>
+        {connectionState === "disconnected" && !terminalHasContent ? (
+          <div className="terminal-inactive-state">
+            <p className="terminal-inactive-title">Terminal inactive</p>
+            <p className="terminal-inactive-detail">
+              {runId ? "Backend run ready. Shell not connected." : "Waiting for approved backend run."}
+            </p>
+            <code>{runId ? "$ connect --manual-shell" : "$ run status: pending"}</code>
+          </div>
+        ) : null}
         <div className="terminal-grid" ref={containerRef} />
       </div>
     </section>
