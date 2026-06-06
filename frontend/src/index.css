@@ -124,7 +124,7 @@
   }
 
   .terminal-panel {
-    @apply grid h-full min-h-[480px] grid-rows-[auto_minmax(0,1fr)] gap-3;
+    @apply flex h-full min-h-[480px] flex-col gap-3;
   }
 
   .terminal-panel-compact {
@@ -136,7 +136,7 @@
   }
 
   .terminal-shell {
-    @apply relative min-h-0 overflow-hidden rounded-lg border border-input/70 p-3 font-mono shadow-[inset_0_1px_0_rgba(255,255,255,0.04)];
+    @apply relative min-h-0 flex-1 overflow-hidden rounded-lg border border-input/70 p-3 font-mono shadow-[inset_0_1px_0_rgba(255,255,255,0.04)];
     background-color: #09090b;
   }
 

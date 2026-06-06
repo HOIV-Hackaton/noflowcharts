@@ -513,7 +513,7 @@ function ActionsTab({
     <div className="flex h-full min-h-[560px] min-w-0 flex-col gap-3">
       {!runId ? (
         <Card className="border-dashed" size="sm">
-          <CardContent className="flex flex-col gap-3">
+          <CardContent className="flex flex-col gap-3 pb-4">
             <div>
               <p className="font-medium text-foreground">Connection approval required</p>
               <p className="text-sm text-muted-foreground">
