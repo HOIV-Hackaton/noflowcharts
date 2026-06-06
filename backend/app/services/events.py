@@ -52,3 +52,12 @@ async def persist_and_publish_ws_event(run_id: str, event_type: str, payload: di
         serialized = serialize_ws_event(event)
     await event_bus.publish(run_id, serialized)
     return serialized
+
+
+def persist_and_publish_ws_event_sync(run_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(persist_and_publish_ws_event(run_id, event_type, payload))
+    else:
+        loop.create_task(persist_and_publish_ws_event(run_id, event_type, payload))

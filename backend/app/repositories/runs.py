@@ -30,6 +30,14 @@ class RunRepository:
         self.session.refresh(run)
         return run
 
+    def set_current_action(self, run: Run, action: Action | None) -> Run:
+        run.current_action_id = action.id if action is not None else None
+        run.updated_at = utc_now()
+        self.session.add(run)
+        self.session.commit()
+        self.session.refresh(run)
+        return run
+
     def set_ssh_confirmed(self, run: Run) -> Run:
         run.ssh_confirmed = True
         run.updated_at = utc_now()
@@ -76,6 +84,18 @@ class RunRepository:
         self.session.commit()
         return action
 
+    def get_action(self, action_id: int) -> Action | None:
+        return self.session.get(Action, action_id)
+
+    def get_current_action(self, run: Run) -> Action | None:
+        if run.current_action_id is None:
+            return None
+        return self.get_action(run.current_action_id)
+
+    def list_actions(self, run_id: str) -> list[Action]:
+        statement = select(Action).where(Action.run_id == run_id).order_by(Action.id)
+        return list(self.session.exec(statement))
+
     def update_action_status(
         self,
         action: Action,
@@ -89,6 +109,29 @@ class RunRepository:
             action.edited_command = edited_command
         if typed_confirmation_status is not None:
             action.typed_confirmation_status = typed_confirmation_status.value
+        self.session.add(action)
+        self.session.commit()
+        self.session.refresh(action)
+        return action
+
+    def update_action_command(
+        self,
+        action: Action,
+        command: str,
+        classification: CommandClassification,
+        risk_reason: str | None,
+        typed_confirmation_status: ConfirmationStatus,
+        intent: str | None = None,
+    ) -> Action:
+        action.command = command
+        action.edited_command = command
+        action.command_classification = classification.value
+        action.risk_reason = risk_reason
+        action.typed_confirmation_status = typed_confirmation_status.value
+        action.status = ActionStatus.EDITED.value
+        if intent is not None:
+            action.intent = intent
+        action.updated_at = utc_now()
         self.session.add(action)
         self.session.commit()
         self.session.refresh(action)
@@ -116,6 +159,15 @@ class RunRepository:
         self.session.commit()
         self.session.refresh(result)
         return result
+
+    def list_command_results(self, run_id: str) -> list[CommandResult]:
+        statement = (
+            select(CommandResult)
+            .join(Action, CommandResult.action_id == Action.id)
+            .where(Action.run_id == run_id)
+            .order_by(CommandResult.id)
+        )
+        return list(self.session.exec(statement))
 
     def add_audit_event(self, event_type: str, payload: dict[str, Any], run_id: str | None = None) -> AuditEvent:
         event = AuditEvent(
