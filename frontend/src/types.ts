@@ -91,6 +91,8 @@ export type TerminalCommandLog = {
   source: "manual" | "agent";
   status: TerminalCommandStatus;
   command: string;
+  originalCommand: string;
+  finalCommand: string | null;
   classification: string | null;
   riskReason: string | null;
   exitCode: number | null;

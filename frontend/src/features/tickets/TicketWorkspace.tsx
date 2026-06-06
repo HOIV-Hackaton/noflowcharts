@@ -618,23 +618,63 @@ function TerminalCommandTable({ commands }: { commands: TerminalCommandLog[] }) 
       </TableHeader>
       <TableBody>
         {commands.map((command) => (
-          <TableRow key={command.id}>
+          <TableRow className={command.status === "blocked" ? "bg-destructive/10" : undefined} key={command.id}>
             <TableCell>{new Date(command.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</TableCell>
             <TableCell>
               <StatusLabel label={command.source} />
             </TableCell>
             <TableCell>
-              <StatusLabel label={command.status} />
+              <StatusLabel label={formatTerminalCommandStatus(command.status)} />
             </TableCell>
             <TableCell className="max-w-[520px] whitespace-normal">
-              <code>{command.command}</code>
+              <div className="flex flex-col gap-1.5">
+                <CommandLine label="Original command" value={command.originalCommand} />
+                <CommandLine label="Final command" value={command.finalCommand ?? command.command} strong />
+                {command.status === "blocked" && command.riskReason ? (
+                  <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs font-medium text-destructive">
+                    Blocked before execution: {command.riskReason}
+                  </p>
+                ) : command.riskReason ? (
+                  <p className="text-xs text-muted-foreground">Safety note: {command.riskReason}</p>
+                ) : null}
+              </div>
             </TableCell>
-            <TableCell>{command.exitCode === null ? "Pending" : command.exitCode}</TableCell>
+            <TableCell>{command.status === "blocked" ? "Not run" : command.exitCode === null ? "Pending" : command.exitCode}</TableCell>
           </TableRow>
         ))}
       </TableBody>
     </Table>
   );
+}
+
+function CommandLine({ label, strong = false, value }: { label: string; strong?: boolean; value: string }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+      <code className={strong ? "font-semibold" : undefined}>{value}</code>
+    </div>
+  );
+}
+
+function formatTerminalCommandStatus(status: TerminalCommandLog["status"]) {
+  switch (status) {
+    case "submitted":
+    case "edited":
+      return "proposed";
+    case "confirmation_required":
+      return "confirmation required";
+    case "accepted":
+    case "running":
+      return "accepted/running";
+    case "completed":
+    case "failed":
+      return status;
+    case "blocked":
+      return "blocked";
+    case "rejected":
+    case "cancelled":
+      return "rejected/cancelled";
+  }
 }
 
 function ActivityTab({

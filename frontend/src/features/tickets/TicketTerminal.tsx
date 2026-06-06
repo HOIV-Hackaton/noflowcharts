@@ -13,6 +13,7 @@ type TerminalMessage =
   | { type: "agent_waiting_for_guidance"; command_id?: number }
   | { type: "command_blocked"; command_id?: number; reason?: string }
   | { type: "command_cancelled"; command_id?: number }
+  | { type: "command_completed"; command_id?: number; exit_code?: number }
   | { type: "command_running"; command_id?: number }
   | { type: "confirmation_required"; command_id: number; command: string; reason?: string }
   | { type: "error"; message: string }
@@ -136,7 +137,30 @@ export function TicketTerminal({
           return;
         }
 
-        terminal.writeln("\r\nType y to accept or n to reject.");
+        if (pendingConfirmation.source === "agent" && answer === "e") {
+          const command = window.prompt("Edit command. The backend will normalize and safety-review it before approval.")?.trim();
+          if (!command) {
+            terminal.writeln("\r\n\x1b[90mEdit cancelled. Proposal still requires approval or rejection.\x1b[0m");
+            return;
+          }
+
+          pendingConfirmationRef.current = null;
+          socket.send(
+            JSON.stringify({
+              command,
+              command_id: pendingConfirmation.commandId,
+              type: "agent_edit",
+            }),
+          );
+          terminal.writeln("\r\n\x1b[90mSubmitted edit to backend for normalization and safety review.\x1b[0m");
+          return;
+        }
+
+        terminal.writeln(
+          pendingConfirmation.source === "agent"
+            ? "\r\nType y to accept, n to reject, or e to edit."
+            : "\r\nType y to accept or n to reject.",
+        );
         return;
       }
 
@@ -345,6 +369,9 @@ export function TicketTerminal({
         >
           Disconnect
         </Button>
+        <p className="terminal-safety-note">
+          Commands that can open pagers or hang the terminal are automatically converted to non-interactive form or blocked.
+        </p>
       </div>
       <div className={["terminal-shell", connectionState !== "connected" ? "terminal-shell-disabled" : ""].join(" ")}>
         <div className="terminal-grid" ref={containerRef} />
@@ -363,6 +390,7 @@ function parseTerminalMessage(value: string): TerminalMessage | null {
       message.type === "agent_waiting_for_guidance" ||
       message.type === "command_blocked" ||
       message.type === "command_cancelled" ||
+      message.type === "command_completed" ||
       message.type === "command_running" ||
       message.type === "confirmation_required" ||
       message.type === "error" ||
@@ -398,33 +426,40 @@ function handleTerminalStatusMessage(
         commandId: message.command_id,
         source: "agent",
       };
-      terminal.writeln("\r\n\x1b[34mAgent proposed command:\x1b[0m");
+      terminal.writeln("\r\n\x1b[34mAgent proposed command awaiting technician approval:\x1b[0m");
       terminal.writeln(`\x1b[90mIntent:\x1b[0m ${message.intent ?? "Review command in terminal."}`);
       terminal.writeln(`\x1b[90mRisk:\x1b[0m ${message.classification ?? "unclassified"}`);
       if (message.reason) {
         terminal.writeln(`\x1b[90mReason:\x1b[0m ${message.reason}`);
       }
+      terminal.writeln("\x1b[90mFinal command that will run if approved:\x1b[0m");
       terminal.writeln(`\x1b[1m${message.command}\x1b[0m`);
-      terminal.writeln("Type y to accept or n to reject.");
+      terminal.writeln("Type y to accept, n to reject, or e to edit.");
       break;
     case "agent_waiting_for_guidance":
       terminal.writeln("\r\n\x1b[90mAgent is waiting for technician guidance.\x1b[0m");
       break;
     case "command_blocked":
-      terminal.writeln(`\r\n\x1b[31mCommand blocked: ${message.reason ?? "safety policy"}\x1b[0m`);
+      pendingConfirmationRef.current = null;
+      terminal.writeln("\r\n\x1b[41m\x1b[97m COMMAND BLOCKED BEFORE EXECUTION \x1b[0m");
+      terminal.writeln(`\x1b[31mSafety reason: ${message.reason ?? "safety policy"}\x1b[0m`);
+      terminal.writeln("\x1b[90mNo command was run. Review the terminal command history for original/final command details.\x1b[0m");
       break;
     case "command_cancelled":
       terminal.writeln("\r\n\x1b[90mCommand cancelled.\x1b[0m");
       break;
     case "command_running":
-      terminal.writeln("\r\n\x1b[90mCommand running...\x1b[0m");
+      terminal.writeln("\r\n\x1b[90mCommand accepted/running...\x1b[0m");
+      break;
+    case "command_completed":
+      terminal.writeln(`\r\n\x1b[90mCommand completed with exit code ${message.exit_code ?? "unknown"}.\x1b[0m`);
       break;
     case "confirmation_required":
       pendingConfirmationRef.current = {
         commandId: message.command_id,
         source: "manual",
       };
-      terminal.writeln("\r\n\x1b[33mConfirmation required before executing:\x1b[0m");
+      terminal.writeln("\r\n\x1b[33mConfirmation required before executing final normalized command:\x1b[0m");
       terminal.writeln(`\x1b[1m${message.command}\x1b[0m`);
       if (message.reason) {
         terminal.writeln(`\x1b[90mReason:\x1b[0m ${message.reason}`);
