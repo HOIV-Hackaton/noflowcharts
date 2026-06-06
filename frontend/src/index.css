@@ -124,7 +124,7 @@
   }
 
   .terminal-panel {
-    @apply grid h-full min-h-[480px] grid-rows-[auto_minmax(0,1fr)] gap-3;
+    @apply flex h-full min-h-[480px] flex-col gap-3;
   }
 
   .terminal-panel-compact {
@@ -140,7 +140,7 @@
   }
 
   .terminal-shell {
-    @apply min-h-0 overflow-hidden rounded-lg p-3 font-mono;
+    @apply relative min-h-0 flex-1 overflow-hidden rounded-lg border border-input/70 p-3 font-mono shadow-[inset_0_1px_0_rgba(255,255,255,0.04)];
     background-color: #09090b;
   }
 
@@ -151,6 +151,26 @@
   .terminal-grid {
     @apply h-full min-h-0 overflow-hidden rounded-md;
     background-color: #09090b;
+  }
+
+  .terminal-inactive-state {
+    @apply pointer-events-none absolute inset-3 z-10 flex flex-col items-start justify-center gap-2 rounded-md border border-dashed border-input/60 bg-muted/20 px-5 text-muted-foreground;
+  }
+
+  .terminal-inactive-kicker {
+    @apply text-xs uppercase tracking-[0.18em] text-muted-foreground/70;
+  }
+
+  .terminal-inactive-title {
+    @apply font-mono text-base font-medium text-foreground;
+  }
+
+  .terminal-inactive-detail {
+    @apply max-w-sm text-sm;
+  }
+
+  .terminal-inactive-state code {
+    @apply rounded border border-border bg-background px-2 py-1 text-xs text-muted-foreground;
   }
 
   .terminal-grid .xterm {

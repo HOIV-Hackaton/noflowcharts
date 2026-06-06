@@ -1,7 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { runTerminalWebSocketUrl } from "../../services/backendApi";
@@ -24,9 +24,17 @@ type TerminalMessage =
   | { type: "terminal_output"; data: string };
 
 type PendingConfirmation = {
+  classification?: string;
+  command?: string;
   commandId: number;
+  input: string;
+  intent?: string;
+  mode: "choose" | "comment" | "edit";
+  reason?: string;
   source: "agent" | "manual";
 };
+
+type SetPendingCommand = (pending: PendingConfirmation | null) => void;
 
 export function TicketTerminal({
   runId,
@@ -45,11 +53,205 @@ export function TicketTerminal({
   const resizeFrameRef = useRef<number | null>(null);
   const [connectionState, setConnectionState] = useState<"disconnected" | "connecting" | "connected">("disconnected");
   const [agentStarted, setAgentStarted] = useState(false);
+  const [terminalHasContent, setTerminalHasContent] = useState(false);
+
+  function setPendingCommand(next: PendingConfirmation | null) {
+    pendingConfirmationRef.current = next;
+  }
+
+  function updatePendingCommand(patch: Partial<PendingConfirmation>) {
+    const current = pendingConfirmationRef.current;
+    if (!current) {
+      return;
+    }
+
+    setPendingCommand({ ...current, ...patch });
+  }
+
+  function acceptPendingCommand() {
+    const pending = pendingConfirmationRef.current;
+    const socket = socketRef.current;
+    const terminal = terminalRef.current;
+    if (!pending || !socket || socket.readyState !== WebSocket.OPEN || !terminal) {
+      return;
+    }
+
+    setPendingCommand(null);
+    socket.send(
+      JSON.stringify({
+        command_id: pending.commandId,
+        type: pending.source === "agent" ? "agent_accept" : "manual_confirm",
+      }),
+    );
+    terminal.writeln("\r\n\x1b[32mAccepted. Running command.\x1b[0m");
+  }
+
+  function rejectPendingCommand(reason = "Rejected from terminal.") {
+    const pending = pendingConfirmationRef.current;
+    const socket = socketRef.current;
+    const terminal = terminalRef.current;
+    if (!pending || !socket || socket.readyState !== WebSocket.OPEN || !terminal) {
+      return;
+    }
+
+    setPendingCommand(null);
+    socket.send(
+      JSON.stringify({
+        command_id: pending.commandId,
+        reason,
+        type: pending.source === "agent" ? "agent_reject" : "manual_cancel",
+      }),
+    );
+    terminal.writeln("\r\n\x1b[31mRejected.\x1b[0m");
+  }
+
+  function beginEditPendingCommand() {
+    const pending = pendingConfirmationRef.current;
+    const terminal = terminalRef.current;
+    if (!pending || !terminal) {
+      return;
+    }
+
+    if (pending.source !== "agent") {
+      terminal.writeln("\r\n\x1b[90mEdit is available for agent proposals. Cancel and retype manual commands.\x1b[0m");
+      return;
+    }
+
+    const command = pending.command ?? "";
+    setPendingCommand({ ...pending, input: command, mode: "edit" });
+    terminal.writeln("\r\n\x1b[33mEdit command, then press Enter:\x1b[0m");
+    terminal.write(command);
+  }
+
+  function submitEditedPendingCommand(command: string) {
+    const pending = pendingConfirmationRef.current;
+    const socket = socketRef.current;
+    const terminal = terminalRef.current;
+    const nextCommand = command.trim();
+    if (!pending || !socket || socket.readyState !== WebSocket.OPEN || !terminal || pending.source !== "agent") {
+      return;
+    }
+
+    if (!nextCommand) {
+      terminal.writeln("\r\n\x1b[31mEdited command cannot be empty.\x1b[0m");
+      return;
+    }
+
+    setPendingCommand(null);
+    socket.send(JSON.stringify({ command: nextCommand, command_id: pending.commandId, type: "agent_edit" }));
+    terminal.writeln("\r\n\x1b[33mEdited command sent for safety review.\x1b[0m");
+  }
+
+  function beginCommentPendingCommand() {
+    const pending = pendingConfirmationRef.current;
+    const terminal = terminalRef.current;
+    if (!pending || !terminal) {
+      return;
+    }
+
+    if (pending.source !== "agent") {
+      terminal.writeln("\r\n\x1b[90mComment is available for agent proposals. Cancel manual commands instead.\x1b[0m");
+      return;
+    }
+
+    setPendingCommand({ ...pending, input: "", mode: "comment" });
+    terminal.writeln("\r\n\x1b[90mComment / guidance, then press Enter:\x1b[0m");
+  }
+
+  function submitPendingComment(comment: string) {
+    const pending = pendingConfirmationRef.current;
+    const socket = socketRef.current;
+    const terminal = terminalRef.current;
+    const message = comment.trim();
+    if (!pending || !socket || socket.readyState !== WebSocket.OPEN || !terminal || pending.source !== "agent") {
+      return;
+    }
+
+    if (!message) {
+      terminal.writeln("\r\n\x1b[31mComment cannot be empty.\x1b[0m");
+      return;
+    }
+
+    setPendingCommand(null);
+    socket.send(JSON.stringify({ command_id: pending.commandId, reason: message, type: "agent_reject" }));
+    socket.send(JSON.stringify({ message, type: "agent_message" }));
+    terminal.writeln("\r\n\x1b[90mComment sent. Current proposal rejected with guidance.\x1b[0m");
+  }
+
+  function handlePendingTerminalInput(data: string) {
+    const pending = pendingConfirmationRef.current;
+    const terminal = terminalRef.current;
+    if (!pending || !terminal) {
+      return;
+    }
+
+    if (pending.mode === "edit" || pending.mode === "comment") {
+      for (const char of data) {
+        if (char === "\r" || char === "\n") {
+          terminal.writeln("");
+          if (pending.mode === "edit") {
+            submitEditedPendingCommand(pendingConfirmationRef.current?.input ?? "");
+          } else {
+            submitPendingComment(pendingConfirmationRef.current?.input ?? "");
+          }
+          return;
+        }
+
+        if (char === "\b" || char === "\x7f") {
+          const current = pendingConfirmationRef.current;
+          if (current?.input) {
+            updatePendingCommand({ input: current.input.slice(0, -1) });
+            terminal.write("\b \b");
+          }
+          continue;
+        }
+
+        if (char >= " ") {
+          const current = pendingConfirmationRef.current;
+          updatePendingCommand({ input: `${current?.input ?? ""}${char}` });
+          terminal.write(char);
+        }
+      }
+      return;
+    }
+
+    const answer = data.trim().toLowerCase()[0];
+    if (!answer) {
+      return;
+    }
+
+    if (answer === "a" || answer === "y") {
+      acceptPendingCommand();
+      return;
+    }
+
+    if (answer === "r" || answer === "n") {
+      rejectPendingCommand();
+      return;
+    }
+
+    if (answer === "e") {
+      beginEditPendingCommand();
+      return;
+    }
+
+    if (answer === "c") {
+      beginCommentPendingCommand();
+      return;
+    }
+
+    terminal.writeln(
+      pending.source === "agent"
+        ? "\r\nChoose: \x1b[32ma\x1b[0mccept, \x1b[31mr\x1b[0meject, \x1b[33me\x1b[0mdit, or \x1b[90mc\x1b[0momment."
+        : "\r\nChoose: \x1b[32ma\x1b[0mccept or \x1b[31mr\x1b[0meject.",
+    );
+  }
 
   useEffect(() => {
     setConnectionState("disconnected");
     setAgentStarted(false);
-    pendingConfirmationRef.current = null;
+    setTerminalHasContent(false);
+    setPendingCommand(null);
     terminalHadErrorRef.current = false;
 
     const terminal = new Terminal({
@@ -107,60 +309,7 @@ export function TicketTerminal({
 
       const pendingConfirmation = pendingConfirmationRef.current;
       if (pendingConfirmation) {
-        const answer = data.trim().toLowerCase();
-        if (!answer) {
-          return;
-        }
-
-        if (answer === "y") {
-          pendingConfirmationRef.current = null;
-          socket.send(
-            JSON.stringify({
-              command_id: pendingConfirmation.commandId,
-              type: pendingConfirmation.source === "agent" ? "agent_accept" : "manual_confirm",
-            }),
-          );
-          terminal.writeln("\r\n\x1b[34mAccepted.\x1b[0m");
-          return;
-        }
-
-        if (answer === "n") {
-          pendingConfirmationRef.current = null;
-          socket.send(
-            JSON.stringify({
-              command_id: pendingConfirmation.commandId,
-              reason: "Rejected from terminal.",
-              type: pendingConfirmation.source === "agent" ? "agent_reject" : "manual_cancel",
-            }),
-          );
-          terminal.writeln("\r\n\x1b[31mRejected.\x1b[0m");
-          return;
-        }
-
-        if (pendingConfirmation.source === "agent" && answer === "e") {
-          const command = window.prompt("Edit command. The backend will normalize and safety-review it before approval.")?.trim();
-          if (!command) {
-            terminal.writeln("\r\n\x1b[90mEdit cancelled. Proposal still requires approval or rejection.\x1b[0m");
-            return;
-          }
-
-          pendingConfirmationRef.current = null;
-          socket.send(
-            JSON.stringify({
-              command,
-              command_id: pendingConfirmation.commandId,
-              type: "agent_edit",
-            }),
-          );
-          terminal.writeln("\r\n\x1b[90mSubmitted edit to backend for normalization and safety review.\x1b[0m");
-          return;
-        }
-
-        terminal.writeln(
-          pendingConfirmation.source === "agent"
-            ? "\r\nType y to accept, n to reject, or e to edit."
-            : "\r\nType y to accept or n to reject.",
-        );
+        handlePendingTerminalInput(data);
         return;
       }
 
@@ -183,6 +332,7 @@ export function TicketTerminal({
       terminalRef.current = null;
       fitAddonRef.current = null;
       socketRef.current = null;
+      setPendingCommand(null);
     };
   }, [runId]);
 
@@ -194,8 +344,9 @@ export function TicketTerminal({
 
     fitTerminal(true);
     terminalHadErrorRef.current = false;
-    pendingConfirmationRef.current = null;
+    setPendingCommand(null);
     setConnectionState("connecting");
+    setTerminalHasContent(true);
     terminal.writeln("\r\nOpening backend terminal bridge...");
     const socket = new WebSocket(runTerminalWebSocketUrl(runId, terminal.cols, terminal.rows));
     socketRef.current = socket;
@@ -213,12 +364,14 @@ export function TicketTerminal({
       }
 
       if (message.type === "output" || message.type === "terminal_output") {
+        setTerminalHasContent(true);
         terminal.write(message.data);
         return;
       }
 
       if (message.type === "error") {
         terminalHadErrorRef.current = true;
+        setTerminalHasContent(true);
         terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
         return;
       }
@@ -231,7 +384,7 @@ export function TicketTerminal({
         setAgentStarted(false);
       }
 
-      handleTerminalStatusMessage(terminal, message, pendingConfirmationRef);
+      handleTerminalStatusMessage(terminal, message, setPendingCommand);
     };
 
     socket.onerror = () => {
@@ -242,14 +395,16 @@ export function TicketTerminal({
     socket.onclose = (event) => {
       socketRef.current = null;
       terminal.options.disableStdin = true;
-      pendingConfirmationRef.current = null;
+      setPendingCommand(null);
       setAgentStarted(false);
       setConnectionState("disconnected");
       if (terminalHadErrorRef.current && event.reason) {
+        setTerminalHasContent(true);
         terminal.writeln(`\r\n\x1b[31m${event.reason}\x1b[0m`);
         return;
       }
       if (!terminalHadErrorRef.current) {
+        setTerminalHasContent(true);
         terminal.writeln("\r\n\x1b[90mTerminal session closed.\x1b[0m");
       }
     };
@@ -271,6 +426,7 @@ export function TicketTerminal({
     }
 
     socket.send(JSON.stringify({ type: agentStarted ? "agent_next" : "agent_start" }));
+    setTerminalHasContent(true);
     terminal.writeln(`\r\n\x1b[90m${agentStarted ? "Requesting next agent action..." : "Starting agent..."}\x1b[0m`);
     setAgentStarted(true);
   };
@@ -283,6 +439,7 @@ export function TicketTerminal({
     }
 
     socket.send(JSON.stringify({ type: "agent_cancel" }));
+    setTerminalHasContent(true);
     terminal.writeln("\r\n\x1b[90mCancelling agent mode...\x1b[0m");
     setAgentStarted(false);
   };
@@ -374,6 +531,15 @@ export function TicketTerminal({
         </p>
       </div>
       <div className={["terminal-shell", connectionState !== "connected" ? "terminal-shell-disabled" : ""].join(" ")}>
+        {connectionState === "disconnected" && !terminalHasContent ? (
+          <div className="terminal-inactive-state">
+            <p className="terminal-inactive-title">Terminal inactive</p>
+            <p className="terminal-inactive-detail">
+              {runId ? "Backend run ready. Shell not connected." : "Waiting for approved backend run."}
+            </p>
+            <code>{runId ? "$ connect --manual-shell" : "$ run status: pending"}</code>
+          </div>
+        ) : null}
         <div className="terminal-grid" ref={containerRef} />
       </div>
     </section>
@@ -412,7 +578,7 @@ function parseTerminalMessage(value: string): TerminalMessage | null {
 function handleTerminalStatusMessage(
   terminal: Terminal,
   message: TerminalMessage,
-  pendingConfirmationRef: MutableRefObject<PendingConfirmation | null>,
+  setPendingCommand: SetPendingCommand,
 ) {
   switch (message.type) {
     case "agent_cancelled":
@@ -422,25 +588,32 @@ function handleTerminalStatusMessage(
       terminal.writeln("\r\n\x1b[90mAgent guidance recorded.\x1b[0m");
       break;
     case "agent_proposal":
-      pendingConfirmationRef.current = {
+      setPendingCommand({
+        classification: message.classification,
+        command: message.command,
         commandId: message.command_id,
+        input: "",
+        intent: message.intent,
+        mode: "choose",
+        reason: message.reason,
         source: "agent",
-      };
-      terminal.writeln("\r\n\x1b[34mAgent proposed command awaiting technician approval:\x1b[0m");
-      terminal.writeln(`\x1b[90mIntent:\x1b[0m ${message.intent ?? "Review command in terminal."}`);
-      terminal.writeln(`\x1b[90mRisk:\x1b[0m ${message.classification ?? "unclassified"}`);
+      });
+      terminal.writeln("\r\n\x1b[36m╭─ Agent proposed command\x1b[0m");
+      terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mIntent\x1b[0m ${message.intent ?? "Review command in terminal."}`);
+      terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mRisk\x1b[0m ${message.classification ?? "unclassified"}`);
       if (message.reason) {
-        terminal.writeln(`\x1b[90mReason:\x1b[0m ${message.reason}`);
+        terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mReason\x1b[0m ${message.reason}`);
       }
-      terminal.writeln("\x1b[90mFinal command that will run if approved:\x1b[0m");
-      terminal.writeln(`\x1b[1m${message.command}\x1b[0m`);
-      terminal.writeln("Type y to accept, n to reject, or e to edit.");
+      terminal.writeln(`\x1b[36m│\x1b[0m \x1b[1m${message.command}\x1b[0m`);
+      terminal.writeln(
+        "\x1b[36m╰─\x1b[0m \x1b[32m[a] accept\x1b[0m  \x1b[31m[r] reject\x1b[0m  \x1b[33m[e] edit\x1b[0m  \x1b[90m[c] comment\x1b[0m",
+      );
       break;
     case "agent_waiting_for_guidance":
       terminal.writeln("\r\n\x1b[90mAgent is waiting for technician guidance.\x1b[0m");
       break;
     case "command_blocked":
-      pendingConfirmationRef.current = null;
+      setPendingCommand(null);
       terminal.writeln("\r\n\x1b[41m\x1b[97m COMMAND BLOCKED BEFORE EXECUTION \x1b[0m");
       terminal.writeln(`\x1b[31mSafety reason: ${message.reason ?? "safety policy"}\x1b[0m`);
       terminal.writeln("\x1b[90mNo command was run. Review the terminal command history for original/final command details.\x1b[0m");
@@ -448,29 +621,37 @@ function handleTerminalStatusMessage(
     case "command_cancelled":
       terminal.writeln("\r\n\x1b[90mCommand cancelled.\x1b[0m");
       break;
-    case "command_running":
-      terminal.writeln("\r\n\x1b[90mCommand accepted/running...\x1b[0m");
-      break;
     case "command_completed":
-      terminal.writeln(`\r\n\x1b[90mCommand completed with exit code ${message.exit_code ?? "unknown"}.\x1b[0m`);
+      terminal.writeln(
+        message.exit_code === 0
+          ? "\r\n\x1b[32mCommand completed successfully.\x1b[0m"
+          : `\r\n\x1b[31mCommand completed with exit ${message.exit_code ?? "unknown"}.\x1b[0m`,
+      );
+      break;
+    case "command_running":
+      terminal.writeln("\r\n\x1b[36mCommand running...\x1b[0m");
       break;
     case "confirmation_required":
-      pendingConfirmationRef.current = {
+      setPendingCommand({
+        command: message.command,
         commandId: message.command_id,
+        input: "",
+        mode: "choose",
+        reason: message.reason,
         source: "manual",
-      };
-      terminal.writeln("\r\n\x1b[33mConfirmation required before executing final normalized command:\x1b[0m");
-      terminal.writeln(`\x1b[1m${message.command}\x1b[0m`);
+      });
+      terminal.writeln("\r\n\x1b[33m╭─ Manual command requires confirmation\x1b[0m");
+      terminal.writeln(`\x1b[33m│\x1b[0m \x1b[1m${message.command}\x1b[0m`);
       if (message.reason) {
-        terminal.writeln(`\x1b[90mReason:\x1b[0m ${message.reason}`);
+        terminal.writeln(`\x1b[33m│\x1b[0m \x1b[90mReason\x1b[0m ${message.reason}`);
       }
-      terminal.writeln("Type y to run or n to cancel.");
+      terminal.writeln("\x1b[33m╰─\x1b[0m \x1b[32m[a] accept\x1b[0m  \x1b[31m[r] reject\x1b[0m");
       break;
     case "status":
       terminal.writeln(`\r\n\x1b[90m${message.message}\x1b[0m`);
       break;
     case "terminal_closed":
-      pendingConfirmationRef.current = null;
+      setPendingCommand(null);
       terminal.writeln(`\r\n\x1b[90mTerminal closed${message.reason ? `: ${message.reason}` : ""}.\x1b[0m`);
       break;
     case "terminal_opened":
