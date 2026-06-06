@@ -199,6 +199,10 @@ class RunRepository:
         self.session.refresh(draft)
         return draft
 
+    def get_activity_draft(self, run_id: str) -> ActivityDraft | None:
+        statement = select(ActivityDraft).where(ActivityDraft.run_id == run_id)
+        return self.session.exec(statement).first()
+
     def set_activity_review_status(self, draft: ActivityDraft, status: ActivityReviewStatus) -> ActivityDraft:
         draft.review_status = status.value
         draft.updated_at = utc_now()

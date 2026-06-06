@@ -125,6 +125,23 @@ class ActivityDraftRead(BaseModel):
     updated_at: datetime
 
 
+class ActivityDraftUpdate(BaseModel):
+    summary: str | None = None
+    root_cause: str | None = None
+    actions_taken: str | None = None
+    commands_summary: str | None = None
+    validation_result: str | None = None
+    description: str | None = None
+
+
+class ActivityReviewRequest(BaseModel):
+    approved: bool = True
+
+
+class ActivitySubmitRequest(BaseModel):
+    submit: bool = True
+
+
 class RunCreate(BaseModel):
     ticket_id: int
 
@@ -152,3 +169,4 @@ class RunStateRead(BaseModel):
     run: RunRead
     current_action: ActionRead | None = None
     command_results: list[CommandResultRead] = Field(default_factory=list)
+    activity_draft: ActivityDraftRead | None = None

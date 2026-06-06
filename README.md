@@ -63,8 +63,10 @@ cp /path/to/your-key.pem keys/your-key.pem   # then set SSH_PRIVATE_KEY_PATH in 
 |----------|---------|
 | `PHOENIX_API_BASE_URL`, `PHOENIX_API_TOKEN` | The ERP mock and your team token |
 | `SSH_PRIVATE_KEY_PATH`, `SSH_USERNAME` | SSH to the customer VM (`azureuser`) |
-| _(your own LLM vars)_ | Optional — bring-your-own LLM key/endpoint (none is provided) |
+| `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION` | Bring-your-own Azure OpenAI chat deployment for command planning and activity drafts |
 | `VITE_API_BASE` | URL the browser uses to reach *your* backend (default `http://localhost:8000`) |
+
+Agent features fail with a clear configuration error if Azure OpenAI is not configured. Ticket loading, health checks, and existing run inspection still work without LLM credentials.
 
 ---
 
@@ -87,6 +89,16 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt   # Windows: .
 
 # frontend (new terminal)
 cd frontend && npm install && npm run dev
+```
+
+### Verification
+
+```bash
+# backend tests
+cd backend && .venv/bin/pytest
+
+# frontend production build
+cd frontend && npm run build
 ```
 
 ---
@@ -138,6 +150,22 @@ A typical (not mandatory) shape:
 - **Audit log** — records every command + key action.
 - **Activity generator** — drafts the activity from the run.
 
+Implemented backend modules live under `backend/app/`:
+
+| Module | Responsibility |
+|--------|----------------|
+| `clients/phoenix.py` | Authenticated Phoenix ERP calls with timeouts, bounded retries, and clean errors |
+| `services/ssh_runner.py` | Executes one approved SSH command with timeout and bounded stdout/stderr |
+| `services/safety.py` | Classifies commands and blocks dangerous blanket operations before execution |
+| `services/audit_log.py` | Append-only, redacted audit events for key actions and commands |
+| `agent/planner.py` and `agent/providers.py` | Azure OpenAI-backed one-command proposal boundary |
+| `services/run_manager.py` | Human-in-the-loop run state transitions, approvals, validation, activity submission |
+| `services/activity_generator.py` | LLM-generated Phoenix activity drafts from run history |
+| `api/routes_*.py` | Ticket, run, activity, and WebSocket APIs consumed by the frontend |
+| `db/` and `repositories/` | SQLite persistence for runs, actions, command results, audit events, activity drafts, and replayable WebSocket events |
+
+The backend now exposes REST run/activity APIs and `/api/runs/{run_id}/ws` progress streaming for the frontend to consume. The frontend source remains the starter scaffold in this branch.
+
 **Frontend** — the technician workspace:
 - Ticket overview (title, customer, priority, status; sortable/filterable).
 - Ticket detail with the customer system info.
@@ -148,6 +176,16 @@ A typical (not mandatory) shape:
 ### The human-in-the-loop loop
 `load ticket → analyse → propose step → human approves → run over SSH (through the
 safety layer) → observe → repeat → validate → submit activity → set status DONE`.
+
+Server-side controls enforce this flow: SSH must be confirmed before system actions, every command must be approved, risky commands require typed confirmation, blocked commands cannot execute, validation evidence must be human-confirmed before activity review, and Phoenix ticket status is set to `DONE` only after activity submission succeeds.
+
+### Assumptions and limitations
+
+- Active runs are persisted for visibility and audit, but interrupted command execution is not resumed after backend restart.
+- The agent proposes exactly one command at a time; the technician remains responsible for approving, editing, rejecting, retrying, or aborting.
+- Validation is recorded by human-confirmed evidence after at least one successful command result.
+- Raw command output is redacted before LLM prompts and bounded before storage/display.
+- The reset endpoint exists in the Phoenix client but is not part of the normal technician workflow.
 
 ---
 
