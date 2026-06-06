@@ -6,12 +6,16 @@ from app.agent.planner import SAFETY_POLICY_SUMMARY, Planner
 from app.clients.phoenix import PhoenixClient
 from app.core.errors import SafetyError, ValidationError
 from app.core.redaction import redact_payload
-from app.db.models import Action, Run
+from app.db.models import Action, ActivityDraft, Run, utc_now
 from app.repositories.runs import RunRepository
-from app.schemas.phoenix import CustomerSystem, TicketStatus
+from app.schemas.phoenix import Activity, ActivityCreate, CustomerSystem, TicketStatus
 from app.schemas.runs import (
     ActionRead,
     ActionStatus,
+    ActivityDraftRead,
+    ActivityDraftUpdate,
+    ActivityReviewStatus,
+    ActivitySubmitRequest,
     CommandClassification,
     CommandResultRead,
     ConfirmationStatus,
@@ -21,6 +25,7 @@ from app.schemas.runs import (
     ValidationStatus,
 )
 from app.services.audit_log import AuditLog
+from app.services.activity_generator import ActivityGenerator
 from app.services.events import persist_and_publish_ws_event_sync
 from app.services.safety import classify_command
 from app.services.ssh_runner import SshRunner
@@ -36,13 +41,15 @@ class RunManager:
         phoenix_client: PhoenixClient | None = None,
         planner: Planner | None = None,
         ssh_runner: SshRunner | None = None,
+        activity_generator: ActivityGenerator | None = None,
     ):
         self.session = session
         self.repo = RunRepository(session)
         self.audit = AuditLog(session)
         self.phoenix = phoenix_client or PhoenixClient()
-        self.planner = planner or Planner()
+        self.planner = planner
         self.ssh_runner = ssh_runner or SshRunner()
+        self.activity_generator = activity_generator
 
     def start_run(self, ticket_id: int) -> RunStateRead:
         ticket = self.phoenix.get_ticket(ticket_id)
@@ -70,7 +77,8 @@ class RunManager:
         self._require_ssh_confirmed(run)
         snapshot = self._snapshot(run)
         observations = self._observations(run.id)
-        proposal = self.planner.propose_next_command(
+        planner = self.planner or Planner()
+        proposal = planner.propose_next_command(
             ticket=snapshot.get("ticket", {}),
             customer_system=snapshot.get("customer_system", {}),
             observations=observations,
@@ -219,6 +227,83 @@ class RunManager:
         self._event(run.id, "run_aborted", {"status": RunStatus.ABORTED.value})
         return self.state(run.id)
 
+    def generate_activity_draft(self, run_id: str) -> ActivityDraftRead:
+        run = self._run(run_id)
+        self._require_ready_for_activity(run)
+        snapshot = self._snapshot(run)
+        actions = [self._action_payload(action) for action in self.repo.list_actions(run.id)]
+        command_results = [self._command_result_payload(result) for result in self.repo.list_command_results(run.id)]
+        validation_events = [event.payload for event in self.audit.for_run(run.id) if event.type in {"validation_evidence", "human_validation_confirmation"}]
+        activity_generator = self.activity_generator or ActivityGenerator()
+        generated = activity_generator.generate(
+            ticket=snapshot.get("ticket", {}),
+            customer_system=snapshot.get("customer_system", {}),
+            actions=actions,
+            command_results=command_results,
+            validation={"status": run.validation_status, "confirmed": run.validation_confirmed, "events": validation_events},
+        )
+        draft = self.repo.upsert_activity_draft(run, **generated.model_dump())
+        self.audit.record("activity_draft_generated", generated.model_dump(), run.id)
+        self._event(run.id, "activity_draft_generated", {"draft_id": draft.id})
+        return ActivityDraftRead.model_validate(draft, from_attributes=True)
+
+    def update_activity_draft(self, run_id: str, update: ActivityDraftUpdate) -> ActivityDraftRead:
+        run = self._run(run_id)
+        self._require_ready_for_activity(run)
+        fields = update.model_dump(exclude_unset=True)
+        if not fields:
+            raise ValidationError("Activity draft update must include at least one field")
+        draft = self.repo.upsert_activity_draft(run, **fields)
+        self.repo.set_activity_review_status(draft, ActivityReviewStatus.DRAFT)
+        self.audit.record("activity_draft_updated", fields, run.id)
+        self._event(run.id, "activity_draft_updated", {"draft_id": draft.id})
+        return ActivityDraftRead.model_validate(draft, from_attributes=True)
+
+    def review_activity_draft(self, run_id: str, approved: bool = True) -> ActivityDraftRead:
+        run = self._run(run_id)
+        self._require_ready_for_activity(run)
+        draft = self._activity_draft(run)
+        if not approved:
+            self.repo.set_activity_review_status(draft, ActivityReviewStatus.DRAFT)
+            self.audit.record("activity_reviewed", {"approved": False}, run.id)
+            self._event(run.id, "activity_reviewed", {"approved": False})
+            return ActivityDraftRead.model_validate(draft, from_attributes=True)
+        self._require_complete_activity_draft(draft)
+        draft = self.repo.set_activity_review_status(draft, ActivityReviewStatus.REVIEWED)
+        self.audit.record("activity_reviewed", {"approved": True}, run.id)
+        self._event(run.id, "activity_reviewed", {"approved": True})
+        return ActivityDraftRead.model_validate(draft, from_attributes=True)
+
+    def submit_activity(self, run_id: str, request: ActivitySubmitRequest) -> Activity:
+        if not request.submit:
+            raise ValidationError("Activity submission requires explicit submit=true")
+        run = self._run(run_id)
+        self._require_ready_for_activity(run)
+        draft = self._activity_draft(run)
+        self._require_complete_activity_draft(draft)
+        if draft.review_status != ActivityReviewStatus.REVIEWED.value:
+            raise ValidationError("Activity draft must be explicitly reviewed before submission")
+        activity = ActivityCreate(
+            ticket_id=run.ticket_id,
+            start_datetime=run.created_at,
+            end_datetime=utc_now(),
+            description=draft.description,
+            summary=draft.summary,
+            root_cause=draft.root_cause,
+            actions_taken=draft.actions_taken,
+            commands_summary=draft.commands_summary,
+            validation_result=draft.validation_result,
+        )
+        created = self.phoenix.create_activity(activity)
+        self.repo.set_activity_review_status(draft, ActivityReviewStatus.SUBMITTED)
+        self.repo.update_run_status(run, RunStatus.SUBMITTED)
+        self.audit.record("activity_submitted", {"activity_id": created.id, "ticket_id": run.ticket_id}, run.id)
+        self._event(run.id, "activity_submitted", {"activity_id": created.id})
+        self.phoenix.set_ticket_status(run.ticket_id, TicketStatus.DONE)
+        self.audit.record("ticket_set_done", {"ticket_id": run.ticket_id}, run.id)
+        self._event(run.id, "ticket_done", {"ticket_id": run.ticket_id, "status": TicketStatus.DONE.value})
+        return created
+
     def audit_events(self, run_id: str):
         self._run(run_id)
         return self.audit.for_run(run_id)
@@ -227,10 +312,12 @@ class RunManager:
         run = self._run(run_id)
         action = self.repo.get_current_action(run)
         results = self.repo.list_command_results(run.id)
+        draft = self.repo.get_activity_draft(run.id)
         return RunStateRead(
             run=RunRead.model_validate(run, from_attributes=True),
             current_action=ActionRead.model_validate(action, from_attributes=True) if action else None,
             command_results=[CommandResultRead.model_validate(result, from_attributes=True) for result in results],
+            activity_draft=ActivityDraftRead.model_validate(draft, from_attributes=True) if draft else None,
         )
 
     def _run(self, run_id: str) -> Run:
@@ -261,6 +348,47 @@ class RunManager:
     def _require_ssh_confirmed(self, run: Run) -> None:
         if not run.ssh_confirmed:
             raise ValidationError("Technician must confirm SSH connection before any system action")
+
+    def _require_ready_for_activity(self, run: Run) -> None:
+        if run.status not in {RunStatus.READY_FOR_ACTIVITY.value, RunStatus.SUBMITTED.value} or not run.validation_confirmed:
+            raise ValidationError("Activity requires human-confirmed validation evidence first")
+
+    def _activity_draft(self, run: Run) -> ActivityDraft:
+        draft = self.repo.get_activity_draft(run.id)
+        if draft is None:
+            raise ValidationError("Activity draft was not found")
+        return draft
+
+    def _require_complete_activity_draft(self, draft: ActivityDraft) -> None:
+        required_fields = ["summary", "root_cause", "actions_taken", "commands_summary", "validation_result", "description"]
+        missing = [field for field in required_fields if not (getattr(draft, field) or "").strip()]
+        if missing:
+            raise ValidationError(f"Activity draft is missing required field(s): {', '.join(missing)}")
+
+    def _action_payload(self, action: Action) -> dict[str, Any]:
+        return redact_payload(
+            {
+                "id": action.id,
+                "status": action.status,
+                "command": action.command,
+                "classification": action.command_classification,
+                "intent": action.intent,
+                "risk_reason": action.risk_reason,
+                "expected_signal": action.expected_signal,
+            }
+        )
+
+    def _command_result_payload(self, result) -> dict[str, Any]:
+        return redact_payload(
+            {
+                "action_id": result.action_id,
+                "command": result.command,
+                "exit_code": result.exit_code,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "timed_out": result.timed_out,
+            }
+        )
 
     def _event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
         persist_and_publish_ws_event_sync(run_id, event_type, payload)

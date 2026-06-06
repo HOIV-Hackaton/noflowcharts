@@ -7,6 +7,7 @@ Keep the ERP token and the SSH key on the backend — never in the browser.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes_activity import router as activity_router
 from app.api.routes_runs import router as runs_router
 from app.api.routes_tickets import router as tickets_router
 from app.api.routes_ws import router as ws_router
@@ -24,6 +25,7 @@ app.add_middleware(
 
 app.include_router(tickets_router)
 app.include_router(runs_router)
+app.include_router(activity_router)
 app.include_router(ws_router)
 
 
