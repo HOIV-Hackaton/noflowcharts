@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -57,7 +58,9 @@ class Settings(BaseSettings):
 
     def uses_foundry_project_endpoint(self) -> bool:
         endpoint = self.azure_openai_endpoint or ""
-        return ".services.ai.azure.com" in endpoint and "/api/projects/" in endpoint
+        parsed = urlparse(endpoint if "://" in endpoint else f"//{endpoint}", scheme="https")
+        hostname = (parsed.hostname or "").lower()
+        return hostname.endswith(".services.ai.azure.com") and "/api/projects/" in (parsed.path or "")
 
     def configured_secrets(self) -> list[str]:
         return [
