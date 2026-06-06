@@ -9,11 +9,13 @@ import type { Ticket } from "../../types";
 
 export function DashboardOverview({
   highPriorityTickets,
+  latestFetchedAt,
   onSelectTicket,
   stats,
   tickets: allTickets,
 }: {
   highPriorityTickets: Ticket[];
+  latestFetchedAt: string | null;
   onSelectTicket: (ticketId: number) => void;
   stats: BlocksStat[];
   tickets: Ticket[];
@@ -22,6 +24,7 @@ export function DashboardOverview({
   const newestTicket = allTickets
     .slice()
     .sort((first, second) => new Date(second.updatedAt).getTime() - new Date(first.updatedAt).getTime())[0];
+  const newestUpdateValue = latestFetchedAt ?? newestTicket?.updatedAt ?? null;
 
   return (
     <>
@@ -35,7 +38,7 @@ export function DashboardOverview({
           { label: "Pending tickets", value: pendingTickets, kind: "metric", tone: "positive" },
           {
             label: "Newest update",
-            value: newestTicket ? formatDate(newestTicket.updatedAt) : "None",
+            value: newestUpdateValue ? formatDate(newestUpdateValue) : "None",
             kind: "timestamp",
             tone: "positive",
           },

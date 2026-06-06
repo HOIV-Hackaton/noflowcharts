@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BlocksSidebar,
   type BlocksStat,
@@ -13,8 +13,20 @@ import {
   createEvent,
   isDraftComplete,
 } from "../../lib/serviceDesk";
+import { backendApi, getApiErrorMessage, type BackendRunStateRead } from "../../services/backendApi";
+import {
+  employeeName,
+  mapActivityDraft,
+  mapAuditEvent,
+  mapBackendAction,
+  mapBackendCustomerSystem,
+  mapBackendTicket,
+  mapRunState,
+  mapValidation,
+} from "../../services/backendMapping";
 import type {
   ActivityDraft,
+  CustomerSystem,
   EventType,
   Priority,
   ProposedAction,
@@ -23,6 +35,7 @@ import type {
   TabId,
   TicketStatus,
   ValidationResult,
+  Ticket,
 } from "../../types";
 import { DashboardHome } from "./DashboardHome";
 import { DashboardOverview } from "./DashboardOverview";
@@ -33,6 +46,12 @@ type SidebarCounts = BlocksSidebarCounts;
 
 export function TechnicianConsole() {
   const { session, logout } = useAuth();
+  const [ticketList, setTicketList] = useState<Ticket[]>(tickets);
+  const [systemsByTicket, setSystemsByTicket] = useState<Record<number, CustomerSystem>>(systems);
+  const [backendReady, setBackendReady] = useState(false);
+  const [ticketsLoading, setTicketsLoading] = useState(true);
+  const [lastTicketFetchAt, setLastTicketFetchAt] = useState<string | null>(null);
+  const [backendRunId, setBackendRunId] = useState<string | null>(null);
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [search, setSearch] = useState("");
@@ -52,10 +71,54 @@ export function TechnicianConsole() {
   const [logFilter, setLogFilter] = useState<"all" | EventType>("all");
   const [notice, setNotice] = useState("");
 
-  const selectedTicket = tickets.find((ticket) => ticket.id === selectedTicketId) ?? null;
-  const selectedSystem = selectedTicketId ? systems[selectedTicketId] : null;
+  const selectedTicket = ticketList.find((ticket) => ticket.id === selectedTicketId) ?? null;
+  const selectedSystem = selectedTicketId ? systemsByTicket[selectedTicketId] ?? null : null;
   const pendingActions = actions.filter((action) => action.status === "pending");
   const executedActions = actions.filter((action) => action.status === "executed");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDashboardData() {
+      setTicketsLoading(true);
+
+      try {
+        const [employee, backendTickets] = await Promise.all([
+          backendApi.getMe(),
+          backendApi.listTickets({ sort: "date" }),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        const assignedTo = employeeName(employee);
+        setTicketList(backendTickets.map((ticket) => mapBackendTicket(ticket, assignedTo)));
+        setLastTicketFetchAt(new Date().toISOString());
+        setBackendReady(true);
+        setNotice("");
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        setTicketList(tickets);
+        setLastTicketFetchAt(null);
+        setBackendReady(false);
+        setNotice(`Using mock dashboard data. ${getApiErrorMessage(error)}`);
+      } finally {
+        if (!cancelled) {
+          setTicketsLoading(false);
+        }
+      }
+    }
+
+    void loadDashboardData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const filteredTickets = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -66,7 +129,7 @@ export function TechnicianConsole() {
       Low: 3,
     };
 
-    return tickets
+    return ticketList
       .filter((ticket) => {
         const matchesSearch =
           !query ||
@@ -95,7 +158,7 @@ export function TechnicianConsole() {
 
         return new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime();
       });
-  }, [priorityFilter, search, sidebarView, sortBy, statusFilter]);
+  }, [priorityFilter, search, sidebarView, sortBy, statusFilter, ticketList]);
 
   const filteredEvents = useMemo(() => {
     if (logFilter === "all") {
@@ -106,43 +169,83 @@ export function TechnicianConsole() {
   }, [events, logFilter]);
 
   const highPriorityTickets = useMemo(
-    () => tickets.filter((ticket) => ticket.priority === "Critical" || ticket.priority === "High"),
-    [],
+    () => ticketList.filter((ticket) => ticket.priority === "Critical" || ticket.priority === "High"),
+    [ticketList],
   );
 
   const sidebarCounts = useMemo<SidebarCounts>(
     () => ({
-      all: tickets.length,
-      assigned: tickets.filter((ticket) => ticket.assignedTo === session?.name).length,
-      high: tickets.filter((ticket) => ticket.priority === "Critical" || ticket.priority === "High").length,
-      pending: tickets.filter((ticket) => ticket.status === "PENDING").length,
+      all: ticketList.length,
+      assigned: ticketList.filter((ticket) => ticket.assignedTo === session?.name || backendReady).length,
+      high: ticketList.filter((ticket) => ticket.priority === "Critical" || ticket.priority === "High").length,
+      pending: ticketList.filter((ticket) => ticket.status === "PENDING").length,
     }),
-    [session?.name],
+    [backendReady, session?.name, ticketList],
   );
 
   const stats = useMemo<BlocksStat[]>(
     () => [
       {
         label: "Open tickets",
-        value: tickets.filter((ticket) => ticket.status === "OPEN").length,
+        value: ticketList.filter((ticket) => ticket.status === "OPEN").length,
         kind: "chart",
         tone: "positive",
       },
       {
         label: "High priority",
-        value: tickets.filter((ticket) => ticket.priority === "Critical" || ticket.priority === "High").length,
+        value: ticketList.filter((ticket) => ticket.priority === "Critical" || ticket.priority === "High").length,
         kind: "chart",
         tone: "negative",
       },
       { label: "Pending approval", value: pendingActions.length, kind: "metric", tone: "neutral" },
     ],
-    [pendingActions.length],
+    [pendingActions.length, ticketList],
   );
 
   const dismissNotice = useCallback(() => setNotice(""), []);
 
+  const syncRunState = useCallback((state: BackendRunStateRead) => {
+    setRunState(mapRunState(state));
+    setValidation(mapValidation(state));
+
+    if (state.activity_draft) {
+      setDraft(mapActivityDraft(state.activity_draft));
+    }
+
+    setActions((currentActions) => {
+      if (!state.current_action) {
+        return currentActions;
+      }
+
+      const nextAction = mapBackendAction(state.current_action, state.command_results);
+      const existing = currentActions.find((action) => action.id === nextAction.id);
+
+      if (existing) {
+        return currentActions.map((action) => (action.id === nextAction.id ? nextAction : action));
+      }
+
+      return [...currentActions, nextAction];
+    });
+  }, []);
+
+  const refreshAuditEvents = useCallback(async (runId: string) => {
+    try {
+      const auditEvents = await backendApi.getAudit(runId);
+      setEvents(auditEvents.map(mapAuditEvent));
+    } catch {
+      // Audit refresh is helpful, but should not block the technician flow.
+    }
+  }, []);
+
+  const updateTicketStatus = useCallback((ticketId: number, status: TicketStatus) => {
+    setTicketList((currentTickets) =>
+      currentTickets.map((ticket) => (ticket.id === ticketId ? { ...ticket, status } : ticket)),
+    );
+  }, []);
+
   const selectTicket = (ticketId: number) => {
     setSelectedTicketId(ticketId);
+    setBackendRunId(null);
     setActiveTab("overview");
     setSystemLoaded(false);
     setConnectionStatus("not_requested");
@@ -156,9 +259,21 @@ export function TechnicianConsole() {
     setNotice("");
   };
 
-  const loadSystemInfo = () => {
+  const loadSystemInfo = async () => {
     if (!selectedTicket) {
       return;
+    }
+
+    if (backendReady) {
+      try {
+        const backendSystem = await backendApi.getCustomerSystem(selectedTicket.id);
+        setSystemsByTicket((currentSystems) => ({
+          ...currentSystems,
+          [selectedTicket.id]: mapBackendCustomerSystem(backendSystem),
+        }));
+      } catch (error) {
+        setNotice(`Using local system context. ${getApiErrorMessage(error)}`);
+      }
     }
 
     setSystemLoaded(true);
@@ -168,9 +283,28 @@ export function TechnicianConsole() {
     setActiveTab("system");
   };
 
-  const approveConnection = () => {
+  const approveConnection = async () => {
     if (!selectedTicket || !systemLoaded) {
       return;
+    }
+
+    if (backendReady) {
+      try {
+        const runState = backendRunId
+          ? await backendApi.getRun(backendRunId)
+          : await backendApi.createRun(selectedTicket.id);
+        const confirmedState = await backendApi.confirmSsh(runState.run.id);
+
+        setBackendRunId(confirmedState.run.id);
+        setConnectionStatus("connected");
+        updateTicketStatus(selectedTicket.id, "PENDING");
+        syncRunState(confirmedState);
+        await refreshAuditEvents(confirmedState.run.id);
+        appendEvent("approval", "Connection approved", "Backend run created and SSH approval confirmed.");
+        return;
+      } catch (error) {
+        setNotice(`Using mock connection approval. ${getApiErrorMessage(error)}`);
+      }
     }
 
     setConnectionStatus("connected");
@@ -178,9 +312,28 @@ export function TechnicianConsole() {
     appendEvent("approval", "Connection approved", "Technician approved the mock SSH connection.");
   };
 
-  const startAnalysis = () => {
+  const startAnalysis = async () => {
     if (!selectedTicket) {
       return;
+    }
+
+    if (backendReady) {
+      if (connectionStatus !== "connected" || !backendRunId) {
+        setNotice("Approve the backend connection before starting analysis.");
+        return;
+      }
+
+      try {
+        const state = await backendApi.nextAction(backendRunId);
+        syncRunState(state);
+        await refreshAuditEvents(backendRunId);
+        setAnalysisReady(true);
+        appendEvent("analysis", "Analysis complete", "Backend proposed the next action.");
+        setActiveTab("analysis");
+        return;
+      } catch (error) {
+        setNotice(`Using mock analysis. ${getApiErrorMessage(error)}`);
+      }
     }
 
     setRunState("analyzing");
@@ -199,11 +352,38 @@ export function TechnicianConsole() {
     );
   };
 
-  const approveAction = (actionId: string) => {
+  const approveAction = async (actionId: string) => {
     const action = actions.find((candidate) => candidate.id === actionId);
 
     if (!action || action.status !== "pending") {
       return;
+    }
+
+    if (backendReady && backendRunId) {
+      const backendActionId = Number(actionId);
+
+      try {
+        let state = await backendApi.editAction(
+          backendRunId,
+          Number.isFinite(backendActionId) ? backendActionId : null,
+          action.command,
+          action.title,
+        );
+        syncRunState(state);
+        state = await backendApi.approveAction(
+          backendRunId,
+          Number.isFinite(backendActionId) ? backendActionId : null,
+        );
+        syncRunState(state);
+        window.setTimeout(() => {
+          void backendApi.getRun(backendRunId).then(syncRunState).catch(() => undefined);
+          void refreshAuditEvents(backendRunId);
+        }, 900);
+        appendEvent("approval", "Action approved", action.title);
+        return;
+      } catch (error) {
+        setNotice(`Using mock action execution. ${getApiErrorMessage(error)}`);
+      }
     }
 
     setRunState("executing");
@@ -228,11 +408,28 @@ export function TechnicianConsole() {
     setRunState(remainingPending.length ? "awaiting_action_approval" : "idle");
   };
 
-  const rejectAction = (actionId: string) => {
+  const rejectAction = async (actionId: string) => {
     const action = actions.find((candidate) => candidate.id === actionId);
 
     if (!action) {
       return;
+    }
+
+    if (backendReady && backendRunId) {
+      const backendActionId = Number(actionId);
+
+      try {
+        const state = await backendApi.rejectAction(
+          backendRunId,
+          Number.isFinite(backendActionId) ? backendActionId : null,
+        );
+        syncRunState(state);
+        await refreshAuditEvents(backendRunId);
+        appendEvent("approval", "Action rejected", action.title);
+        return;
+      } catch (error) {
+        setNotice(`Using mock rejection. ${getApiErrorMessage(error)}`);
+      }
     }
 
     setActions((currentActions) =>
@@ -245,11 +442,28 @@ export function TechnicianConsole() {
     appendEvent("approval", "Action rejected", action.title);
   };
 
-  const retryAction = (actionId: string) => {
+  const retryAction = async (actionId: string) => {
     const action = actions.find((candidate) => candidate.id === actionId);
 
     if (!action) {
       return;
+    }
+
+    if (backendReady && backendRunId) {
+      const backendActionId = Number(actionId);
+
+      try {
+        const state = await backendApi.retryAction(
+          backendRunId,
+          Number.isFinite(backendActionId) ? backendActionId : null,
+        );
+        syncRunState(state);
+        await refreshAuditEvents(backendRunId);
+        appendEvent("approval", "Action queued again", action.title);
+        return;
+      } catch (error) {
+        setNotice(`Using mock retry. ${getApiErrorMessage(error)}`);
+      }
     }
 
     setActions((currentActions) =>
@@ -261,9 +475,22 @@ export function TechnicianConsole() {
     setRunState("awaiting_action_approval");
   };
 
-  const abortRun = () => {
+  const abortRun = async () => {
     if (!selectedTicket) {
       return;
+    }
+
+    if (backendReady && backendRunId) {
+      try {
+        const state = await backendApi.abortRun(backendRunId);
+        syncRunState(state);
+        await refreshAuditEvents(backendRunId);
+        setConnectionStatus((current) => (current === "connected" ? "disconnected" : current));
+        appendEvent("error", "Run aborted", "Technician stopped the backend run.");
+        return;
+      } catch (error) {
+        setNotice(`Using mock abort. ${getApiErrorMessage(error)}`);
+      }
     }
 
     setRunState("aborted");
@@ -271,9 +498,23 @@ export function TechnicianConsole() {
     appendEvent("error", "Run aborted", "Technician stopped the run.");
   };
 
-  const runValidation = () => {
+  const runValidation = async () => {
     if (!selectedTicket) {
       return;
+    }
+
+    if (backendReady && backendRunId) {
+      const evidence = "Technician confirmed service behavior after approved action execution.";
+
+      try {
+        const state = await backendApi.confirmValidation(backendRunId, evidence);
+        syncRunState(state);
+        await refreshAuditEvents(backendRunId);
+        appendEvent("validation", "Validation passed", evidence);
+        return;
+      } catch (error) {
+        setNotice(`Using mock validation. ${getApiErrorMessage(error)}`);
+      }
     }
 
     setRunState("validating");
@@ -287,9 +528,22 @@ export function TechnicianConsole() {
     setRunState("ready_to_submit");
   };
 
-  const generateDraft = () => {
+  const generateDraft = async () => {
     if (!selectedTicket) {
       return;
+    }
+
+    if (backendReady && backendRunId) {
+      try {
+        const draftResponse = await backendApi.generateActivityDraft(backendRunId);
+        setDraft(mapActivityDraft(draftResponse));
+        await refreshAuditEvents(backendRunId);
+        appendEvent("output", "Activity draft generated", "Backend generated the ERP activity draft.");
+        setActiveTab("activity");
+        return;
+      } catch (error) {
+        setNotice(`Using mock activity draft. ${getApiErrorMessage(error)}`);
+      }
     }
 
     const nextDraft: ActivityDraft = {
@@ -310,10 +564,39 @@ export function TechnicianConsole() {
     setActiveTab("activity");
   };
 
-  const submitActivity = () => {
+  const submitActivity = async () => {
     if (!isDraftComplete(draft)) {
       setNotice("Complete every activity field before submitting.");
       return;
+    }
+
+    const ticketId = selectedTicket?.id;
+
+    if (backendReady && backendRunId) {
+      try {
+        await backendApi.updateActivityDraft(backendRunId, {
+          actions_taken: draft.actions_taken,
+          commands_summary: draft.commands_summary,
+          description: draft.summary,
+          root_cause: draft.root_cause,
+          summary: draft.summary,
+          validation_result: draft.validation_result,
+        });
+        await backendApi.reviewActivityDraft(backendRunId, true);
+        await backendApi.submitActivity(backendRunId);
+        const state = await backendApi.getRun(backendRunId);
+        syncRunState(state);
+        if (ticketId) {
+          updateTicketStatus(ticketId, "DONE");
+        }
+        setSubmitStatus("submitted");
+        setNotice("Activity submitted to backend.");
+        await refreshAuditEvents(backendRunId);
+        appendEvent("output", "Activity submitted", "Backend ERP activity submission completed.");
+        return;
+      } catch (error) {
+        setNotice(`Using mock activity submission. ${getApiErrorMessage(error)}`);
+      }
     }
 
     setSubmitStatus("submitted");
@@ -336,7 +619,26 @@ export function TechnicianConsole() {
     setNotice("Safe log excerpt copied.");
   };
 
-  const refreshTickets = () => setNotice("Mock ticket queue refreshed.");
+  const refreshTickets = async () => {
+    if (!backendReady) {
+      setNotice("Mock ticket queue refreshed.");
+      return;
+    }
+
+    try {
+      const backendTickets = await backendApi.listTickets({
+        priority: priorityFilter === "all" ? null : priorityFilter,
+        sort: sortBy,
+        status: statusFilter === "all" ? null : statusFilter,
+      });
+      const assignedTo = session?.name ?? "Technician";
+      setTicketList(backendTickets.map((ticket) => mapBackendTicket(ticket, assignedTo)));
+      setLastTicketFetchAt(new Date().toISOString());
+      setNotice("Backend ticket queue refreshed.");
+    } catch (error) {
+      setNotice(`Ticket refresh failed. ${getApiErrorMessage(error)}`);
+    }
+  };
 
   const handleSidebarView = (view: SidebarView) => {
     setSidebarView(view);
@@ -396,7 +698,7 @@ export function TechnicianConsole() {
         }}
         search={search}
         setSearch={setSearch}
-        tickets={tickets}
+        tickets={ticketList}
       />
 
       <section className="app-main">
@@ -439,9 +741,10 @@ export function TechnicianConsole() {
           ) : sidebarView === "overview" ? (
             <DashboardOverview
               highPriorityTickets={highPriorityTickets}
+              latestFetchedAt={lastTicketFetchAt}
               onSelectTicket={selectTicket}
               stats={stats}
-              tickets={tickets}
+              tickets={ticketList}
             />
           ) : (
             <DashboardHome

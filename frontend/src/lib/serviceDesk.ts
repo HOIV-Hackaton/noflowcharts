@@ -19,36 +19,6 @@ export function createActions(ticket: Ticket): ProposedAction[] {
       flags: [],
       status: "pending",
     },
-    {
-      id: `${ticket.id}-diagnostic-logs`,
-      type: "diagnostic",
-      title: "Read recent service logs",
-      command: "journalctl -u customer-app -n 80 --no-pager",
-      purpose: "Collect recent errors without exposing secrets or broad filesystem content.",
-      risk: "Medium",
-      flags: ["output review"],
-      status: "pending",
-    },
-    {
-      id: `${ticket.id}-fix-restart`,
-      type: "fix",
-      title: "Restart affected service",
-      command: "sudo systemctl restart customer-app",
-      purpose: "Apply a proportionate service restart after diagnostics support it.",
-      risk: "Medium",
-      flags: ["service impact"],
-      status: "pending",
-    },
-    {
-      id: `${ticket.id}-validation-http`,
-      type: "validation",
-      title: "Validate customer endpoint",
-      command: "curl -fsS http://localhost:8080/health",
-      purpose: "Verify the restored customer benefit with a concrete health check.",
-      risk: "Low",
-      flags: [],
-      status: "pending",
-    },
   ];
 }
 
