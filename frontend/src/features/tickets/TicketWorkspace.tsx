@@ -1,21 +1,45 @@
 import { lazy, Suspense, useState } from "react";
 import {
-  BlocksConfirmDialog,
-  BlocksStatsGrid,
-  type BlocksStat,
-} from "../../components/blocks";
-import { MarkdownContent } from "../../components/ui/MarkdownContent";
+  AlertTriangleIcon,
+  ArrowLeftIcon,
+  CheckIcon,
+  ClipboardCheckIcon,
+  PlayIcon,
+  RotateCcwIcon,
+  ShieldCheckIcon,
+  XIcon,
+} from "lucide-react";
+
+import { MarkdownContent } from "@/components/ui/MarkdownContent";
 import {
   DefinitionTable,
   EmptyState,
   EventTable,
   HeadingWithTags,
   LogFilter,
-  PageHeader,
   StatusLabel,
-} from "../../components/ui/primitives";
-import { hypotheses, tabs } from "../../data/mockData";
-import { formatConnection, formatDate, formatRunState, isDraftComplete } from "../../lib/serviceDesk";
+} from "@/components/ui/primitives";
+import {
+  PageHeading,
+  StatsGrid,
+  WorkflowCards,
+  type DashboardStat,
+} from "@/components/service-desk-ui";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
+import { hypotheses, tabs } from "@/data/mockData";
+import { formatConnection, formatDate, formatRunState, isDraftComplete } from "@/lib/serviceDesk";
 import type {
   ActivityDraft,
   ConnectionStatus,
@@ -25,9 +49,11 @@ import type {
   RunEvent,
   RunState,
   TabId,
+  TerminalCommandLog,
+  TerminalTranscriptLine,
   Ticket,
   ValidationResult,
-} from "../../types";
+} from "@/types";
 
 const TicketTerminal = lazy(() =>
   import("./TicketTerminal").then((module) => ({ default: module.TicketTerminal })),
@@ -37,6 +63,7 @@ export function TicketWorkspace(props: {
   activeTab: TabId;
   actions: ProposedAction[];
   analysisReady: boolean;
+  backendRunId: string | null;
   connectionStatus: ConnectionStatus;
   draft: ActivityDraft;
   events: RunEvent[];
@@ -64,6 +91,8 @@ export function TicketWorkspace(props: {
   setLogFilter: (filter: "all" | EventType) => void;
   submitStatus: "idle" | "submitted";
   systemLoaded: boolean;
+  terminalCommands: TerminalCommandLog[];
+  terminalTranscript: TerminalTranscriptLine[];
   ticket: Ticket;
   validation: ValidationResult;
 }) {
@@ -74,22 +103,58 @@ export function TicketWorkspace(props: {
       : props.pendingActions.length
         ? "Action approval required"
         : "";
-  const overviewStats: BlocksStat[] = [
-    { label: "Pending approvals", value: props.pendingActions.length, kind: "metric", tone: "neutral" },
-    { label: "Run events", value: props.events.length, kind: "metric", tone: "positive" },
-    { label: "Validation", value: props.validation.status, kind: "status" },
-    { label: "Connection", value: formatConnection(props.connectionStatus), kind: "status" },
-  ];
-  const analysisStats: BlocksStat[] = [
-    ...overviewStats,
-    { label: "Actions executed", value: props.executedActions.length, kind: "metric", tone: "positive" },
+  const overviewStats: DashboardStat[] = [
+    {
+      detail: "Commands or connection steps awaiting technician review.",
+      label: "Pending approvals",
+      progress: props.pendingActions.length ? 100 : 0,
+      tone: props.pendingActions.length ? "warning" : "success",
+      value: props.pendingActions.length,
+    },
+    {
+      detail: "Audit and run events captured for the activity draft.",
+      label: "Run events",
+      progress: Math.min(props.events.length * 12, 100),
+      tone: "default",
+      value: props.events.length,
+    },
+    {
+      detail: props.validation.evidence,
+      label: "Validation",
+      progress: props.validation.status === "passed" ? 100 : 0,
+      tone: props.validation.status === "passed" ? "success" : "warning",
+      value: props.validation.status,
+    },
+    {
+      detail: "Backend-owned SSH approval state.",
+      label: "Connection",
+      progress: props.connectionStatus === "connected" ? 100 : 0,
+      tone: props.connectionStatus === "connected" ? "success" : "warning",
+      value: formatConnection(props.connectionStatus),
+    },
   ];
 
   return (
-    <section className="ticket-workspace">
-      <TicketBreadcrumb onBackToTickets={props.onBackToTickets} ticketId={props.ticket.id} />
-      <PageHeader
-        title={props.ticket.title}
+    <section className="flex flex-1 flex-col gap-5">
+      <PageHeading
+        action={
+          <div className="flex items-center gap-2">
+            <Button onClick={props.onBackToTickets} size="sm" type="button" variant="outline">
+              <ArrowLeftIcon data-icon="inline-start" />
+              Tickets
+            </Button>
+            <Button
+              disabled={props.runState === "idle" || props.runState === "submitted" || props.runState === "aborted"}
+              onClick={() => setAbortDialogOpen(true)}
+              size="sm"
+              type="button"
+              variant="destructive"
+            >
+              <XIcon data-icon="inline-start" />
+              Abort
+            </Button>
+          </div>
+        }
         badges={
           <>
             <StatusLabel label={props.ticket.priority} />
@@ -97,53 +162,52 @@ export function TicketWorkspace(props: {
             <StatusLabel label={formatRunState(props.runState)} />
           </>
         }
-        aside={
-          <button
-            className="button button-danger"
-            disabled={props.runState === "idle" || props.runState === "submitted" || props.runState === "aborted"}
-            onClick={() => setAbortDialogOpen(true)}
-            type="button"
-          >
-            Abort
-          </button>
-        }
+        description={`${props.ticket.customer} · updated ${formatDate(props.ticket.updatedAt)}`}
+        title={props.ticket.title}
       />
 
       {pendingMessage ? (
-        <div className="approval-strip">
-          <strong>{pendingMessage}</strong>
-          <span>Review required before backend/system action.</span>
-        </div>
+        <Card className="border-destructive/30 bg-destructive/10" size="sm">
+          <CardContent className="flex items-center gap-3">
+            <AlertTriangleIcon className="text-destructive" />
+            <div>
+              <p className="font-medium text-foreground">{pendingMessage}</p>
+              <p className="text-sm text-muted-foreground">Review is required before backend or system action.</p>
+            </div>
+          </CardContent>
+        </Card>
       ) : null}
 
-      <nav className="tab-bar" aria-label="Ticket workflow tabs">
-        {tabs.map((tab) => (
-          <button
-            className={props.activeTab === tab.id ? "active" : ""}
-            key={tab.id}
-            onClick={() => props.onTabChange(tab.id)}
-            type="button"
-          >
-            {tab.label}
-            {tab.id === "actions" && props.pendingActions.length ? <span>{props.pendingActions.length}</span> : null}
-          </button>
-        ))}
-      </nav>
+      <Tabs onValueChange={(value) => props.onTabChange(value as TabId)} value={props.activeTab}>
+        <TabsList className="max-w-full overflow-x-auto" variant="line">
+          {tabs.map((tab) => (
+            <TabsTrigger key={tab.id} value={tab.id}>
+              {tab.label}
+              {tab.id === "actions" && props.pendingActions.length ? (
+                <span className="rounded-full bg-destructive/20 px-1.5 py-0.5 text-[10px] text-destructive">
+                  {props.pendingActions.length}
+                </span>
+              ) : null}
+            </TabsTrigger>
+          ))}
+        </TabsList>
 
-      <div className="tab-body">
-        {props.activeTab === "overview" ? (
+        <TabsContent value="overview">
           <OverviewTab
             analyticsStats={overviewStats}
             connectionStatus={props.connectionStatus}
+            onGenerateDraft={props.onGenerateDraft}
             onLoadSystem={props.onLoadSystem}
+            onRunValidation={props.onRunValidation}
             onStartAnalysis={props.onStartAnalysis}
+            pendingApprovals={props.pendingActions.length}
             runState={props.runState}
             systemLoaded={props.systemLoaded}
             ticket={props.ticket}
             validation={props.validation}
           />
-        ) : null}
-        {props.activeTab === "system" ? (
+        </TabsContent>
+        <TabsContent value="system">
           <SystemTab
             connectionStatus={props.connectionStatus}
             onApproveConnection={props.onApproveConnection}
@@ -151,27 +215,45 @@ export function TicketWorkspace(props: {
             system={props.selectedSystem}
             systemLoaded={props.systemLoaded}
           />
-        ) : null}
-        {props.activeTab === "analysis" ? (
+        </TabsContent>
+        <TabsContent value="analysis">
           <AnalysisTab
-            analyticsStats={analysisStats}
+            analyticsStats={[
+              ...overviewStats,
+              {
+                detail: "Approved commands with stored results.",
+                label: "Actions executed",
+                progress: Math.min(props.executedActions.length * 25, 100),
+                tone: "success",
+                value: props.executedActions.length,
+              },
+            ]}
             analysisReady={props.analysisReady}
             connectionStatus={props.connectionStatus}
             onStartAnalysis={props.onStartAnalysis}
           />
-        ) : null}
-        {props.activeTab === "actions" ? (
-          <ActionsTab ticketId={props.ticket.id} />
-        ) : null}
-        {props.activeTab === "logs" ? (
+        </TabsContent>
+        <TabsContent className="min-h-[560px]" value="actions">
+          <ActionsTab
+            actions={props.actions}
+            onApproveAction={props.onApproveAction}
+            onRejectAction={props.onRejectAction}
+            onRetryAction={props.onRetryAction}
+            onUpdateCommand={props.onUpdateCommand}
+            runId={props.backendRunId}
+          />
+        </TabsContent>
+        <TabsContent value="logs">
           <LogsTab
             events={props.events}
             logFilter={props.logFilter}
             onCopy={props.onCopyAudit}
             onFilterChange={props.setLogFilter}
+            terminalCommands={props.terminalCommands}
+            terminalTranscript={props.terminalTranscript}
           />
-        ) : null}
-        {props.activeTab === "activity" ? (
+        </TabsContent>
+        <TabsContent value="activity">
           <ActivityTab
             draft={props.draft}
             notice={props.notice}
@@ -181,106 +263,114 @@ export function TicketWorkspace(props: {
             submitStatus={props.submitStatus}
             validation={props.validation}
           />
-        ) : null}
-      </div>
-      <BlocksConfirmDialog
-        confirmLabel="Abort"
-        description="This stops the current mock run and disconnects any active mock connection."
+        </TabsContent>
+      </Tabs>
+
+      <ConfirmDialog
+        confirmLabel="Abort run"
+        description="This stops the current run and disconnects any active terminal session."
         onConfirm={props.onAbort}
         onOpenChange={setAbortDialogOpen}
         open={abortDialogOpen}
         title="Abort run?"
-        tone="danger"
+        variant="destructive"
       />
     </section>
-  );
-}
-
-function TicketBreadcrumb({
-  onBackToTickets,
-  ticketId,
-}: {
-  onBackToTickets: () => void;
-  ticketId: number;
-}) {
-  return (
-    <nav className="page-breadcrumb" aria-label="Ticket breadcrumb">
-      <button onClick={onBackToTickets} type="button">
-        Tickets
-      </button>
-      <span>/</span>
-      <span>#{ticketId}</span>
-    </nav>
   );
 }
 
 function OverviewTab({
   analyticsStats,
   connectionStatus,
+  onGenerateDraft,
   onLoadSystem,
+  onRunValidation,
   onStartAnalysis,
+  pendingApprovals,
   runState,
   systemLoaded,
   ticket,
   validation,
 }: {
-  analyticsStats: BlocksStat[];
+  analyticsStats: DashboardStat[];
   connectionStatus: ConnectionStatus;
+  onGenerateDraft: () => void;
   onLoadSystem: () => void;
+  onRunValidation: () => void;
   onStartAnalysis: () => void;
+  pendingApprovals: number;
   runState: RunState;
   systemLoaded: boolean;
   ticket: Ticket;
   validation: ValidationResult;
 }) {
   return (
-    <>
-      <BlocksStatsGrid density="compact" stats={analyticsStats} />
-      <div className="split-layout">
-        <section className="section-block report-card">
-          <div className="section-heading">
-            <HeadingWithTags badges={<StatusLabel label={formatRunState(runState)} />}>Customer report</HeadingWithTags>
-          </div>
-          <MarkdownContent omitFirstHeading="Customer report">{ticket.report}</MarkdownContent>
-        </section>
+    <div className="flex flex-col gap-4">
+      <StatsGrid stats={analyticsStats} />
+      <WorkflowCards
+        connected={connectionStatus === "connected"}
+        pendingApprovals={pendingApprovals}
+        validated={validation.status === "passed"}
+      />
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <Card>
+          <CardHeader>
+            <CardTitle>Customer report</CardTitle>
+            <CardDescription>{formatRunState(runState)}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <MarkdownContent omitFirstHeading="Customer report">{ticket.report}</MarkdownContent>
+          </CardContent>
+        </Card>
 
-        <section className="min-w-0">
-          <DefinitionTable
-            rows={[
-              ["Customer", ticket.customer],
-              ["Priority", ticket.priority],
-              ["Status", ticket.status],
-              ["Created", formatDate(ticket.createdAt)],
-              ["Updated", formatDate(ticket.updatedAt)],
-              ["Technician", ticket.assignedTo],
-            ]}
-          />
-        </section>
+        <Card>
+          <CardHeader>
+            <CardTitle>Ticket facts</CardTitle>
+            <CardDescription>ERP ticket context.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DefinitionTable
+              rows={[
+                ["Customer", ticket.customer],
+                ["Priority", ticket.priority],
+                ["Status", ticket.status],
+                ["Created", formatDate(ticket.createdAt)],
+                ["Updated", formatDate(ticket.updatedAt)],
+                ["Technician", ticket.assignedTo],
+              ]}
+            />
+          </CardContent>
+        </Card>
 
-        <section className="section-block full-span">
-          <div className="section-heading">
-            <HeadingWithTags
-              badges={
-                <>
-                  <StatusLabel label={`connection: ${formatConnection(connectionStatus)}`} />
-                  <StatusLabel label={`validation: ${validation.status}`} />
-                </>
-              }
-            >
-              Next actions
-            </HeadingWithTags>
-          </div>
-          <div className="action-strip">
-            <button className={systemLoaded ? "button" : "button button-info"} onClick={onLoadSystem} type="button">
+        <Card className="xl:col-span-2">
+          <CardHeader>
+            <CardTitle>Next actions</CardTitle>
+            <CardDescription>
+              <StatusLabel label={`connection: ${formatConnection(connectionStatus)}`} />{" "}
+              <StatusLabel label={`validation: ${validation.status}`} />
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-wrap gap-2">
+            <Button onClick={onLoadSystem} type="button" variant={systemLoaded ? "outline" : "default"}>
+              <ShieldCheckIcon data-icon="inline-start" />
               {systemLoaded ? "Reload system info" : "Load system info"}
-            </button>
-            <button className={systemLoaded ? "button button-info" : "button"} onClick={onStartAnalysis} type="button">
+            </Button>
+            <Button onClick={onStartAnalysis} type="button" variant="outline">
+              <PlayIcon data-icon="inline-start" />
               Start analysis
-            </button>
-          </div>
-        </section>
+            </Button>
+            <Button onClick={onRunValidation} type="button" variant="outline">
+              <CheckIcon data-icon="inline-start" />
+              Validate
+            </Button>
+            <Button onClick={onGenerateDraft} type="button" variant="outline">
+              <ClipboardCheckIcon data-icon="inline-start" />
+              Draft activity
+            </Button>
+          </CardContent>
+        </Card>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -300,14 +390,15 @@ function SystemTab({
   const [connectionDialogOpen, setConnectionDialogOpen] = useState(false);
 
   return (
-    <>
-      <div className="split-layout">
-        <section className="section-block full-span">
-          <div className="section-heading">
-            <HeadingWithTags badges={<StatusLabel label={formatConnection(connectionStatus)} />}>
-              Customer system
-            </HeadingWithTags>
-          </div>
+    <div className="flex flex-col gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Customer system</CardTitle>
+          <CardDescription>
+            <StatusLabel label={formatConnection(connectionStatus)} />
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
           {systemLoaded && system ? (
             <DefinitionTable
               rows={[
@@ -319,34 +410,32 @@ function SystemTab({
               ]}
             />
           ) : (
-            <p className="body-copy">Load redacted system context before approving any connection.</p>
+            <EmptyState title="System not loaded" detail="Load redacted customer system context before approval." />
           )}
-          <div className="action-strip">
-            <button className="button" onClick={onLoadSystem} type="button">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button onClick={onLoadSystem} type="button" variant="outline">
               Load system info
-            </button>
-            <button
-              className="button button-success"
+            </Button>
+            <Button
               disabled={!systemLoaded || connectionStatus === "connected"}
               onClick={() => setConnectionDialogOpen(true)}
               type="button"
             >
+              <ShieldCheckIcon data-icon="inline-start" />
               Approve connection
-            </button>
-            <span className="caption">No private key, token, or raw credential is displayed.</span>
+            </Button>
           </div>
-        </section>
-      </div>
-      <BlocksConfirmDialog
+        </CardContent>
+      </Card>
+      <ConfirmDialog
         confirmLabel="Approve"
-        description="This approves a mock connection for the selected customer system. No backend connection is created yet."
+        description="This approves backend SSH access for the selected customer system."
         onConfirm={onApproveConnection}
         onOpenChange={setConnectionDialogOpen}
         open={connectionDialogOpen}
         title="Approve connection?"
-        tone="success"
       />
-    </>
+    </div>
   );
 }
 
@@ -356,68 +445,172 @@ function AnalysisTab({
   connectionStatus,
   onStartAnalysis,
 }: {
-  analyticsStats: BlocksStat[];
+  analyticsStats: DashboardStat[];
   analysisReady: boolean;
   connectionStatus: ConnectionStatus;
   onStartAnalysis: () => void;
 }) {
   return (
-    <>
-      <BlocksStatsGrid density="compact" stats={analyticsStats} />
-      <section className="section-block">
-        <div className="section-heading">
-          <div>
-            <h2>Agent analysis</h2>
-            <p className="body-copy">
-              Context: {connectionStatus === "connected" ? "ticket + system" : "ticket only"}.
-            </p>
-          </div>
-          <button className="button button-info" onClick={onStartAnalysis} type="button">
+    <div className="flex flex-col gap-4">
+      <StatsGrid stats={analyticsStats} />
+      <Card>
+        <CardHeader>
+          <CardTitle>Agent analysis</CardTitle>
+          <CardDescription>
+            Context: {connectionStatus === "connected" ? "ticket and system" : "ticket only"}.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <Button className="w-fit" onClick={onStartAnalysis} type="button">
+            <PlayIcon data-icon="inline-start" />
             {analysisReady ? "Re-run analysis" : "Start analysis"}
-          </button>
-        </div>
-
-        {analysisReady ? (
-          <table className="data-table">
-            <colgroup>
-              <col className="w-[32%]" />
-              <col className="w-[52%]" />
-              <col className="w-[16%]" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>Hypothesis</th>
-                <th>Evidence</th>
-                <th>Confidence</th>
-              </tr>
-            </thead>
-            <tbody>
-              {hypotheses.map((hypothesis) => (
-                <tr key={hypothesis.id}>
-                  <td>{hypothesis.title}</td>
-                  <td>{hypothesis.evidence}</td>
-                  <td>
-                    <StatusLabel label={hypothesis.confidence} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <EmptyState title="No analysis yet" detail="Start analysis to queue hypotheses and actions." />
-        )}
-      </section>
-    </>
+          </Button>
+          {analysisReady ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Hypothesis</TableHead>
+                  <TableHead>Evidence</TableHead>
+                  <TableHead>Confidence</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {hypotheses.map((hypothesis) => (
+                  <TableRow key={hypothesis.id}>
+                    <TableCell className="font-medium">{hypothesis.title}</TableCell>
+                    <TableCell className="whitespace-normal text-muted-foreground">{hypothesis.evidence}</TableCell>
+                    <TableCell>
+                      <StatusLabel label={hypothesis.confidence} />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <EmptyState title="No analysis yet" detail="Start analysis to queue hypotheses and actions." />
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
-function ActionsTab({ ticketId }: { ticketId: number }) {
+function ActionsTab({
+  actions,
+  onApproveAction,
+  onRejectAction,
+  onRetryAction,
+  onUpdateCommand,
+  runId,
+}: {
+  actions: ProposedAction[];
+  onApproveAction: (actionId: string) => void;
+  onRejectAction: (actionId: string) => void;
+  onRetryAction: (actionId: string) => void;
+  onUpdateCommand: (actionId: string, command: string) => void;
+  runId: string | null;
+}) {
   return (
-    <section className="action-terminal-tab">
-      <Suspense fallback={<EmptyState title="Loading terminal" detail="Preparing the remote terminal surface." />}>
-        <TicketTerminal ticketId={ticketId} />
-      </Suspense>
-    </section>
+    <div className="grid h-full min-h-[560px] gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
+      <ActionReviewPanel
+        actions={actions}
+        onApproveAction={onApproveAction}
+        onRejectAction={onRejectAction}
+        onRetryAction={onRetryAction}
+        onUpdateCommand={onUpdateCommand}
+      />
+      <Card className="min-h-0">
+        <CardHeader>
+          <CardTitle>Remote terminal</CardTitle>
+          <CardDescription>Interactive run terminal with backend approval prompts.</CardDescription>
+        </CardHeader>
+        <CardContent className="min-h-0 flex-1">
+          <Suspense fallback={<EmptyState title="Loading terminal" detail="Preparing the remote terminal surface." />}>
+            <TicketTerminal runId={runId} />
+          </Suspense>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function ActionReviewPanel({
+  actions,
+  onApproveAction,
+  onRejectAction,
+  onRetryAction,
+  onUpdateCommand,
+}: {
+  actions: ProposedAction[];
+  onApproveAction: (actionId: string) => void;
+  onRejectAction: (actionId: string) => void;
+  onRetryAction: (actionId: string) => void;
+  onUpdateCommand: (actionId: string, command: string) => void;
+}) {
+  return (
+    <Card className="min-h-0">
+      <CardHeader>
+        <CardTitle>Action review</CardTitle>
+        <CardDescription>Every command requires explicit technician control.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex max-h-[650px] flex-col gap-3 overflow-auto">
+        {actions.length ? (
+          actions.map((action) => (
+            <Card key={action.id} size="sm">
+              <CardHeader>
+                <HeadingWithTags
+                  badges={
+                    <>
+                      <StatusLabel label={action.type} />
+                      <StatusLabel label={action.risk} />
+                      <StatusLabel label={action.status} />
+                    </>
+                  }
+                >
+                  {action.title}
+                </HeadingWithTags>
+                <CardDescription>{action.purpose}</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                <Textarea
+                  disabled={action.status !== "pending"}
+                  onChange={(event) => onUpdateCommand(action.id, event.target.value)}
+                  value={action.command}
+                />
+                {action.result ? <p className="text-sm text-muted-foreground">{action.result}</p> : null}
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    disabled={action.status !== "pending"}
+                    onClick={() => onApproveAction(action.id)}
+                    size="sm"
+                    type="button"
+                  >
+                    <CheckIcon data-icon="inline-start" />
+                    Approve
+                  </Button>
+                  <Button
+                    disabled={action.status !== "pending"}
+                    onClick={() => onRejectAction(action.id)}
+                    size="sm"
+                    type="button"
+                    variant="destructive"
+                  >
+                    <XIcon data-icon="inline-start" />
+                    Reject
+                  </Button>
+                  <Button onClick={() => onRetryAction(action.id)} size="sm" type="button" variant="outline">
+                    <RotateCcwIcon data-icon="inline-start" />
+                    Retry
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        ) : (
+          <EmptyState title="No proposed actions" detail="Start the agent in the terminal to request a next step." />
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -426,27 +619,88 @@ function LogsTab({
   logFilter,
   onCopy,
   onFilterChange,
+  terminalCommands,
+  terminalTranscript,
 }: {
   events: RunEvent[];
   logFilter: "all" | EventType;
   onCopy: () => void;
   onFilterChange: (filter: "all" | EventType) => void;
+  terminalCommands: TerminalCommandLog[];
+  terminalTranscript: TerminalTranscriptLine[];
 }) {
   return (
-    <section className="space-y-4">
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <div className="inline-actions">
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-heading text-lg font-medium tracking-normal">Live run and audit log</h2>
+        <div className="flex items-center gap-2">
           <LogFilter value={logFilter} onChange={onFilterChange} />
-          <button className="button" onClick={onCopy} type="button">
+          <Button onClick={onCopy} size="sm" type="button" variant="outline">
             Copy safe excerpt
-          </button>
+          </Button>
         </div>
       </div>
-      <h2>Live run and audit log</h2>
-      <div className="table-scroll">
-        <EventTable events={events} />
-      </div>
-    </section>
+      <Card>
+        <CardContent className="px-0">
+          <EventTable events={events} />
+        </CardContent>
+      </Card>
+      {terminalCommands.length ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Terminal command history</CardTitle>
+          </CardHeader>
+          <CardContent className="px-0">
+            <TerminalCommandTable commands={terminalCommands} />
+          </CardContent>
+        </Card>
+      ) : null}
+      {terminalTranscript.length ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Terminal transcript</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-muted p-3 font-mono text-xs leading-5 text-foreground">
+              {terminalTranscript.map((line) => line.data).join("")}
+            </pre>
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+function TerminalCommandTable({ commands }: { commands: TerminalCommandLog[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Time</TableHead>
+          <TableHead>Source</TableHead>
+          <TableHead>Status</TableHead>
+          <TableHead>Command</TableHead>
+          <TableHead>Exit</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {commands.map((command) => (
+          <TableRow key={command.id}>
+            <TableCell>{new Date(command.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</TableCell>
+            <TableCell>
+              <StatusLabel label={command.source} />
+            </TableCell>
+            <TableCell>
+              <StatusLabel label={command.status} />
+            </TableCell>
+            <TableCell className="max-w-[520px] whitespace-normal">
+              <code>{command.command}</code>
+            </TableCell>
+            <TableCell>{command.exitCode === null ? "Pending" : command.exitCode}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   );
 }
 
@@ -470,58 +724,87 @@ function ActivityTab({
   const complete = isDraftComplete(draft);
 
   return (
-    <section className="section-block">
-      <div className="section-heading">
-        <div>
-          <HeadingWithTags
-            badges={
-              <>
-                <StatusLabel label={complete ? "complete" : "incomplete"} />
-                <StatusLabel label={`validation: ${validation.status}`} />
-              </>
-            }
-          >
-            ERP activity draft
-          </HeadingWithTags>
-          <p className="body-copy">Required fields are editable before backend submission.</p>
-        </div>
-        <div className="inline-actions">
-          <button className="button button-info" onClick={onGenerateDraft} type="button">
+    <Card>
+      <CardHeader>
+        <CardTitle>ERP activity draft</CardTitle>
+        <CardDescription>
+          <StatusLabel label={complete ? "complete" : "incomplete"} />{" "}
+          <StatusLabel label={`validation: ${validation.status}`} />
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={onGenerateDraft} type="button" variant="outline">
             Generate from audit
-          </button>
-          <button
-            className="button button-success"
-            disabled={!complete || submitStatus === "submitted"}
-            onClick={onSubmit}
-            type="button"
-          >
+          </Button>
+          <Button disabled={!complete || submitStatus === "submitted"} onClick={onSubmit} type="button">
             Submit activity
-          </button>
+          </Button>
         </div>
-      </div>
+        {notice ? <p className="rounded-lg border bg-muted px-3 py-2 text-sm text-muted-foreground">{notice}</p> : null}
+        <div className="grid gap-3 lg:grid-cols-2">
+          {(
+            [
+              ["summary", "Summary", 2],
+              ["root_cause", "Root cause", 3],
+              ["actions_taken", "Actions taken", 5],
+              ["commands_summary", "Commands summary", 5],
+              ["validation_result", "Validation result", 3],
+            ] as Array<[keyof ActivityDraft, string, number]>
+          ).map(([field, label, rows]) => (
+            <label className={rows > 3 ? "lg:col-span-2" : ""} key={field}>
+              <span className="text-sm font-medium text-foreground">{label}</span>
+              <Textarea
+                onChange={(event) => onDraftChange({ ...draft, [field]: event.target.value })}
+                rows={rows}
+                value={draft[field]}
+              />
+            </label>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
-      {notice ? <p className="notice-line">{notice}</p> : null}
+function ConfirmDialog({
+  confirmLabel,
+  description,
+  onConfirm,
+  onOpenChange,
+  open,
+  title,
+  variant = "default",
+}: {
+  confirmLabel: string;
+  description: string;
+  onConfirm: () => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  title: string;
+  variant?: "default" | "destructive";
+}) {
+  const confirm = () => {
+    onConfirm();
+    onOpenChange(false);
+  };
 
-      <div className="activity-form">
-        {(
-          [
-            ["summary", "Summary", 2],
-            ["root_cause", "Root cause", 3],
-            ["actions_taken", "Actions taken", 5],
-            ["commands_summary", "Commands summary", 5],
-            ["validation_result", "Validation result", 3],
-          ] as Array<[keyof ActivityDraft, string, number]>
-        ).map(([field, label, rows]) => (
-          <label key={field}>
-            {label}
-            <textarea
-              onChange={(event) => onDraftChange({ ...draft, [field]: event.target.value })}
-              rows={rows}
-              value={draft[field]}
-            />
-          </label>
-        ))}
-      </div>
-    </section>
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
+            Cancel
+          </Button>
+          <Button onClick={confirm} type="button" variant={variant}>
+            {confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

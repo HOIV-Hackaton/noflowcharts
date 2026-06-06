@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  BlocksSidebar,
-  type BlocksStat,
-  type BlocksSidebarCounts,
-  type BlocksSidebarView,
-} from "../../components/blocks";
+import { AppShell } from "@/components/app-shell";
+import type { DashboardStat, SidebarCounts, SidebarView } from "@/components/service-desk-ui";
 import { Toast } from "../../components/ui/Toast";
 import { emptyDraft, initialValidation, systems, tickets } from "../../data/mockData";
 import { useAuth } from "../auth/AuthProvider";
@@ -18,10 +14,13 @@ import {
   employeeName,
   mapActivityDraft,
   mapAuditEvent,
+  mapBackendCustomer,
   mapBackendAction,
   mapBackendCustomerSystem,
   mapBackendTicket,
   mapRunState,
+  mapTerminalCommand,
+  mapTerminalTranscript,
   mapValidation,
 } from "../../services/backendMapping";
 import type {
@@ -36,35 +35,50 @@ import type {
   TicketStatus,
   ValidationResult,
   Ticket,
+  TerminalCommandLog,
+  TerminalTranscriptLine,
 } from "../../types";
 import { DashboardHome } from "./DashboardHome";
 import { DashboardOverview } from "./DashboardOverview";
 import { TicketWorkspace } from "../tickets/TicketWorkspace";
 
-type SidebarView = BlocksSidebarView;
-type SidebarCounts = BlocksSidebarCounts;
+type AppRouteState = {
+  ticketId: number | null;
+  view: SidebarView;
+};
+
+const routeByView: Record<SidebarView, string> = {
+  all: "/app/tickets",
+  assigned: "/app/tickets/assigned",
+  high: "/app/tickets/high-priority",
+  overview: "/app/overview",
+  pending: "/app/tickets/pending",
+};
 
 export function TechnicianConsole() {
   const { session, logout } = useAuth();
+  const initialRoute = getAppRouteState();
   const [ticketList, setTicketList] = useState<Ticket[]>(tickets);
   const [systemsByTicket, setSystemsByTicket] = useState<Record<number, CustomerSystem>>(systems);
   const [backendReady, setBackendReady] = useState(false);
   const [ticketsLoading, setTicketsLoading] = useState(true);
   const [lastTicketFetchAt, setLastTicketFetchAt] = useState<string | null>(null);
   const [backendRunId, setBackendRunId] = useState<string | null>(null);
-  const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
+  const [selectedTicketId, setSelectedTicketId] = useState<number | null>(() => initialRoute.ticketId);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | TicketStatus>("all");
   const [priorityFilter, setPriorityFilter] = useState<"all" | Priority>("all");
   const [sortBy, setSortBy] = useState<"date" | "priority" | "customer">("date");
-  const [sidebarView, setSidebarView] = useState<SidebarView>("overview");
+  const [sidebarView, setSidebarView] = useState<SidebarView>(() => initialRoute.view);
   const [systemLoaded, setSystemLoaded] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<"not_requested" | "awaiting_approval" | "connected" | "disconnected">("not_requested");
   const [runState, setRunState] = useState<RunState>("idle");
   const [analysisReady, setAnalysisReady] = useState(false);
   const [actions, setActions] = useState<ProposedAction[]>([]);
   const [events, setEvents] = useState<RunEvent[]>([]);
+  const [terminalCommands, setTerminalCommands] = useState<TerminalCommandLog[]>([]);
+  const [terminalTranscript, setTerminalTranscript] = useState<TerminalTranscriptLine[]>([]);
   const [validation, setValidation] = useState<ValidationResult>(initialValidation);
   const [draft, setDraft] = useState<ActivityDraft>(emptyDraft);
   const [submitStatus, setSubmitStatus] = useState<"idle" | "submitted">("idle");
@@ -183,26 +197,108 @@ export function TechnicianConsole() {
     [backendReady, session?.name, ticketList],
   );
 
-  const stats = useMemo<BlocksStat[]>(
-    () => [
+  const stats = useMemo<DashboardStat[]>(() => {
+    const total = Math.max(ticketList.length, 1);
+    const openTickets = ticketList.filter((ticket) => ticket.status === "OPEN").length;
+    const highTickets = ticketList.filter(
+      (ticket) => ticket.priority === "Critical" || ticket.priority === "High",
+    ).length;
+
+    return [
       {
+        detail: `${openTickets} tickets still need diagnosis or documentation.`,
         label: "Open tickets",
-        value: ticketList.filter((ticket) => ticket.status === "OPEN").length,
-        kind: "chart",
-        tone: "positive",
+        progress: (openTickets / total) * 100,
+        tone: "default",
+        value: openTickets,
       },
       {
+        detail: "Critical and high priority work.",
         label: "High priority",
-        value: ticketList.filter((ticket) => ticket.priority === "Critical" || ticket.priority === "High").length,
-        kind: "chart",
-        tone: "negative",
+        progress: (highTickets / total) * 100,
+        tone: highTickets ? "critical" : "success",
+        value: highTickets,
       },
-      { label: "Pending approval", value: pendingActions.length, kind: "metric", tone: "neutral" },
-    ],
-    [pendingActions.length, ticketList],
-  );
+      {
+        detail: "Commands or connection steps waiting on a human.",
+        label: "Pending approval",
+        progress: pendingActions.length ? 100 : 0,
+        tone: pendingActions.length ? "warning" : "success",
+        value: pendingActions.length,
+      },
+    ];
+  }, [pendingActions.length, ticketList]);
 
   const dismissNotice = useCallback(() => setNotice(""), []);
+
+  useEffect(() => {
+    if (!backendReady || !selectedTicketId) {
+      return;
+    }
+
+    const ticketId = selectedTicketId;
+    let cancelled = false;
+
+    async function loadSelectedTicket() {
+      try {
+        const backendTicket = await backendApi.getTicket(ticketId);
+        if (cancelled) {
+          return;
+        }
+
+        const assignedTo = session?.name ?? "Technician";
+        setTicketList((currentTickets) =>
+          upsertTicket(currentTickets, mapBackendTicket(backendTicket, assignedTo)),
+        );
+      } catch (error) {
+        if (!cancelled) {
+          setNotice(`Ticket detail refresh failed. ${getApiErrorMessage(error)}`);
+        }
+      }
+    }
+
+    void loadSelectedTicket();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [backendReady, selectedTicketId, session?.name]);
+
+  const resetTicketWorkspace = useCallback((ticketId: number) => {
+    setSelectedTicketId(ticketId);
+    setBackendRunId(null);
+    setActiveTab("overview");
+    setSystemLoaded(false);
+    setConnectionStatus("not_requested");
+    setRunState("idle");
+    setAnalysisReady(false);
+    setActions([]);
+    setEvents([createEvent("approval", "Ticket opened", `Ticket ${ticketId} opened.`)]);
+    setTerminalCommands([]);
+    setTerminalTranscript([]);
+    setValidation(initialValidation);
+    setDraft(emptyDraft);
+    setSubmitStatus("idle");
+    setNotice("");
+  }, []);
+
+  useEffect(() => {
+    const syncRoute = () => {
+      const route = getAppRouteState();
+      setSidebarView(route.view);
+
+      if (route.ticketId) {
+        resetTicketWorkspace(route.ticketId);
+        return;
+      }
+
+      setSelectedTicketId(null);
+    };
+
+    syncRoute();
+    window.addEventListener("popstate", syncRoute);
+    return () => window.removeEventListener("popstate", syncRoute);
+  }, [resetTicketWorkspace]);
 
   const syncRunState = useCallback((state: BackendRunStateRead) => {
     setRunState(mapRunState(state));
@@ -229,11 +325,22 @@ export function TechnicianConsole() {
   }, []);
 
   const refreshAuditEvents = useCallback(async (runId: string) => {
-    try {
-      const auditEvents = await backendApi.getAudit(runId);
-      setEvents(auditEvents.map(mapAuditEvent));
-    } catch {
-      // Audit refresh is helpful, but should not block the technician flow.
+    const [auditResult, commandResult, transcriptResult] = await Promise.allSettled([
+      backendApi.getAudit(runId),
+      backendApi.getTerminalLogs(runId),
+      backendApi.getTerminalTranscript(runId),
+    ]);
+
+    if (auditResult.status === "fulfilled") {
+      setEvents(auditResult.value.map(mapAuditEvent));
+    }
+
+    if (commandResult.status === "fulfilled") {
+      setTerminalCommands(commandResult.value.map(mapTerminalCommand));
+    }
+
+    if (transcriptResult.status === "fulfilled") {
+      setTerminalTranscript(transcriptResult.value.map(mapTerminalTranscript));
     }
   }, []);
 
@@ -244,19 +351,9 @@ export function TechnicianConsole() {
   }, []);
 
   const selectTicket = (ticketId: number) => {
-    setSelectedTicketId(ticketId);
-    setBackendRunId(null);
-    setActiveTab("overview");
-    setSystemLoaded(false);
-    setConnectionStatus("not_requested");
-    setRunState("idle");
-    setAnalysisReady(false);
-    setActions([]);
-    setEvents([createEvent("approval", "Ticket opened", `Ticket ${ticketId} opened.`)]);
-    setValidation(initialValidation);
-    setDraft(emptyDraft);
-    setSubmitStatus("idle");
-    setNotice("");
+    pushAppRoute(`/app/tickets/${ticketId}`);
+    setSidebarView("all");
+    resetTicketWorkspace(ticketId);
   };
 
   const loadSystemInfo = async () => {
@@ -272,7 +369,21 @@ export function TechnicianConsole() {
           [selectedTicket.id]: mapBackendCustomerSystem(backendSystem),
         }));
       } catch (error) {
-        setNotice(`Using local system context. ${getApiErrorMessage(error)}`);
+        if (selectedTicket.customerId) {
+          try {
+            const backendCustomer = await backendApi.getCustomer(selectedTicket.customerId);
+            setSystemsByTicket((currentSystems) => ({
+              ...currentSystems,
+              [selectedTicket.id]: mapBackendCustomer(backendCustomer, selectedTicket.id),
+            }));
+          } catch (customerError) {
+            setNotice(
+              `Using local system context. ${getApiErrorMessage(error)} ${getApiErrorMessage(customerError)}`,
+            );
+          }
+        } else {
+          setNotice(`Using local system context. ${getApiErrorMessage(error)}`);
+        }
       }
     }
 
@@ -324,12 +435,12 @@ export function TechnicianConsole() {
       }
 
       try {
-        const state = await backendApi.nextAction(backendRunId);
+        const state = await backendApi.getRun(backendRunId);
         syncRunState(state);
         await refreshAuditEvents(backendRunId);
         setAnalysisReady(true);
-        appendEvent("analysis", "Analysis complete", "Backend proposed the next action.");
-        setActiveTab("analysis");
+        appendEvent("analysis", "Terminal agent ready", "Open the terminal and start the backend agent.");
+        setActiveTab("actions");
         return;
       } catch (error) {
         setNotice(`Using mock analysis. ${getApiErrorMessage(error)}`);
@@ -606,9 +717,16 @@ export function TechnicianConsole() {
   };
 
   const copyAuditExcerpt = () => {
-    const excerpt = events
+    const auditExcerpt = events
       .map((event) => `[${event.time}] ${event.type.toUpperCase()}: ${event.title} - ${event.detail}`)
       .join("\n");
+    const terminalExcerpt = terminalCommands
+      .map((command) => {
+        const exitCode = command.exitCode === null ? "pending" : `exit ${command.exitCode}`;
+        return `[${new Date(command.updatedAt).toLocaleTimeString()}] ${command.source.toUpperCase()} ${command.status.toUpperCase()} (${exitCode}): ${command.command}`;
+      })
+      .join("\n");
+    const excerpt = [auditExcerpt, terminalExcerpt].filter(Boolean).join("\n");
 
     if (!excerpt) {
       setNotice("No log entries to copy yet.");
@@ -641,6 +759,7 @@ export function TechnicianConsole() {
   };
 
   const handleSidebarView = (view: SidebarView) => {
+    pushAppRoute(routeByView[view]);
     setSidebarView(view);
 
     if (selectedTicket) {
@@ -683,14 +802,19 @@ export function TechnicianConsole() {
     setEvents((currentEvents) => [...currentEvents, createEvent(type, title, detail)]);
   }
 
+  const pageTitle = selectedTicket ? `Ticket #${selectedTicket.id}` : getPageTitle(sidebarView);
+
   return (
-    <main className="console">
-      <BlocksSidebar
+    <>
+      <AppShell
         activeView={sidebarView}
+        backendReady={backendReady}
         counts={sidebarCounts}
-        onNavigate={handleSidebarView}
         onLogout={logout}
+        onNavigate={handleSidebarView}
         onSelectTicket={selectTicket}
+        pageTitle={pageTitle}
+        pendingApprovals={pendingActions.length}
         profile={{
           email: session?.email ?? "",
           name: session?.name ?? "Technician",
@@ -699,10 +823,8 @@ export function TechnicianConsole() {
         search={search}
         setSearch={setSearch}
         tickets={ticketList}
-      />
-
-      <section className="app-main">
-        <section className="main-canvas" aria-label="Main dashboard">
+      >
+        <div className="flex min-h-[calc(100svh-7rem)] flex-col">
           {selectedTicket ? (
             <TicketWorkspace
               activeTab={activeTab}
@@ -730,11 +852,14 @@ export function TechnicianConsole() {
               onTabChange={setActiveTab}
               onUpdateCommand={updateActionCommand}
               pendingActions={pendingActions}
+              backendRunId={backendRunId}
               runState={runState}
               selectedSystem={selectedSystem}
               setLogFilter={setLogFilter}
               submitStatus={submitStatus}
               systemLoaded={systemLoaded}
+              terminalCommands={terminalCommands}
+              terminalTranscript={terminalTranscript}
               ticket={selectedTicket}
               validation={validation}
             />
@@ -761,10 +886,74 @@ export function TechnicianConsole() {
               statusFilter={statusFilter}
             />
           )}
-        </section>
-      </section>
+        </div>
+      </AppShell>
 
       {notice ? <Toast message={notice} onDone={dismissNotice} /> : null}
-    </main>
+    </>
   );
+}
+
+function getAppRouteState(): AppRouteState {
+  const pathname = window.location.pathname.replace(/\/$/, "") || "/";
+  const ticketMatch = pathname.match(/^\/app\/tickets\/(\d+)$/);
+
+  if (ticketMatch) {
+    return { ticketId: Number(ticketMatch[1]), view: "all" };
+  }
+
+  if (pathname === "/app/tickets/assigned") {
+    return { ticketId: null, view: "assigned" };
+  }
+
+  if (pathname === "/app/tickets/high-priority") {
+    return { ticketId: null, view: "high" };
+  }
+
+  if (pathname === "/app/tickets/pending") {
+    return { ticketId: null, view: "pending" };
+  }
+
+  if (pathname === "/app/tickets") {
+    return { ticketId: null, view: "all" };
+  }
+
+  return { ticketId: null, view: "overview" };
+}
+
+function pushAppRoute(path: string) {
+  if (window.location.pathname === path) {
+    return;
+  }
+
+  window.history.pushState(null, "", path);
+}
+
+function upsertTicket(tickets: Ticket[], ticket: Ticket) {
+  const exists = tickets.some((candidate) => candidate.id === ticket.id);
+  if (!exists) {
+    return [ticket, ...tickets];
+  }
+
+  return tickets.map((candidate) => (candidate.id === ticket.id ? ticket : candidate));
+}
+
+function getPageTitle(view: SidebarView) {
+  if (view === "assigned") {
+    return "Assigned tickets";
+  }
+
+  if (view === "high") {
+    return "High priority";
+  }
+
+  if (view === "pending") {
+    return "Pending approval";
+  }
+
+  if (view === "all") {
+    return "All tickets";
+  }
+
+  return "Overview";
 }

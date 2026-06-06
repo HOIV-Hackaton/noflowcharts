@@ -32,6 +32,14 @@ export type BackendTicket = {
   updated_at?: string | null;
 };
 
+export type BackendCustomer = {
+  id: number;
+  company_name: string;
+  firstname: string;
+  lastname: string;
+  system: BackendSystemInfo;
+};
+
 export type BackendSystemInfo = {
   ip: string;
   port: number;
@@ -153,6 +161,50 @@ export type BackendActivity = {
   created_at: string | null;
 };
 
+export type BackendTerminalCommandSource = "manual" | "agent";
+export type BackendTerminalCommandStatus =
+  | "submitted"
+  | "confirmation_required"
+  | "blocked"
+  | "accepted"
+  | "rejected"
+  | "edited"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type BackendTerminalCommandRead = {
+  id: number;
+  run_id: string;
+  terminal_session_id: number | null;
+  source: BackendTerminalCommandSource;
+  status: BackendTerminalCommandStatus;
+  original_command: string;
+  final_command: string | null;
+  edited_from: string | null;
+  edited_to: string | null;
+  classification: BackendActionRead["command_classification"] | null;
+  risk_reason: string | null;
+  exit_code: number | null;
+  output: string;
+  started_at: string | null;
+  ended_at: string | null;
+  redacted: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BackendTerminalTranscriptRead = {
+  id: number;
+  run_id: string;
+  terminal_session_id: number | null;
+  stream: string;
+  data: string;
+  created_at: string;
+  redacted: boolean;
+};
+
 export class ApiError extends Error {
   status: number;
 
@@ -190,6 +242,14 @@ export const backendApi = {
 
   getCustomerSystem(ticketId: number) {
     return request<BackendCustomerSystem>(`/api/tickets/${ticketId}/customer-system`);
+  },
+
+  getCustomer(customerId: number) {
+    return request<BackendCustomer>(`/api/customers/${customerId}`);
+  },
+
+  health() {
+    return request<Record<string, unknown>>("/health");
   },
 
   createRun(ticketId: number) {
@@ -246,6 +306,13 @@ export const backendApi = {
     });
   },
 
+  saferAlternative(runId: string, actionId: number | null) {
+    return request<BackendRunStateRead>(`/api/runs/${runId}/safer-alternative`, {
+      data: { action_id: actionId },
+      method: "POST",
+    });
+  },
+
   confirmValidation(runId: string, evidence: string) {
     return request<BackendRunStateRead>(`/api/runs/${runId}/validation/confirm`, {
       data: { evidence },
@@ -259,6 +326,14 @@ export const backendApi = {
 
   getAudit(runId: string) {
     return request<BackendAuditEventRead[]>(`/api/runs/${runId}/audit`);
+  },
+
+  getTerminalLogs(runId: string) {
+    return request<BackendTerminalCommandRead[]>(`/api/runs/${runId}/terminal/logs`);
+  },
+
+  getTerminalTranscript(runId: string) {
+    return request<BackendTerminalTranscriptRead[]>(`/api/runs/${runId}/terminal/transcript`);
   },
 
   generateActivityDraft(runId: string) {
@@ -313,10 +388,10 @@ export function getApiErrorMessage(error: unknown) {
   return "Backend request failed.";
 }
 
-export function ticketTerminalWebSocketUrl(ticketId: number, cols = 120, rows = 32) {
+export function runTerminalWebSocketUrl(runId: string, cols = 120, rows = 32) {
   const url = new URL(API_BASE);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.pathname = `/api/terminal/tickets/${ticketId}/ws`;
+  url.pathname = `/api/runs/${runId}/terminal/ws`;
   url.search = new URLSearchParams({
     cols: String(cols),
     rows: String(rows),

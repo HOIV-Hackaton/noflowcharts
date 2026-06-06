@@ -1,6 +1,7 @@
 import {
   createContext,
   useContext,
+  useEffect,
   useState,
   type FormEvent,
   type ReactNode,
@@ -11,6 +12,9 @@ import {
   SESSION_KEY,
   SESSION_LENGTH_MS,
 } from "../../data/mockData";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import type { TechnicianSession } from "../../types";
 
 type AuthContextValue = {
@@ -57,6 +61,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export function AuthGuard({ children }: { children: ReactNode }) {
   const { session } = useAuth();
+  const isLoginRoute = window.location.pathname.startsWith("/onboarding/login");
+
+  useEffect(() => {
+    if (!session || session.expiresAt < Date.now()) {
+      if (!isLoginRoute) {
+        replaceRoute("/onboarding/login");
+      }
+      return;
+    }
+
+    if (isLoginRoute || window.location.pathname === "/" || window.location.pathname === "/app") {
+      replaceRoute("/app/overview");
+    }
+  }, [isLoginRoute, session]);
 
   if (!session || session.expiresAt < Date.now()) {
     return <LoginScreen />;
@@ -85,60 +103,75 @@ function LoginScreen() {
     event.preventDefault();
     const result = login(email, password);
     setError(result.ok ? "" : result.message);
+    if (result.ok) {
+      replaceRoute("/app/overview");
+    }
   };
 
   return (
-    <main className="login-screen">
-      <section className="login-box" aria-labelledby="login-title">
-        <h1 id="login-title">Technician login</h1>
-        <p className="body-copy">Mock email/password auth until backend auth is connected.</p>
+    <main className="flex min-h-svh items-center justify-center bg-background p-6 text-foreground">
+      <Card className="w-full max-w-md" aria-labelledby="login-title">
+        <CardHeader>
+          <CardTitle className="text-2xl" id="login-title">
+            Technician login
+          </CardTitle>
+          <CardDescription>techbold service desk workspace</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form className="flex flex-col gap-4" onSubmit={submitLogin}>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-foreground">Email</span>
+              <Input
+                autoComplete="username"
+                inputMode="email"
+                onChange={(event) => setEmail(event.target.value)}
+                type="email"
+                value={email}
+              />
+            </label>
 
-        <form className="form-stack" onSubmit={submitLogin}>
-          <label>
-            Email
-            <input
-              autoComplete="username"
-              inputMode="email"
-              onChange={(event) => setEmail(event.target.value)}
-              type="email"
-              value={email}
-            />
-          </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-foreground">Password</span>
+              <Input
+                autoComplete="current-password"
+                onChange={(event) => setPassword(event.target.value)}
+                type="password"
+                value={password}
+              />
+            </label>
 
-          <label>
-            Password
-            <input
-              autoComplete="current-password"
-              onChange={(event) => setPassword(event.target.value)}
-              type="password"
-              value={password}
-            />
-          </label>
+            {error ? <p className="rounded-lg border bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p> : null}
 
-          {error ? <p className="error-line">{error}</p> : null}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="submit">Sign in</Button>
+              <Button
+                onClick={() => {
+                  setEmail(DEMO_EMAIL);
+                  setPassword(DEMO_PASSWORD);
+                  setError("");
+                }}
+                type="button"
+                variant="outline"
+              >
+                Fill mock login
+              </Button>
+            </div>
 
-          <div className="button-row">
-            <button className="button button-dark" type="submit">
-              Sign in
-            </button>
-            <button
-              className="button"
-              onClick={() => {
-                setEmail(DEMO_EMAIL);
-                setPassword(DEMO_PASSWORD);
-                setError("");
-              }}
-              type="button"
-            >
-              Fill mock login
-            </button>
-          </div>
-
-          <p className="caption">Mock account: {DEMO_EMAIL}</p>
-        </form>
-      </section>
+            <p className="text-xs text-muted-foreground">Mock account: {DEMO_EMAIL}</p>
+          </form>
+        </CardContent>
+      </Card>
     </main>
   );
+}
+
+function replaceRoute(path: string) {
+  if (window.location.pathname === path) {
+    return;
+  }
+
+  window.history.replaceState(null, "", path);
+  window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
 function readStoredSession() {

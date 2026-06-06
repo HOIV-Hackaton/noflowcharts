@@ -1,6 +1,6 @@
-import type { BlocksSidebarView } from "../components/blocks";
+import type { SidebarView } from "@/components/service-desk-ui";
 
-export function getQueueHeading(view: BlocksSidebarView, visibleCount: number) {
+export function getQueueHeading(view: SidebarView, visibleCount: number) {
   if (view === "assigned") {
     return {
       badge: `${visibleCount} assigned`,

@@ -24,6 +24,7 @@ export const tabs: Array<{ id: TabId; label: string }> = [
 export const tickets: Ticket[] = [
   {
     id: 7001,
+    customerId: 501,
     title: "Customer portal unavailable",
     customer: "Mayer & Partner Steuerberatung",
     priority: "Critical",
@@ -36,6 +37,7 @@ export const tickets: Ticket[] = [
   },
   {
     id: 7002,
+    customerId: 502,
     title: "Invoice PDF export failing",
     customer: "Alpine Retail GmbH",
     priority: "High",
@@ -48,6 +50,7 @@ export const tickets: Ticket[] = [
   },
   {
     id: 7003,
+    customerId: 503,
     title: "Monitoring shows mail queue growing",
     customer: "Nordwest Logistics",
     priority: "Medium",
@@ -59,6 +62,7 @@ export const tickets: Ticket[] = [
   },
   {
     id: 7004,
+    customerId: 504,
     title: "Internal wiki intermittently slow",
     customer: "Vienna Studio AG",
     priority: "Low",

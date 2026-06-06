@@ -14,11 +14,15 @@ import type {
   BackendActivityDraftRead,
   BackendAuditEventRead,
   BackendCommandResultRead,
+  BackendCustomer,
   BackendCustomerSystem,
   BackendEmployee,
   BackendRunStateRead,
   BackendTicket,
+  BackendTerminalCommandRead,
+  BackendTerminalTranscriptRead,
 } from "./backendApi";
+import type { TerminalCommandLog, TerminalTranscriptLine } from "../types";
 
 export function employeeName(employee: BackendEmployee) {
   return `${employee.firstname} ${employee.lastname}`.trim() || employee.username;
@@ -32,6 +36,7 @@ export function mapBackendTicket(ticket: BackendTicket, assignedTo: string): Tic
     assignedTo,
     createdAt,
     customer: ticket.customer_name,
+    customerId: ticket.customer_id,
     id: ticket.id,
     priority: normalizePriority(ticket.priority),
     report: ticket.description,
@@ -49,6 +54,17 @@ export function mapBackendCustomerSystem(customerSystem: BackendCustomerSystem):
     target: `${customerSystem.system.ip}:${customerSystem.system.port}`,
     ticketId: customerSystem.ticket_id,
     username: customerSystem.system.username,
+  };
+}
+
+export function mapBackendCustomer(customer: BackendCustomer, ticketId: number): CustomerSystem {
+  return {
+    hostLabel: `customer-${customer.id}`,
+    notes: customer.system.notes ?? "No additional notes provided.",
+    os: customer.system.os,
+    target: `${customer.system.ip}:${customer.system.port}`,
+    ticketId,
+    username: customer.system.username,
   };
 }
 
@@ -137,6 +153,33 @@ export function mapAuditEvent(event: BackendAuditEventRead): RunEvent {
     }),
     title: event.type.split("_").join(" "),
     type: mapEventType(event.type),
+  };
+}
+
+export function mapTerminalCommand(command: BackendTerminalCommandRead): TerminalCommandLog {
+  return {
+    classification: command.classification,
+    command: command.final_command ?? command.original_command,
+    createdAt: command.created_at,
+    endedAt: command.ended_at,
+    exitCode: command.exit_code,
+    id: command.id,
+    output: command.output,
+    riskReason: command.risk_reason,
+    source: command.source,
+    startedAt: command.started_at,
+    status: command.status,
+    updatedAt: command.updated_at,
+  };
+}
+
+export function mapTerminalTranscript(event: BackendTerminalTranscriptRead): TerminalTranscriptLine {
+  return {
+    createdAt: event.created_at,
+    data: event.data,
+    id: event.id,
+    redacted: event.redacted,
+    stream: event.stream,
   };
 }
 
