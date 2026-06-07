@@ -1,9 +1,12 @@
 import pytest
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agent import providers
 from app.agent.providers import AzureOpenAiProvider
 from app.core.config import Settings
 from app.core.errors import AgentError, ConfigurationError
+from app.db.models import LlmUsageMetric
 from app.services import embeddings
 from app.services.embeddings import AzureOpenAiEmbeddingProvider
 from app.services.activity_generator import ActivityGenerator, GeneratedActivityDraft
@@ -156,6 +159,48 @@ def test_azure_provider_rejects_invalid_and_non_object_json(monkeypatch):
     with pytest.raises(AgentError):
         AzureOpenAiProvider(settings=settings).complete_json([])
 
+
+def test_azure_provider_records_llm_usage_metrics(monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(providers, "engine", engine)
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            message = type("Message", (), {"content": '{"ok": true}'})()
+            choice = type("Choice", (), {"message": message})()
+            usage = type("Usage", (), {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20})()
+            return type("Completion", (), {"choices": [choice], "usage": usage})()
+
+    class FakeAzureOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(providers, "AzureOpenAI", FakeAzureOpenAI)
+    settings = Settings(
+        _env_file=None,
+        azure_openai_endpoint="https://example.openai.azure.com",
+        azure_openai_api_key="azure-secret",
+        azure_openai_deployment="gpt",
+        azure_openai_api_version="2024-02-01",
+    )
+
+    result = AzureOpenAiProvider(settings=settings).complete_json([], operation="planner.propose_next_command", run_id="run-1")
+
+    with Session(engine) as session:
+        metric = session.exec(select(LlmUsageMetric)).one()
+
+    assert result == {"ok": True}
+    assert metric.run_id == "run-1"
+    assert metric.operation == "planner.propose_next_command"
+    assert metric.prompt_tokens == 12
+    assert metric.completion_tokens == 8
+    assert metric.total_tokens == 20
+    assert metric.error is None
 
 def test_activity_generator_converts_invalid_draft_payload_to_agent_error():
     class FakeProvider:

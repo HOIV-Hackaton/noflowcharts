@@ -99,6 +99,7 @@ class RunManager:
                 observations=observations,
                 safety_policy=SAFETY_POLICY_SUMMARY,
                 related_ticket=snapshot.get("related_ticket"),
+                run_id=run.id,
             )
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
@@ -146,6 +147,7 @@ class RunManager:
                 customer_system=snapshot.get("customer_system", {}),
                 observations=observations,
                 related_ticket=snapshot.get("related_ticket"),
+                run_id=run.id,
             )
             self.audit.record(
                 "agent_diagnostic_requested",
@@ -233,6 +235,7 @@ class RunManager:
             ],
             safety_policy=SAFETY_POLICY_SUMMARY,
             related_ticket=snapshot.get("related_ticket"),
+            run_id=run.id,
         )
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
@@ -399,6 +402,7 @@ class RunManager:
             actions=actions + terminal_commands,
             command_results=command_results + terminal_commands,
             validation={"status": run.validation_status, "confirmed": run.validation_confirmed, "events": validation_events},
+            run_id=run.id,
         )
         draft = self.repo.upsert_activity_draft(run, **generated.model_dump())
         self.audit.record("activity_draft_generated", generated.model_dump(), run.id)
