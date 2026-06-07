@@ -79,6 +79,16 @@ const TICKET_TABS: Array<{ id: TabId; label: string }> = [
   { id: "activity", label: "Activity" },
 ];
 
+type TicketWorkspaceLoadingState = {
+  abortRun: boolean;
+  approveConnection: boolean;
+  confirmValidation: boolean;
+  reviewDraft: boolean;
+  saveDraft: boolean;
+  startAnalysis: boolean;
+  submitActivity: boolean;
+};
+
 export function TicketWorkspace(props: {
   activeTab: TabId;
   actions: ProposedAction[];
@@ -93,6 +103,7 @@ export function TicketWorkspace(props: {
   executedActions: ProposedAction[];
   logFilter: "all" | EventType;
   llmMetrics: BackendLlmMetricsRead | null;
+  loading: TicketWorkspaceLoadingState;
   notice: string;
   onAbort: () => void;
   onApproveAction: (actionId: string) => void;
@@ -188,14 +199,23 @@ export function TicketWorkspace(props: {
               Tickets
             </Button>
             <Button
-              disabled={props.runState === "idle" || props.runState === "submitted" || props.runState === "aborted"}
+              disabled={
+                props.loading.abortRun ||
+                props.runState === "idle" ||
+                props.runState === "submitted" ||
+                props.runState === "aborted"
+              }
               onClick={() => setAbortDialogOpen(true)}
               size="sm"
               type="button"
               variant="destructive"
             >
-              <XIcon data-icon="inline-start" />
-              Abort
+              {props.loading.abortRun ? (
+                <LoadingButtonIcon />
+              ) : (
+                <XIcon data-icon="inline-start" />
+              )}
+              {props.loading.abortRun ? "Aborting" : "Abort"}
             </Button>
           </div>
         }
@@ -248,6 +268,7 @@ export function TicketWorkspace(props: {
           <OverviewTab
             analysisReady={props.analysisReady}
             connectionStatus={props.connectionStatus}
+            draftGenerating={props.draftGenerating}
             onGenerateDraft={props.onGenerateDraft}
             onLoadSystem={props.onLoadSystem}
             onOpenActivity={() => props.onTabChange("activity")}
@@ -261,7 +282,9 @@ export function TicketWorkspace(props: {
             autodiagnosisRunning={props.autodiagnosisRunning}
             canStartAutodiagnosis={props.canStartAutodiagnosis}
             executedActionCount={props.executedActions.length}
+            loading={props.loading}
             systemLoaded={props.systemLoaded}
+            systemLoading={props.systemLoading}
             ticket={props.ticket}
             validation={props.validation}
           />
@@ -278,18 +301,8 @@ export function TicketWorkspace(props: {
         </TabsContent>
         <TabsContent value="analysis">
           <AnalysisTab
-            actions={props.actions}
             analyticsStats={props.analyticsStats}
-            analysisReady={props.analysisReady}
-            connectionStatus={props.connectionStatus}
             llmMetrics={props.llmMetrics}
-            onRequestConnectionApproval={requestConnectionApproval}
-            onStartAutodiagnosis={props.onStartAutodiagnosis}
-            onStartAnalysis={props.onStartAnalysis}
-            relatedTicket={props.relatedTicket}
-            terminalCommands={props.terminalCommands}
-            autodiagnosisRunning={props.autodiagnosisRunning}
-            canStartAutodiagnosis={props.canStartAutodiagnosis}
           />
         </TabsContent>
         <TabsContent
@@ -307,6 +320,7 @@ export function TicketWorkspace(props: {
             onRequestConnectionApproval={requestConnectionApproval}
             onStartAutodiagnosis={props.onStartAutodiagnosis}
             onTerminalConnectionError={props.onTerminalConnectionError}
+            loading={props.loading}
             runId={props.backendRunId}
             systemLoaded={props.systemLoaded}
             systemLoading={props.systemLoading}
@@ -326,6 +340,7 @@ export function TicketWorkspace(props: {
           <ActivityTab
             draft={props.draft}
             draftGenerating={props.draftGenerating}
+            loading={props.loading}
             notice={props.notice}
             onDraftChange={props.onDraftChange}
             onGenerateDraft={props.onGenerateDraft}
@@ -343,6 +358,7 @@ export function TicketWorkspace(props: {
       <ConfirmDialog
         confirmLabel="Abort run"
         description="This stops the current run, disconnects any active terminal session, and reloads the workspace."
+        inFlight={props.loading.abortRun}
         onConfirm={props.onAbort}
         onOpenChange={setAbortDialogOpen}
         open={abortDialogOpen}
@@ -352,6 +368,7 @@ export function TicketWorkspace(props: {
       <ConfirmDialog
         confirmLabel="Approve connection"
         description={getConnectionApprovalDescription(connectionIntent)}
+        inFlight={props.loading.approveConnection}
         onConfirm={props.onApproveConnection}
         onOpenChange={setConnectionDialogOpen}
         open={connectionDialogOpen}
@@ -472,7 +489,9 @@ function OverviewTab({
   autodiagnosisRunning,
   canStartAutodiagnosis,
   connectionStatus,
+  draftGenerating,
   executedActionCount,
+  loading,
   onGenerateDraft,
   onLoadSystem,
   onOpenActivity,
@@ -484,6 +503,7 @@ function OverviewTab({
   pendingApprovals,
   runState,
   systemLoaded,
+  systemLoading,
   ticket,
   validation,
 }: {
@@ -491,7 +511,9 @@ function OverviewTab({
   autodiagnosisRunning: boolean;
   canStartAutodiagnosis: boolean;
   connectionStatus: ConnectionStatus;
+  draftGenerating: boolean;
   executedActionCount: number;
+  loading: TicketWorkspaceLoadingState;
   onGenerateDraft: () => void;
   onLoadSystem: () => void;
   onOpenActivity: () => void;
@@ -503,6 +525,7 @@ function OverviewTab({
   pendingApprovals: number;
   runState: RunState;
   systemLoaded: boolean;
+  systemLoading: boolean;
   ticket: Ticket;
   validation: ValidationResult;
 }) {
@@ -531,6 +554,8 @@ function OverviewTab({
         autodiagnosisRunning={autodiagnosisRunning}
         canStartAutodiagnosis={canStartAutodiagnosis}
         connectionStatus={connectionStatus}
+        draftGenerating={draftGenerating}
+        loading={loading}
         onGenerateDraft={onGenerateDraft}
         onLoadSystem={onLoadSystem}
         onOpenActivity={onOpenActivity}
@@ -543,6 +568,7 @@ function OverviewTab({
         runState={runState}
         executedActionCount={executedActionCount}
         systemLoaded={systemLoaded}
+        systemLoading={systemLoading}
         validation={validation}
       />
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -585,7 +611,9 @@ function IncidentPath({
   autodiagnosisRunning,
   canStartAutodiagnosis,
   connectionStatus,
+  draftGenerating,
   executedActionCount,
+  loading,
   onGenerateDraft,
   onLoadSystem,
   onOpenActivity,
@@ -597,13 +625,16 @@ function IncidentPath({
   pendingApprovals,
   runState,
   systemLoaded,
+  systemLoading,
   validation,
 }: {
   analysisReady: boolean;
   autodiagnosisRunning: boolean;
   canStartAutodiagnosis: boolean;
   connectionStatus: ConnectionStatus;
+  draftGenerating: boolean;
   executedActionCount: number;
+  loading: TicketWorkspaceLoadingState;
   onGenerateDraft: () => void;
   onLoadSystem: () => void;
   onOpenActivity: () => void;
@@ -615,6 +646,7 @@ function IncidentPath({
   pendingApprovals: number;
   runState: RunState;
   systemLoaded: boolean;
+  systemLoading: boolean;
   validation: ValidationResult;
 }) {
   const connected = connectionStatus === "connected";
@@ -685,28 +717,29 @@ function IncidentPath({
 
   const nextAction = (() => {
     if (!systemLoaded) {
-      return { label: "Load ERP system info", onClick: onLoadSystem };
+      return { disabled: systemLoading, label: systemLoading ? "Loading ERP system info" : "Load ERP system info", loading: systemLoading, onClick: onLoadSystem };
     }
     if (!connected) {
-      return { label: "Approve SSH access", onClick: () => onRequestConnectionApproval("terminal") };
+      return { label: "Approve SSH access", loading: loading.approveConnection, onClick: () => onRequestConnectionApproval("terminal") };
     }
     if (pendingApprovals) {
-      return { label: "Review command", onClick: onOpenTerminal };
+      return { label: "Review command", loading: false, onClick: onOpenTerminal };
     }
     if (!analysisReady) {
       return {
         label: autodiagnosisRunning ? "Automated diagnosis requested" : "Start automated diagnosis",
         onClick: canStartAutodiagnosis ? onStartAutodiagnosis : onStartAnalysis,
-        disabled: autodiagnosisRunning,
+        disabled: autodiagnosisRunning || loading.startAnalysis,
+        loading: autodiagnosisRunning || loading.startAnalysis,
       };
     }
     if (!validationPassed) {
-      return { label: "Confirm validation", onClick: onRunValidation };
+      return { label: "Confirm validation", loading: loading.confirmValidation, onClick: onRunValidation };
     }
     if (!activityComplete) {
-      return { label: "Review activity", onClick: onOpenActivity };
+      return { label: "Review activity", loading: false, onClick: onOpenActivity };
     }
-    return { label: "Activity submitted", onClick: onOpenActivity, disabled: true };
+    return { label: "Activity submitted", loading: false, onClick: onOpenActivity, disabled: true };
   })();
 
   return (
@@ -719,8 +752,8 @@ function IncidentPath({
               ERP context loads first. SSH approval is a separate gate before diagnostics or terminal access.
             </CardDescription>
           </div>
-          <Button disabled={nextAction.disabled} onClick={nextAction.onClick} type="button">
-            <PlayIcon data-icon="inline-start" />
+          <Button disabled={nextAction.disabled || nextAction.loading} onClick={nextAction.onClick} type="button">
+            {nextAction.loading ? <LoadingButtonIcon /> : <PlayIcon data-icon="inline-start" />}
             {nextAction.label}
           </Button>
         </div>
@@ -755,9 +788,9 @@ function IncidentPath({
             <TerminalIcon data-icon="inline-start" />
             Open terminal
           </Button>
-          <Button disabled={!validationPassed} onClick={onGenerateDraft} type="button" variant="outline">
-            <ClipboardCheckIcon data-icon="inline-start" />
-            Draft activity
+          <Button disabled={draftGenerating || !validationPassed} onClick={onGenerateDraft} type="button" variant="outline">
+            {draftGenerating ? <LoadingButtonIcon /> : <ClipboardCheckIcon data-icon="inline-start" />}
+            {draftGenerating ? "Drafting activity" : "Draft activity"}
           </Button>
         </div>
       </CardContent>
@@ -807,7 +840,7 @@ function SystemTab({
           )}
           <div className="flex flex-wrap items-center gap-2">
             <Button disabled={systemLoading} onClick={onLoadSystem} type="button" variant="outline">
-              <ShieldCheckIcon data-icon="inline-start" />
+              {systemLoading ? <LoadingButtonIcon /> : <ShieldCheckIcon data-icon="inline-start" />}
               {systemLoading ? "Loading system info" : systemLoaded ? "Reload system info" : "Load system info"}
             </Button>
             <Button
@@ -844,113 +877,15 @@ function SystemInfoSkeleton() {
 }
 
 function AnalysisTab({
-  actions,
   analyticsStats,
-  analysisReady,
-  autodiagnosisRunning,
-  canStartAutodiagnosis,
-  connectionStatus,
   llmMetrics,
-  onRequestConnectionApproval,
-  onStartAutodiagnosis,
-  onStartAnalysis,
-  relatedTicket,
-  terminalCommands,
 }: {
-  actions: ProposedAction[];
   analyticsStats: DashboardStat[];
-  analysisReady: boolean;
-  autodiagnosisRunning: boolean;
-  canStartAutodiagnosis: boolean;
-  connectionStatus: ConnectionStatus;
   llmMetrics: BackendLlmMetricsRead | null;
-  onRequestConnectionApproval: (intent: ConnectionIntent) => void;
-  onStartAutodiagnosis: () => void;
-  onStartAnalysis: () => void;
-  relatedTicket: RelatedTicket | null;
-  terminalCommands: TerminalCommandLog[];
 }) {
-  const requiresConnection = connectionStatus !== "connected";
-  const evidenceRows = analysisEvidenceRows(actions, terminalCommands, relatedTicket);
-
   return (
     <div className="flex flex-col gap-4">
       <StatsGrid stats={analyticsStats} />
-      <Card>
-        <CardHeader>
-          <CardTitle>Agent analysis</CardTitle>
-          <CardDescription>
-            Context: {connectionStatus === "connected" ? "ticket and system" : "ticket only"}.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <div className="flex flex-wrap gap-2">
-            {requiresConnection ? (
-              <Button className="w-fit" onClick={() => onRequestConnectionApproval("analysis")} type="button">
-                <ShieldCheckIcon data-icon="inline-start" />
-                Approve connection to start analysis
-              </Button>
-            ) : (
-              <>
-                <Button
-                  className="w-fit"
-                  disabled={!canStartAutodiagnosis || autodiagnosisRunning}
-                  onClick={onStartAutodiagnosis}
-                  type="button"
-                  variant="default"
-                >
-                  <PlayIcon data-icon="inline-start" />
-                  {autodiagnosisRunning ? "Automated diagnosis requested" : "Start automated diagnosis"}
-                </Button>
-                <Button className="w-fit" onClick={onStartAnalysis} type="button" variant="outline">
-                  <PlayIcon data-icon="inline-start" />
-                  {analysisReady ? "Refresh analysis state" : "Start analysis"}
-                </Button>
-              </>
-            )}
-          </div>
-          {analysisReady && evidenceRows.length ? (
-            <Table className="table-fixed">
-              <colgroup>
-                <col className="w-40" />
-                <col />
-                <col className="w-28" />
-              </colgroup>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Source</TableHead>
-                  <TableHead>Evidence</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {evidenceRows.map((row) => (
-                  <TableRow key={row.id}>
-                    <TableCell className="whitespace-normal break-words font-medium">
-                      <TruncatedText maxLength={80} text={row.source} />
-                    </TableCell>
-                    <TableCell className="whitespace-normal break-words text-muted-foreground">
-                      <TruncatedText maxLength={220} text={row.evidence} />
-                    </TableCell>
-                    <TableCell>
-                      <StatusLabel label={row.status} />
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ) : (
-            <EmptyState
-              title={analysisReady ? "No backend analysis evidence" : "No analysis yet"}
-              detail={
-                analysisReady
-                  ? "Backend actions, terminal commands, or related-ticket context will appear here when available."
-                  : "Start analysis or autonomous diagnosis to collect backend evidence."
-              }
-            />
-          )}
-        </CardContent>
-      </Card>
       <LlmTelemetryPanel metrics={llmMetrics} />
     </div>
   );
@@ -1077,49 +1012,12 @@ function formatUsd(value: number | null | undefined) {
   }).format(value);
 }
 
-function analysisEvidenceRows(
-  actions: ProposedAction[],
-  terminalCommands: TerminalCommandLog[],
-  relatedTicket: RelatedTicket | null,
-) {
-  const rows: Array<{ evidence: string; id: string; source: string; status: string }> = [];
-
-  if (relatedTicket) {
-    rows.push({
-      evidence: [relatedTicket.rationale, relatedTicket.description].filter(Boolean).join(" ") || relatedTicket.title,
-      id: `related-${relatedTicket.ticketId}`,
-      source: `Related ticket #${relatedTicket.ticketId}`,
-      status: relatedTicket.confidence ?? "related",
-    });
-  }
-
-  for (const action of actions.slice(0, 8)) {
-    rows.push({
-      evidence: action.result ? `${action.purpose} Result: ${action.result}` : `${action.purpose} Command: ${action.command}`,
-      id: `action-${action.id}`,
-      source: action.title,
-      status: action.status,
-    });
-  }
-
-  for (const command of terminalCommands.slice(0, 8)) {
-    const exitCode = command.exitCode === null ? "pending" : `exit ${command.exitCode}`;
-    rows.push({
-      evidence: `${command.command} (${exitCode})`,
-      id: `terminal-${command.id}`,
-      source: `${command.source} terminal command`,
-      status: command.status,
-    });
-  }
-
-  return rows;
-}
-
 function ActionsTab({
   autodiagnosisRunning,
   autoStartAgentRequestId,
   canStartAutodiagnosis,
   connectionStatus,
+  loading,
   onLoadSystem,
   onAgentPhaseChange,
   onRequestConnectionApproval,
@@ -1133,6 +1031,7 @@ function ActionsTab({
   autoStartAgentRequestId: number;
   canStartAutodiagnosis: boolean;
   connectionStatus: ConnectionStatus;
+  loading: TicketWorkspaceLoadingState;
   onLoadSystem: () => Promise<void> | void;
   onAgentPhaseChange: (phase: AgentPhase) => void;
   onRequestConnectionApproval: (intent: ConnectionIntent) => void;
@@ -1155,10 +1054,16 @@ function ActionsTab({
             </div>
             <div className="flex flex-wrap gap-2">
               <Button disabled={systemLoading} onClick={onLoadSystem} type="button" variant={systemLoaded ? "outline" : "default"}>
+                {systemLoading ? <LoadingButtonIcon /> : null}
                 {systemLoading ? "Loading system info" : "Load system info"}
               </Button>
-              <Button disabled={systemLoading} onClick={() => onRequestConnectionApproval("terminal")} type="button">
-                {connectionStatus === "connected" ? "Prepare terminal" : "Approve connection"}
+              <Button disabled={systemLoading || loading.approveConnection} onClick={() => onRequestConnectionApproval("terminal")} type="button">
+                {loading.approveConnection ? <LoadingButtonIcon /> : null}
+                {loading.approveConnection
+                  ? "Approving connection"
+                  : connectionStatus === "connected"
+                    ? "Prepare terminal"
+                    : "Approve connection"}
               </Button>
             </div>
           </CardContent>
@@ -1430,6 +1335,7 @@ function getConnectionApprovalDescription(intent: ConnectionIntent | null) {
 function ActivityTab({
   draft,
   draftGenerating,
+  loading,
   notice,
   onDraftChange,
   onGenerateDraft,
@@ -1443,6 +1349,7 @@ function ActivityTab({
 }: {
   draft: ActivityDraft;
   draftGenerating: boolean;
+  loading: TicketWorkspaceLoadingState;
   notice: string;
   onDraftChange: (draft: ActivityDraft) => void;
   onGenerateDraft: () => void;
@@ -1458,8 +1365,20 @@ function ActivityTab({
   const validationPassed = validation.status === "passed";
   const canConfirmValidation =
     runState === "validating" || runState === "ready_to_submit" || runState === "submitted";
+  const activityBusy = draftGenerating || loading.confirmValidation || loading.saveDraft || loading.reviewDraft || loading.submitActivity;
+  const activityBusyMessage = loading.submitActivity
+    ? "Submitting the reviewed activity to Phoenix and updating ticket status."
+    : loading.reviewDraft
+      ? "Marking the activity draft reviewed in the backend."
+      : loading.saveDraft
+        ? "Saving activity draft fields to the backend."
+        : loading.confirmValidation
+          ? "Confirming validation evidence and preparing the activity draft."
+          : draftGenerating
+            ? "Generating the Phoenix activity draft from audit events and command evidence."
+            : null;
   const generationStatus = validationPassed
-    ? draftGenerating
+    ? draftGenerating || loading.confirmValidation
       ? "Generating the activity draft from audit evidence."
       : "Ready: validation is confirmed."
     : canConfirmValidation
@@ -1468,7 +1387,7 @@ function ActivityTab({
 
   return (
     <Card className="relative overflow-hidden">
-      {draftGenerating ? <div className="absolute inset-x-0 top-0 h-0.5 animate-pulse bg-primary motion-reduce:animate-none" /> : null}
+      {activityBusy ? <div className="absolute inset-x-0 top-0 h-0.5 animate-pulse bg-primary motion-reduce:animate-none" /> : null}
       <CardHeader>
         <CardTitle>ERP activity draft</CardTitle>
         <CardDescription>
@@ -1483,13 +1402,13 @@ function ActivityTab({
             <p className="text-sm text-muted-foreground">{generationStatus}</p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
-            <Button disabled={draftGenerating || !canConfirmValidation || validationPassed} onClick={onRunValidation} type="button" variant="outline">
-              <CheckIcon data-icon="inline-start" />
-              Confirm validation
+            <Button disabled={activityBusy || !canConfirmValidation || validationPassed} onClick={onRunValidation} type="button" variant="outline">
+              {loading.confirmValidation ? <LoadingButtonIcon /> : <CheckIcon data-icon="inline-start" />}
+              {loading.confirmValidation ? "Confirming validation" : "Confirm validation"}
             </Button>
-            <Button disabled={draftGenerating || !validationPassed} onClick={onGenerateDraft} type="button" variant="outline">
+            <Button disabled={activityBusy || !validationPassed} onClick={onGenerateDraft} type="button" variant="outline">
               {draftGenerating ? (
-                <Loader2Icon className="size-4 animate-spin motion-reduce:animate-none" data-icon="inline-start" />
+                <LoadingButtonIcon />
               ) : (
                 <ClipboardCheckIcon data-icon="inline-start" />
               )}
@@ -1497,21 +1416,24 @@ function ActivityTab({
             </Button>
           </div>
         </div>
-        {draftGenerating ? (
+        {activityBusyMessage ? (
           <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
             <Loader2Icon className="size-4 shrink-0 animate-spin text-foreground motion-reduce:animate-none" />
-            <span>Generating the Phoenix activity draft from audit events and command evidence.</span>
+            <span>{activityBusyMessage}</span>
           </div>
         ) : null}
         <div className="flex flex-wrap gap-2">
-          <Button disabled={draftGenerating} onClick={onSave} type="button" variant="outline">
-            Save draft
+          <Button disabled={activityBusy} onClick={onSave} type="button" variant="outline">
+            {loading.saveDraft ? <LoadingButtonIcon /> : null}
+            {loading.saveDraft ? "Saving draft" : "Save draft"}
           </Button>
-          <Button disabled={draftGenerating || !complete || submitStatus === "submitted"} onClick={onReview} type="button" variant="outline">
-            Mark reviewed
+          <Button disabled={activityBusy || !complete || submitStatus === "submitted"} onClick={onReview} type="button" variant="outline">
+            {loading.reviewDraft ? <LoadingButtonIcon /> : null}
+            {loading.reviewDraft ? "Marking reviewed" : "Mark reviewed"}
           </Button>
-          <Button disabled={draftGenerating || !complete || submitStatus === "submitted"} onClick={onSubmit} type="button">
-            Submit activity
+          <Button disabled={activityBusy || !complete || submitStatus === "submitted"} onClick={onSubmit} type="button">
+            {loading.submitActivity ? <LoadingButtonIcon /> : null}
+            {loading.submitActivity ? "Submitting activity" : "Submit activity"}
           </Button>
         </div>
         {notice ? <p className="rounded-lg border bg-muted px-3 py-2 text-sm text-muted-foreground">{notice}</p> : null}
@@ -1528,7 +1450,7 @@ function ActivityTab({
             <label className={rows > 3 ? "lg:col-span-2" : ""} key={field}>
               <span className="text-sm font-medium text-foreground">{label}</span>
               <Textarea
-                disabled={draftGenerating}
+                disabled={activityBusy}
                 onChange={(event) => onDraftChange({ ...draft, [field]: event.target.value })}
                 rows={rows}
                 value={draft[field]}
@@ -1541,9 +1463,14 @@ function ActivityTab({
   );
 }
 
+function LoadingButtonIcon() {
+  return <Loader2Icon className="size-4 animate-spin motion-reduce:animate-none" data-icon="inline-start" />;
+}
+
 function ConfirmDialog({
   confirmLabel,
   description,
+  inFlight = false,
   onConfirm,
   onOpenChange,
   open,
@@ -1552,6 +1479,7 @@ function ConfirmDialog({
 }: {
   confirmLabel: string;
   description: string;
+  inFlight?: boolean;
   onConfirm: () => Promise<void> | void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
@@ -1559,6 +1487,10 @@ function ConfirmDialog({
   variant?: "default" | "destructive";
 }) {
   const confirm = async () => {
+    if (inFlight) {
+      return;
+    }
+
     await onConfirm();
     onOpenChange(false);
   };
@@ -1571,11 +1503,12 @@ function ConfirmDialog({
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
+          <Button disabled={inFlight} onClick={() => onOpenChange(false)} type="button" variant="outline">
             Cancel
           </Button>
-          <Button onClick={confirm} type="button" variant={variant}>
-            {confirmLabel}
+          <Button disabled={inFlight} onClick={confirm} type="button" variant={variant}>
+            {inFlight ? <LoadingButtonIcon /> : null}
+            {inFlight ? `${confirmLabel}...` : confirmLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

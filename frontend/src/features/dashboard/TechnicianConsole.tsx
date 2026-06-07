@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangleIcon, RefreshCwIcon, RotateCcwIcon } from "lucide-react";
+import { AlertTriangleIcon, Loader2Icon, RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -81,6 +81,16 @@ type AppRouteState = {
   view: SidebarView;
 };
 
+type BusyOperation =
+  | "abortRun"
+  | "approveConnection"
+  | "confirmValidation"
+  | "refreshTickets"
+  | "reviewDraft"
+  | "saveDraft"
+  | "startAnalysis"
+  | "submitActivity";
+
 const routeByView: Record<SidebarView, string> = {
   all: "/app/tickets",
   assigned: "/app/tickets/assigned",
@@ -131,7 +141,21 @@ export function TechnicianConsole() {
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [resetConfirmation, setResetConfirmation] = useState("");
   const [resetInFlight, setResetInFlight] = useState(false);
+  const [busyOperations, setBusyOperations] = useState<Partial<Record<BusyOperation, boolean>>>({});
   const runEventCursorRef = useRef<number | null>(null);
+
+  async function withBusy<T>(operation: BusyOperation, task: () => Promise<T>) {
+    setBusyOperations((current) => ({ ...current, [operation]: true }));
+    try {
+      return await task();
+    } finally {
+      setBusyOperations((current) => ({ ...current, [operation]: false }));
+    }
+  }
+
+  function isBusy(operation: BusyOperation) {
+    return Boolean(busyOperations[operation]);
+  }
 
   useEffect(() => {
     try {
@@ -661,28 +685,30 @@ export function TechnicianConsole() {
       return;
     }
 
-    try {
-      const runState = backendRunId
-        ? await backendApi.getRun(backendRunId)
-        : await backendApi.createRun(selectedTicket.id);
-      const confirmedState = await backendApi.confirmSsh(runState.run.id);
+    return withBusy("approveConnection", async () => {
+      try {
+        const runState = backendRunId
+          ? await backendApi.getRun(backendRunId)
+          : await backendApi.createRun(selectedTicket.id);
+        const confirmedState = await backendApi.confirmSsh(runState.run.id);
 
-      setBackendRunId(confirmedState.run.id);
-      setConnectionStatus("connected");
-      updateTicketStatus(selectedTicket.id, "PENDING");
-      syncRunState(confirmedState);
-      await refreshAuditEvents(confirmedState.run.id);
-      await refreshRunMetrics(confirmedState.run.id);
-      appendEvent("approval", "Connection approved", "Backend run created and SSH approval confirmed.");
-      setTicketTab("actions");
-      return;
-    } catch (error) {
-      setBackendRunId(null);
-      setConnectionStatus("awaiting_approval");
-      setRunState("awaiting_connection_approval");
-      setNotice(`Connection approval failed. ${getApiErrorMessage(error)}`);
-      return;
-    }
+        setBackendRunId(confirmedState.run.id);
+        setConnectionStatus("connected");
+        updateTicketStatus(selectedTicket.id, "PENDING");
+        syncRunState(confirmedState);
+        await refreshAuditEvents(confirmedState.run.id);
+        await refreshRunMetrics(confirmedState.run.id);
+        appendEvent("approval", "Connection approved", "Backend run created and SSH approval confirmed.");
+        setTicketTab("actions");
+        return;
+      } catch (error) {
+        setBackendRunId(null);
+        setConnectionStatus("awaiting_approval");
+        setRunState("awaiting_connection_approval");
+        setNotice(`Connection approval failed. ${getApiErrorMessage(error)}`);
+        return;
+      }
+    });
   };
 
   const startAnalysis = async () => {
@@ -695,20 +721,22 @@ export function TechnicianConsole() {
       return;
     }
 
-    try {
-      const state = await backendApi.getRun(backendRunId);
-      syncRunState(state);
-      await refreshAuditEvents(backendRunId);
-      await refreshRunMetrics(backendRunId);
-      setAnalysisReady(true);
-      appendEvent("analysis", "Terminal agent ready", "Open the terminal and start the backend agent.");
-      setTicketTab("actions");
-      return;
-    } catch (error) {
-      setNotice(`Analysis state failed to load. ${getApiErrorMessage(error)}`);
-      appendEvent("error", "Analysis blocked", "Backend run state could not be loaded.");
-      return;
-    }
+    return withBusy("startAnalysis", async () => {
+      try {
+        const state = await backendApi.getRun(backendRunId);
+        syncRunState(state);
+        await refreshAuditEvents(backendRunId);
+        await refreshRunMetrics(backendRunId);
+        setAnalysisReady(true);
+        appendEvent("analysis", "Terminal agent ready", "Open the terminal and start the backend agent.");
+        setTicketTab("actions");
+        return;
+      } catch (error) {
+        setNotice(`Analysis state failed to load. ${getApiErrorMessage(error)}`);
+        appendEvent("error", "Analysis blocked", "Backend run state could not be loaded.");
+        return;
+      }
+    });
   };
 
   const startAutodiagnosis = () => {
@@ -890,21 +918,23 @@ export function TechnicianConsole() {
       return;
     }
 
-    try {
-      const state = await backendApi.abortRun(backendRunId);
-      syncRunState(state);
-      await refreshAuditEvents(backendRunId);
-      await refreshRunMetrics(backendRunId);
-      setBackendRunId(null);
-      setConnectionStatus("disconnected");
-      appendEvent("error", "Run aborted", "Technician stopped the backend run.");
-      window.location.reload();
-      return;
-    } catch (error) {
-      setNotice(`Abort failed. ${getApiErrorMessage(error)}`);
-      appendEvent("error", "Abort blocked", "Backend did not abort the run.");
-      return;
-    }
+    return withBusy("abortRun", async () => {
+      try {
+        const state = await backendApi.abortRun(backendRunId);
+        syncRunState(state);
+        await refreshAuditEvents(backendRunId);
+        await refreshRunMetrics(backendRunId);
+        setBackendRunId(null);
+        setConnectionStatus("disconnected");
+        appendEvent("error", "Run aborted", "Technician stopped the backend run.");
+        window.location.reload();
+        return;
+      } catch (error) {
+        setNotice(`Abort failed. ${getApiErrorMessage(error)}`);
+        appendEvent("error", "Abort blocked", "Backend did not abort the run.");
+        return;
+      }
+    });
   };
 
   const runValidation = async () => {
@@ -930,23 +960,25 @@ export function TechnicianConsole() {
       "Technician validated that the customer-facing service is restored after approved action execution.";
     setAgentPhase("verification");
 
-    try {
-      const state = await backendApi.confirmValidation(backendRunId, evidence);
-      syncRunState(state);
-      const draftResponse = await backendApi.generateActivityDraft(backendRunId);
-      setDraft(mapActivityDraft(draftResponse));
-      setAgentPhase("final_analysis");
-      await refreshAuditEvents(backendRunId);
-      await refreshRunMetrics(backendRunId);
-      appendEvent("validation", "Validation passed", evidence);
-      appendEvent("output", "Activity draft generated", "Backend generated the ERP activity draft after validation confirmation.");
-      setTicketTab("activity");
-      return;
-    } catch (error) {
-      setNotice(`Validation confirmation or draft generation failed. ${getApiErrorMessage(error)}`);
-      appendEvent("error", "Validation handoff blocked", "Backend did not complete validation confirmation and activity draft generation.");
-      return;
-    }
+    return withBusy("confirmValidation", async () => {
+      try {
+        const state = await backendApi.confirmValidation(backendRunId, evidence);
+        syncRunState(state);
+        const draftResponse = await backendApi.generateActivityDraft(backendRunId);
+        setDraft(mapActivityDraft(draftResponse));
+        setAgentPhase("final_analysis");
+        await refreshAuditEvents(backendRunId);
+        await refreshRunMetrics(backendRunId);
+        appendEvent("validation", "Validation passed", evidence);
+        appendEvent("output", "Activity draft generated", "Backend generated the ERP activity draft after validation confirmation.");
+        setTicketTab("activity");
+        return;
+      } catch (error) {
+        setNotice(`Validation confirmation or draft generation failed. ${getApiErrorMessage(error)}`);
+        appendEvent("error", "Validation handoff blocked", "Backend did not complete validation confirmation and activity draft generation.");
+        return;
+      }
+    });
   };
 
   const generateDraft = async () => {
@@ -985,25 +1017,27 @@ export function TechnicianConsole() {
       return;
     }
 
-    try {
-      const draftResponse = await backendApi.updateActivityDraft(backendRunId, {
-        actions_taken: draft.actions_taken,
-        commands_summary: draft.commands_summary,
-        description: draft.summary,
-        root_cause: draft.root_cause,
-        summary: draft.summary,
-        validation_result: draft.validation_result,
-      });
-      setDraft(mapActivityDraft(draftResponse));
-      await refreshAuditEvents(backendRunId);
-      await refreshRunMetrics(backendRunId);
-      setNotice("Activity draft saved to backend.");
-      return;
-    } catch (error) {
-      setNotice(`Activity draft save failed. ${getApiErrorMessage(error)}`);
-      appendEvent("error", "Activity draft save blocked", "Backend did not save the draft.");
-      return;
-    }
+    return withBusy("saveDraft", async () => {
+      try {
+        const draftResponse = await backendApi.updateActivityDraft(backendRunId, {
+          actions_taken: draft.actions_taken,
+          commands_summary: draft.commands_summary,
+          description: draft.summary,
+          root_cause: draft.root_cause,
+          summary: draft.summary,
+          validation_result: draft.validation_result,
+        });
+        setDraft(mapActivityDraft(draftResponse));
+        await refreshAuditEvents(backendRunId);
+        await refreshRunMetrics(backendRunId);
+        setNotice("Activity draft saved to backend.");
+        return;
+      } catch (error) {
+        setNotice(`Activity draft save failed. ${getApiErrorMessage(error)}`);
+        appendEvent("error", "Activity draft save blocked", "Backend did not save the draft.");
+        return;
+      }
+    });
   };
 
   const reviewDraft = async () => {
@@ -1017,26 +1051,28 @@ export function TechnicianConsole() {
       return;
     }
 
-    try {
-      await backendApi.updateActivityDraft(backendRunId, {
-        actions_taken: draft.actions_taken,
-        commands_summary: draft.commands_summary,
-        description: draft.summary,
-        root_cause: draft.root_cause,
-        summary: draft.summary,
-        validation_result: draft.validation_result,
-      });
-      const draftResponse = await backendApi.reviewActivityDraft(backendRunId, true);
-      setDraft(mapActivityDraft(draftResponse));
-      await refreshAuditEvents(backendRunId);
-      await refreshRunMetrics(backendRunId);
-      setNotice("Activity draft marked reviewed.");
-      return;
-    } catch (error) {
-      setNotice(`Activity draft review failed. ${getApiErrorMessage(error)}`);
-      appendEvent("error", "Activity draft review blocked", "Backend did not mark the draft reviewed.");
-      return;
-    }
+    return withBusy("reviewDraft", async () => {
+      try {
+        await backendApi.updateActivityDraft(backendRunId, {
+          actions_taken: draft.actions_taken,
+          commands_summary: draft.commands_summary,
+          description: draft.summary,
+          root_cause: draft.root_cause,
+          summary: draft.summary,
+          validation_result: draft.validation_result,
+        });
+        const draftResponse = await backendApi.reviewActivityDraft(backendRunId, true);
+        setDraft(mapActivityDraft(draftResponse));
+        await refreshAuditEvents(backendRunId);
+        await refreshRunMetrics(backendRunId);
+        setNotice("Activity draft marked reviewed.");
+        return;
+      } catch (error) {
+        setNotice(`Activity draft review failed. ${getApiErrorMessage(error)}`);
+        appendEvent("error", "Activity draft review blocked", "Backend did not mark the draft reviewed.");
+        return;
+      }
+    });
   };
 
   const submitActivity = async () => {
@@ -1052,38 +1088,40 @@ export function TechnicianConsole() {
 
     const ticketId = selectedTicket?.id;
 
-    try {
-      await backendApi.updateActivityDraft(backendRunId, {
-        actions_taken: draft.actions_taken,
-        commands_summary: draft.commands_summary,
-        description: draft.summary,
-        root_cause: draft.root_cause,
-        summary: draft.summary,
-        validation_result: draft.validation_result,
-      });
-      await backendApi.reviewActivityDraft(backendRunId, true);
-      await backendApi.submitActivity(backendRunId);
-      const state = await backendApi.getRun(backendRunId);
-      syncRunState(state);
-      if (ticketId) {
-        updateTicketStatus(ticketId, "DONE");
+    return withBusy("submitActivity", async () => {
+      try {
+        await backendApi.updateActivityDraft(backendRunId, {
+          actions_taken: draft.actions_taken,
+          commands_summary: draft.commands_summary,
+          description: draft.summary,
+          root_cause: draft.root_cause,
+          summary: draft.summary,
+          validation_result: draft.validation_result,
+        });
+        await backendApi.reviewActivityDraft(backendRunId, true);
+        await backendApi.submitActivity(backendRunId);
+        const state = await backendApi.getRun(backendRunId);
+        syncRunState(state);
+        if (ticketId) {
+          updateTicketStatus(ticketId, "DONE");
+        }
+        setSubmitStatus("submitted");
+        setAgentPhase("final_analysis");
+        setNotice("Activity submitted to backend.");
+        await refreshAuditEvents(backendRunId);
+        await refreshRunMetrics(backendRunId);
+        const backendMetrics = await backendApi.getMetricsSummary().catch(() => null);
+        if (backendMetrics) {
+          setMetricsSummary(backendMetrics);
+        }
+        appendEvent("output", "Activity submitted", "Backend ERP activity submission completed.");
+        return;
+      } catch (error) {
+        setNotice(`Activity submission failed. ${getApiErrorMessage(error)}`);
+        appendEvent("error", "Activity submission blocked", "Backend did not submit the ERP activity.");
+        return;
       }
-      setSubmitStatus("submitted");
-      setAgentPhase("final_analysis");
-      setNotice("Activity submitted to backend.");
-      await refreshAuditEvents(backendRunId);
-      await refreshRunMetrics(backendRunId);
-      const backendMetrics = await backendApi.getMetricsSummary().catch(() => null);
-      if (backendMetrics) {
-        setMetricsSummary(backendMetrics);
-      }
-      appendEvent("output", "Activity submitted", "Backend ERP activity submission completed.");
-      return;
-    } catch (error) {
-      setNotice(`Activity submission failed. ${getApiErrorMessage(error)}`);
-      appendEvent("error", "Activity submission blocked", "Backend did not submit the ERP activity.");
-      return;
-    }
+    });
   };
 
   const copyAuditExcerpt = () => {
@@ -1113,26 +1151,28 @@ export function TechnicianConsole() {
       return;
     }
 
-    setTicketsLoading(true);
+    return withBusy("refreshTickets", async () => {
+      setTicketsLoading(true);
 
-    try {
-      const [backendTickets, backendMetrics] = await Promise.all([
-        backendApi.listTickets({
-          priority: priorityFilter === "all" ? null : priorityFilter,
-          sort: sortBy,
-          status: statusFilter === "all" ? null : statusFilter,
-        }),
-        backendApi.getMetricsSummary().catch(() => null),
-      ]);
-      setTicketList(backendTickets.map((ticket) => mapBackendTicket(ticket, assignedTechnicianName)));
-      setMetricsSummary(backendMetrics);
-      setLastTicketFetchAt(new Date().toISOString());
-      setNotice("Backend ticket queue refreshed.");
-    } catch (error) {
-      setNotice(`Ticket refresh failed. ${getApiErrorMessage(error)}`);
-    } finally {
-      setTicketsLoading(false);
-    }
+      try {
+        const [backendTickets, backendMetrics] = await Promise.all([
+          backendApi.listTickets({
+            priority: priorityFilter === "all" ? null : priorityFilter,
+            sort: sortBy,
+            status: statusFilter === "all" ? null : statusFilter,
+          }),
+          backendApi.getMetricsSummary().catch(() => null),
+        ]);
+        setTicketList(backendTickets.map((ticket) => mapBackendTicket(ticket, assignedTechnicianName)));
+        setMetricsSummary(backendMetrics);
+        setLastTicketFetchAt(new Date().toISOString());
+        setNotice("Backend ticket queue refreshed.");
+      } catch (error) {
+        setNotice(`Ticket refresh failed. ${getApiErrorMessage(error)}`);
+      } finally {
+        setTicketsLoading(false);
+      }
+    });
   };
 
   const resetEnvironment = async () => {
@@ -1265,19 +1305,28 @@ export function TechnicianConsole() {
   const headerAction =
     !selectedTicket && sidebarView !== "overview" ? (
       <>
-        <Button onClick={refreshTickets} size="sm" type="button" variant="outline">
-          <RefreshCwIcon data-icon="inline-start" />
-          Refresh
+        <Button disabled={ticketsLoading || isBusy("refreshTickets")} onClick={refreshTickets} size="sm" type="button" variant="outline">
+          {isBusy("refreshTickets") ? (
+            <Loader2Icon className="size-3.5 animate-spin motion-reduce:animate-none" data-icon="inline-start" />
+          ) : (
+            <RefreshCwIcon data-icon="inline-start" />
+          )}
+          {isBusy("refreshTickets") ? "Refreshing" : "Refresh"}
         </Button>
         <Button
           className="bg-destructive text-white hover:bg-destructive/90"
+          disabled={resetInFlight}
           onClick={() => setResetDialogOpen(true)}
           size="sm"
           type="button"
           variant="destructive"
         >
-          <RotateCcwIcon data-icon="inline-start" />
-          Reset environment
+          {resetInFlight ? (
+            <Loader2Icon className="size-3.5 animate-spin motion-reduce:animate-none" data-icon="inline-start" />
+          ) : (
+            <RotateCcwIcon data-icon="inline-start" />
+          )}
+          {resetInFlight ? "Resetting" : "Reset environment"}
         </Button>
       </>
     ) : undefined;
@@ -1315,6 +1364,15 @@ export function TechnicianConsole() {
               executedActions={executedActions}
               logFilter={logFilter}
               llmMetrics={llmMetrics}
+              loading={{
+                abortRun: isBusy("abortRun"),
+                approveConnection: isBusy("approveConnection"),
+                confirmValidation: isBusy("confirmValidation"),
+                reviewDraft: isBusy("reviewDraft"),
+                saveDraft: isBusy("saveDraft"),
+                startAnalysis: isBusy("startAnalysis"),
+                submitActivity: isBusy("submitActivity"),
+              }}
               notice={notice}
               onAbort={abortRun}
               onApproveAction={approveAction}
@@ -1455,6 +1513,9 @@ function ResetEnvironmentDialog({
             Cancel
           </Button>
           <Button disabled={!canReset || inFlight} onClick={onConfirm} type="button" variant="destructive">
+            {inFlight ? (
+              <Loader2Icon className="size-4 animate-spin motion-reduce:animate-none" data-icon="inline-start" />
+            ) : null}
             {inFlight ? "Resetting environment" : "Reset environment"}
           </Button>
         </DialogFooter>
