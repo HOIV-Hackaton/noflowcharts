@@ -19,6 +19,8 @@ export const emptyDraft: ActivityDraft = {
   actions_taken: "",
   commands_summary: "",
   validation_result: "",
+  description: "",
+  fix_score: null,
 };
 
 export function createEvent(type: EventType, title: string, detail: string): RunEvent {
@@ -36,7 +38,17 @@ export function createEvent(type: EventType, title: string, detail: string): Run
 }
 
 export function isDraftComplete(draft: ActivityDraft) {
-  return Object.values(draft).every((value) => value.trim().length > 0);
+  return (
+    draft.summary.trim().length > 0 &&
+    draft.root_cause.trim().length > 0 &&
+    draft.actions_taken.trim().length > 0 &&
+    draft.commands_summary.trim().length > 0 &&
+    draft.validation_result.trim().length > 0 &&
+    draft.description.trim().length > 0 &&
+    draft.fix_score !== null &&
+    draft.fix_score >= 0 &&
+    draft.fix_score <= 3
+  );
 }
 
 export function formatDate(value: string) {

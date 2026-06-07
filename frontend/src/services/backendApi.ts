@@ -1,5 +1,5 @@
 import axios, { AxiosError, type AxiosRequestConfig } from "axios";
-import type { TicketStatus } from "../types";
+import type { TicketStatus, WritePreview } from "../types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "http://localhost:8000").replace(/\/$/, "");
 const apiClient = axios.create({
@@ -73,7 +73,7 @@ export type BackendActionRead = {
   intent: string | null;
   risk_reason: string | null;
   expected_signal: string | null;
-  write_preview: Record<string, unknown> | null;
+  write_preview: WritePreview | null;
   typed_confirmation_status: "not_required" | "pending" | "confirmed";
   edited_command: string | null;
   created_at: string;
@@ -101,6 +101,7 @@ export type BackendActivityDraftRead = {
   commands_summary: string | null;
   validation_result: string | null;
   description: string | null;
+  fix_score: number | null;
   review_status: "draft" | "reviewed" | "submitted";
   created_at: string;
   updated_at: string;
@@ -276,7 +277,7 @@ export type BackendTerminalCommandRead = {
   edited_to: string | null;
   classification: BackendActionRead["command_classification"] | null;
   risk_reason: string | null;
-  write_preview: Record<string, unknown> | null;
+  write_preview: WritePreview | null;
   exit_code: number | null;
   output: string;
   started_at: string | null;
@@ -472,6 +473,7 @@ export const backendApi = {
     actions_taken?: string | null;
     commands_summary?: string | null;
     description?: string | null;
+    fix_score?: number | null;
     root_cause?: string | null;
     summary?: string | null;
     validation_result?: string | null;

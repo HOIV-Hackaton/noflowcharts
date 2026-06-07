@@ -79,6 +79,31 @@ const TICKET_TABS: Array<{ id: TabId; label: string }> = [
   { id: "activity", label: "Activity" },
 ];
 
+type ActivityDraftTextField = Exclude<keyof ActivityDraft, "fix_score">;
+
+const FIX_SCORE_OPTIONS: Array<{ value: number; label: string; description: string }> = [
+  {
+    value: 3,
+    label: "3 clean fix",
+    description: "Main test green and the underlying condition is fixed without a fragile workaround.",
+  },
+  {
+    value: 2,
+    label: "2 restored",
+    description: "Customer benefit is restored, but the fix is fragile or only partly addresses the cause.",
+  },
+  {
+    value: 1,
+    label: "1 partial",
+    description: "Partial improvement or temporary workaround.",
+  },
+  {
+    value: 0,
+    label: "0 ineffective",
+    description: "No real effect, or the issue is still broken.",
+  },
+];
+
 type TicketWorkspaceLoadingState = {
   abortRun: boolean;
   approveConnection: boolean;
@@ -1244,6 +1269,10 @@ function WritePreviewSummary({ preview }: { preview: TerminalCommandLog["writePr
   const targetPath = readPreviewString(preview, "target_path");
   const commandKind = readPreviewString(preview, "command_kind");
   const diff = readPreviewString(preview, "diff");
+  const reason = readPreviewString(preview, "reason");
+  const diffLines = diff ? diff.split(/\r?\n/) : [];
+  const visibleLines = diffLines.slice(0, 80);
+  const truncated = preview.truncated === true || diffLines.length > visibleLines.length;
 
   return (
     <div className="rounded-md border bg-muted/30 p-2 text-xs">
@@ -1254,12 +1283,35 @@ function WritePreviewSummary({ preview }: { preview: TerminalCommandLog["writePr
       </div>
       {targetPath ? <p className="mt-1 text-muted-foreground">Target: {targetPath}</p> : null}
       {diff ? (
-        <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-background p-2 font-mono text-[11px] leading-4 text-foreground">
-          {diff}
+        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-background p-2 font-mono text-[11px] leading-4">
+          {visibleLines.map((line, index) => (
+            <span className={cn("block min-h-4", diffLineClassName(line))} key={`${line}-${index}`}>
+              {line || " "}
+            </span>
+          ))}
+          {truncated ? <span className="block text-muted-foreground">... preview truncated</span> : null}
         </pre>
+      ) : reason ? (
+        <p className="mt-1 text-muted-foreground">{reason}</p>
       ) : null}
     </div>
   );
+}
+
+function diffLineClassName(line: string) {
+  if (line.startsWith("+") && !line.startsWith("+++")) {
+    return "text-emerald-300";
+  }
+  if (line.startsWith("-") && !line.startsWith("---")) {
+    return "text-red-300";
+  }
+  if (line.startsWith("@@")) {
+    return "text-cyan-300";
+  }
+  if (line.startsWith("---") || line.startsWith("+++")) {
+    return "text-muted-foreground";
+  }
+  return "text-foreground";
 }
 
 function formatTerminalCommandStatus(status: TerminalCommandLog["status"]) {
@@ -1445,7 +1497,8 @@ function ActivityTab({
               ["actions_taken", "Actions taken", 5],
               ["commands_summary", "Commands summary", 5],
               ["validation_result", "Validation result", 3],
-            ] as Array<[keyof ActivityDraft, string, number]>
+              ["description", "Phoenix description", 4],
+            ] as Array<[ActivityDraftTextField, string, number]>
           ).map(([field, label, rows]) => (
             <label className={rows > 3 ? "lg:col-span-2" : ""} key={field}>
               <span className="text-sm font-medium text-foreground">{label}</span>
@@ -1457,6 +1510,39 @@ function ActivityTab({
               />
             </label>
           ))}
+        </div>
+        <div className="rounded-lg border bg-muted/20 p-3">
+          <div className="flex flex-col gap-1">
+            <p className="text-sm font-medium text-foreground">Fix score</p>
+            <p className="text-sm text-muted-foreground">
+              Required for scoring: choose how complete and durable the fix is.
+            </p>
+          </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            {FIX_SCORE_OPTIONS.map((option) => {
+              const selected = draft.fix_score === option.value;
+              return (
+                <button
+                  aria-pressed={selected}
+                  className={cn(
+                    "rounded-lg border px-3 py-2 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+                    selected
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-background/40 text-foreground hover:bg-muted",
+                  )}
+                  disabled={activityBusy}
+                  key={option.value}
+                  onClick={() => onDraftChange({ ...draft, fix_score: option.value })}
+                  type="button"
+                >
+                  <span className="block text-sm font-medium">{option.label}</span>
+                  <span className={cn("mt-1 block text-xs leading-5", selected ? "text-primary-foreground/75" : "text-muted-foreground")}>
+                    {option.description}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       </CardContent>
     </Card>

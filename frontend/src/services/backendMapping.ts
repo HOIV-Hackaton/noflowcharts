@@ -156,6 +156,8 @@ export function mapActivityDraft(draft: BackendActivityDraftRead): ActivityDraft
   return {
     actions_taken: draft.actions_taken ?? "",
     commands_summary: draft.commands_summary ?? "",
+    description: draft.description ?? "",
+    fix_score: draft.fix_score ?? null,
     root_cause: draft.root_cause ?? "",
     summary: draft.summary ?? "",
     validation_result: draft.validation_result ?? "",

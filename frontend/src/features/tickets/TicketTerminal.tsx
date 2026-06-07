@@ -9,7 +9,7 @@ import type { AgentPhase, WritePreview } from "@/types";
 import { runTerminalWebSocketUrl } from "../../services/backendApi";
 
 type TerminalMessage =
-  | { type: "agent_auto_command"; command_id: number; command: string; classification?: string; intent?: string; phase?: string | null; reason?: string }
+  | { type: "agent_auto_command"; command_id: number; command: string; classification?: string; intent?: string; phase?: string | null; reason?: string; write_preview?: WritePreview | null }
   | { type: "agent_cancelled" }
   | { type: "agent_guidance_recorded" }
   | { type: "agent_phase_selected"; phase: string }
@@ -855,6 +855,7 @@ function handleTerminalStatusMessage(
       if (message.reason) {
         terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mReason\x1b[0m ${message.reason}`);
       }
+      writeTerminalWritePreview(terminal, message.write_preview);
       terminal.writeln(`\x1b[36m│\x1b[0m \x1b[1m${message.command}\x1b[0m`);
       terminal.writeln("\x1b[36m╰─\x1b[0m Running automatically because it is read-only diagnosis.");
       break;
@@ -885,10 +886,7 @@ function handleTerminalStatusMessage(
       if (message.reason) {
         terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mReason\x1b[0m ${message.reason}`);
       }
-      const writePreview = formatTerminalWritePreview(message.write_preview);
-      if (writePreview) {
-        terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mWrite preview\x1b[0m ${writePreview}`);
-      }
+      writeTerminalWritePreview(terminal, message.write_preview);
       terminal.writeln(`\x1b[36m│\x1b[0m \x1b[1m${message.command}\x1b[0m`);
       terminal.writeln(
         "\x1b[36m╰─\x1b[0m \x1b[32m[a] accept\x1b[0m  \x1b[31m[r] reject\x1b[0m  \x1b[33m[e] edit\x1b[0m  \x1b[36m[t] retry\x1b[0m  \x1b[90m[c] comment\x1b[0m",
@@ -979,17 +977,59 @@ function formatKnowledgeTopMatch(message: Extract<TerminalMessage, { type: "know
   return [ticket, chunkType, score].filter(Boolean).join(" · ") || null;
 }
 
-function formatTerminalWritePreview(preview: WritePreview | null | undefined) {
+function writeTerminalWritePreview(terminal: Terminal, preview: WritePreview | null | undefined) {
   if (!preview) {
-    return null;
+    return;
   }
 
   const status = readPreviewString(preview, "status") ?? "available";
   const commandKind = readPreviewString(preview, "command_kind");
   const targetPath = readPreviewString(preview, "target_path");
-  return [status.split("_").join(" "), commandKind?.split("_").join(" "), targetPath ? `target ${targetPath}` : null]
-    .filter(Boolean)
-    .join(" · ");
+  const reason = readPreviewString(preview, "reason");
+  const diff = readPreviewString(preview, "diff");
+  const truncated = preview.truncated === true;
+
+  terminal.writeln(`\x1b[36m│\x1b[0m   \x1b[33m╭─ WRITE PREVIEW · review before accepting\x1b[0m`);
+  terminal.writeln(`\x1b[36m│\x1b[0m   \x1b[33m│\x1b[0m status: ${status.split("_").join(" ")}`);
+  if (commandKind) {
+    terminal.writeln(`\x1b[36m│\x1b[0m   \x1b[33m│\x1b[0m kind: ${commandKind.split("_").join(" ")}`);
+  }
+  if (targetPath) {
+    terminal.writeln(`\x1b[36m│\x1b[0m   \x1b[33m│\x1b[0m target: ${targetPath}`);
+  }
+  if (reason) {
+    terminal.writeln(`\x1b[36m│\x1b[0m   \x1b[33m│\x1b[0m reason: ${reason}`);
+  }
+  if (!diff) {
+    terminal.writeln(`\x1b[36m│\x1b[0m   \x1b[33m╰─ END WRITE PREVIEW\x1b[0m`);
+    return;
+  }
+
+  const lines = diff.split(/\r?\n/);
+  const visibleLines = lines.slice(0, 80);
+  for (const line of visibleLines) {
+    terminal.writeln(`\x1b[36m│\x1b[0m   \x1b[33m│\x1b[0m ${formatTerminalDiffLine(line)}`);
+  }
+  if (truncated || lines.length > visibleLines.length) {
+    terminal.writeln(`\x1b[36m│\x1b[0m   \x1b[33m│\x1b[0m \x1b[90m... preview truncated\x1b[0m`);
+  }
+  terminal.writeln(`\x1b[36m│\x1b[0m   \x1b[33m╰─ END WRITE PREVIEW\x1b[0m`);
+}
+
+function formatTerminalDiffLine(line: string) {
+  if (line.startsWith("+") && !line.startsWith("+++")) {
+    return `\x1b[32m${line}\x1b[0m`;
+  }
+  if (line.startsWith("-") && !line.startsWith("---")) {
+    return `\x1b[31m${line}\x1b[0m`;
+  }
+  if (line.startsWith("@@")) {
+    return `\x1b[36m${line}\x1b[0m`;
+  }
+  if (line.startsWith("---") || line.startsWith("+++")) {
+    return `\x1b[90m${line}\x1b[0m`;
+  }
+  return `\x1b[37m${line}\x1b[0m`;
 }
 
 function readPreviewString(preview: WritePreview, key: string) {

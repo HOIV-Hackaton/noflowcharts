@@ -1022,7 +1022,8 @@ export function TechnicianConsole() {
         const draftResponse = await backendApi.updateActivityDraft(backendRunId, {
           actions_taken: draft.actions_taken,
           commands_summary: draft.commands_summary,
-          description: draft.summary,
+          description: draft.description,
+          fix_score: draft.fix_score,
           root_cause: draft.root_cause,
           summary: draft.summary,
           validation_result: draft.validation_result,
@@ -1056,7 +1057,8 @@ export function TechnicianConsole() {
         await backendApi.updateActivityDraft(backendRunId, {
           actions_taken: draft.actions_taken,
           commands_summary: draft.commands_summary,
-          description: draft.summary,
+          description: draft.description,
+          fix_score: draft.fix_score,
           root_cause: draft.root_cause,
           summary: draft.summary,
           validation_result: draft.validation_result,
@@ -1093,7 +1095,8 @@ export function TechnicianConsole() {
         await backendApi.updateActivityDraft(backendRunId, {
           actions_taken: draft.actions_taken,
           commands_summary: draft.commands_summary,
-          description: draft.summary,
+          description: draft.description,
+          fix_score: draft.fix_score,
           root_cause: draft.root_cause,
           summary: draft.summary,
           validation_result: draft.validation_result,

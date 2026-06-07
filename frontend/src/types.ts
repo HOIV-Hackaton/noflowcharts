@@ -19,7 +19,16 @@ export type TabId = "overview" | "system" | "analysis" | "actions" | "logs" | "a
 export type ActionStatus = "pending" | "executed" | "rejected" | "failed";
 export type RiskLevel = "Low" | "Medium" | "High";
 export type EventType = "analysis" | "approval" | "command" | "output" | "validation" | "error";
-export type WritePreview = Record<string, unknown>;
+export type WritePreview = {
+  status?: string;
+  command_kind?: string | null;
+  target_path?: string | null;
+  diff?: string | null;
+  reason?: string | null;
+  truncated?: boolean;
+  redacted?: boolean;
+  [key: string]: unknown;
+};
 export type TerminalCommandStatus =
   | "submitted"
   | "confirmation_required"
@@ -128,4 +137,6 @@ export type ActivityDraft = {
   actions_taken: string;
   commands_summary: string;
   validation_result: string;
+  description: string;
+  fix_score: number | null;
 };
