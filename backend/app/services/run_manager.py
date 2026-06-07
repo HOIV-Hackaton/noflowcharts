@@ -446,7 +446,7 @@ class RunManager:
             for command in self.repo.list_terminal_commands(run.id)
             if self._terminal_result_is_validation_evidence(command)
         ]
-        if not validation_results and not terminal_validation_results:
+        if run.validation_status != ValidationStatus.EVIDENCE_COLLECTED.value and not validation_results and not terminal_validation_results:
             raise ValidationError("Validation requires at least one successful validation command result as evidence")
         self.repo.set_validation_status(run, ValidationStatus.HUMAN_CONFIRMED, confirmed=True)
         self.repo.update_run_status(run, RunStatus.READY_FOR_ACTIVITY)
