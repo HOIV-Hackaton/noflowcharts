@@ -4,7 +4,7 @@ import pytest
 from sqlmodel import Session
 
 from app.agent.planner import CommandProposal
-from app.core.errors import ValidationError
+from app.core.errors import AgentError, ValidationError
 from app.db.session import engine, init_db
 from app.repositories.runs import RunRepository
 from app.schemas.phoenix import CustomerSystem, SystemInfo, Ticket, TicketStatus
@@ -69,6 +69,18 @@ class FakePlanner:
     def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
         self.observations = observations
         return CommandProposal(intent="Check service status", command=self.command, expected_signal="Service state is visible", phase=self.phase)
+
+
+class FailingFollowupPlanner(FakePlanner):
+    def __init__(self):
+        super().__init__(command="systemctl restart nginx", phase="fix")
+        self.calls = 0
+
+    def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
+        self.calls += 1
+        if self.calls == 1:
+            return super().propose_next_command(ticket, customer_system, observations, safety_policy, related_ticket, run_id)
+        raise AgentError("Azure OpenAI returned an empty response")
 
 
 class FakeWritePreviewer:
@@ -287,6 +299,34 @@ def test_agent_proposal_reports_current_phase():
         with Session(engine) as session:
             audit_events = RunRepository(session).list_audit_events(run_id)
         assert any(event.type == "agent_phase_selected" and event.payload["phase"] == "fix" for event in audit_events)
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_agent_followup_failure_is_reported_without_killing_reader():
+    async def run_test():
+        planner = FailingFollowupPlanner()
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=planner)
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        proposal = await wait_for(queue, "agent_proposal")
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": proposal["command_id"]})
+
+        await wait_for(queue, "command_completed")
+        continuing = await wait_for(queue, "status")
+        error = await wait_for(queue, "error")
+
+        assert continuing["message"] == "Agent is preparing the next action..."
+        assert "empty response" in error["message"]
+        assert runtime.reader_task is not None
+        assert not runtime.reader_task.done()
+        with Session(engine) as session:
+            audit_events = RunRepository(session).list_audit_events(run_id)
+        assert any(event.type == "agent_proposal_failed" and "empty response" in event.payload["error"] for event in audit_events)
         await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())

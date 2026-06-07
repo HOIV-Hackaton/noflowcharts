@@ -1562,35 +1562,16 @@ function isTicketTab(tab: string | null): tab is TabId {
 }
 
 function readAgentPhase(value: unknown): AgentPhase | null {
-  if (typeof value !== "string") {
-    return null;
+  if (
+    value === "diagnosis" ||
+    value === "execution" ||
+    value === "verification" ||
+    value === "final_analysis"
+  ) {
+    return value;
   }
 
-  const normalized = value.trim().toLowerCase().replace(/[-\s]+/g, "_");
-
-  switch (normalized) {
-    case "diagnose":
-    case "diagnosis":
-      return "diagnosis";
-    case "fix":
-    case "fixing":
-    case "execution":
-    case "execute":
-    case "recover":
-    case "recovery":
-      return "execution";
-    case "validate":
-    case "validation":
-    case "verification":
-    case "verify":
-      return "verification";
-    case "final":
-    case "final_analysis":
-    case "final-analysis":
-      return "final_analysis";
-    default:
-      return null;
-  }
+  return null;
 }
 
 function formatAgentPhaseLabel(phase: AgentPhase) {
