@@ -198,6 +198,22 @@ def test_manual_read_only_command_executes_and_records_exit_code():
     asyncio.run(run_test())
 
 
+def test_completion_announcement_writes_ticket_complete_banner_to_terminal():
+    async def run_test():
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer())
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.announce_completion(run_id, "Activity submitted to Phoenix and ticket status set to DONE.", "TICKET COMPLETE")
+        output = await wait_for_terminal_output_containing(queue, "TICKET COMPLETE")
+
+        assert "set to DONE" in output["data"]
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
 def test_manual_systemctl_command_is_made_non_interactive_before_execution():
     async def run_test():
         manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer())

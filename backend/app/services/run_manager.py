@@ -540,6 +540,7 @@ class RunManager:
         }
         self.audit.record("activity_submitted", completion_payload, run.id)
         self._event(run.id, "activity_submitted", completion_payload)
+        terminal_manager.announce_completion_sync(run.id, ACTIVITY_SUBMITTED_MESSAGE, TICKET_COMPLETED_ASCII)
         self._create_completed_ticket_memory(run, draft)
         return created
 
