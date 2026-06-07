@@ -64,6 +64,7 @@ export function TicketTerminal({
   const socketRef = useRef<WebSocket | null>(null);
   const terminalHadErrorRef = useRef(false);
   const pendingConfirmationRef = useRef<PendingConfirmation | null>(null);
+  const suppressRawInputUntilRef = useRef(0);
   const lastFitSizeRef = useRef({ height: 0, width: 0 });
   const resizeFrameRef = useRef<number | null>(null);
   const [connectionState, setConnectionState] = useState<"disconnected" | "connecting" | "connected">("disconnected");
@@ -92,6 +93,7 @@ export function TicketTerminal({
     }
 
     setPendingCommand(null);
+    suppressRawInputUntilRef.current = Date.now() + 300;
     socket.send(
       JSON.stringify({
         command_id: pending.commandId,
@@ -110,6 +112,7 @@ export function TicketTerminal({
     }
 
     setPendingCommand(null);
+    suppressRawInputUntilRef.current = Date.now() + 300;
     socket.send(
       JSON.stringify({
         command_id: pending.commandId,
@@ -153,6 +156,7 @@ export function TicketTerminal({
 
     const message = "Technician requested a retry. Do not repeat the same proposal unless it is clearly justified; propose the safest next step.";
     setPendingCommand(null);
+    suppressRawInputUntilRef.current = Date.now() + 300;
     socket.send(JSON.stringify({ command_id: pending.commandId, reason: "Retry requested from terminal.", type: "agent_reject" }));
     socket.send(JSON.stringify({ message, type: "agent_message" }));
     terminal.writeln("\r\n\x1b[90mRetry requested. Waiting for a new agent proposal.\x1b[0m");
@@ -173,6 +177,7 @@ export function TicketTerminal({
     }
 
     setPendingCommand(null);
+    suppressRawInputUntilRef.current = Date.now() + 300;
     socket.send(JSON.stringify({ command: nextCommand, command_id: pending.commandId, type: "agent_edit" }));
     terminal.writeln("\r\n\x1b[33mEdited command sent for safety review.\x1b[0m");
   }
@@ -208,6 +213,7 @@ export function TicketTerminal({
     }
 
     setPendingCommand(null);
+    suppressRawInputUntilRef.current = Date.now() + 300;
     socket.send(JSON.stringify({ command_id: pending.commandId, reason: message, type: "agent_reject" }));
     socket.send(JSON.stringify({ message, type: "agent_message" }));
     terminal.writeln("\r\n\x1b[90mComment sent. Current proposal rejected with guidance.\x1b[0m");
@@ -350,6 +356,10 @@ export function TicketTerminal({
       const pendingConfirmation = pendingConfirmationRef.current;
       if (pendingConfirmation) {
         handlePendingTerminalInput(data);
+        return;
+      }
+
+      if (Date.now() < suppressRawInputUntilRef.current) {
         return;
       }
 
