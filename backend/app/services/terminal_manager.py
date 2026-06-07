@@ -546,8 +546,17 @@ def _make_command_non_interactive(command: str) -> str:
 
 def _agent_phase(phase: str | None) -> str:
     normalized = (phase or "").strip().lower()
-    if normalized in {"diagnose", "fix", "validate", "recover"}:
-        return normalized
+    aliases = {
+        "diagnosis": "diagnose",
+        "diagnose": "diagnose",
+        "execution": "fix",
+        "fix": "fix",
+        "verification": "validate",
+        "validate": "validate",
+        "recover": "recover",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
     return "diagnose"
 
 

@@ -304,6 +304,32 @@ def test_agent_proposal_reports_current_phase():
     asyncio.run(run_test())
 
 
+@pytest.mark.parametrize(
+    ("planner_phase", "expected_phase"),
+    [
+        ("diagnosis", "diagnose"),
+        ("execution", "fix"),
+        ("verification", "validate"),
+    ],
+)
+def test_agent_proposal_normalizes_phase_aliases(planner_phase, expected_phase):
+    async def run_test():
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=FakePlanner(phase=planner_phase))
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        phase = await wait_for(queue, "agent_phase_selected")
+        proposal = await wait_for(queue, "agent_proposal")
+
+        assert phase["phase"] == expected_phase
+        assert proposal["phase"] == expected_phase
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
 def test_agent_followup_failure_is_reported_without_killing_reader():
     async def run_test():
         planner = FailingFollowupPlanner()
