@@ -343,7 +343,18 @@ class TerminalManager:
                 risk_reason=safety.reason,
                 write_preview=write_preview,
             )
-        self._audit(runtime.run_id, "agent_command_proposed", {"command_id": terminal_command.id, "command": command, "original_command": proposal.command, "intent": proposal.intent, "phase": phase})
+        self._audit(
+            runtime.run_id,
+            "agent_command_proposed",
+            {
+                "command_id": terminal_command.id,
+                "command": command,
+                "original_command": proposal.command,
+                "intent": proposal.intent,
+                "phase": phase,
+                "write_preview": write_preview,
+            },
+        )
         auto_run_read_only_diagnosis = (
             safety.decision == "allow"
             and safety.classification == CommandClassification.READ_ONLY

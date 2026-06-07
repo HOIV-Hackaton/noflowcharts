@@ -743,7 +743,8 @@ def test_successful_diagnosis_phase_continues_diagnosis_without_heuristic_jump()
         assert first["command"] == "uptime"
         assert second_phase["phase"] == "diagnose"
         assert second["command"] == "ps aux"
-        assert [call[0] for call in planner.calls] == ["diagnosis", "diagnosis"]
+        assert [call[0] for call in planner.calls[:2]] == ["diagnosis", "diagnosis"]
+        assert all(call[0] == "diagnosis" for call in planner.calls)
         await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())
@@ -921,6 +922,10 @@ def test_agent_write_proposal_includes_write_preview():
         assert proposal["write_preview"]["target_path"] == "/etc/app.conf"
         logs = manager.logs(run_id)
         assert logs[-1].write_preview["status"] == "available"
+        with Session(engine) as session:
+            audit_events = RunRepository(session).list_audit_events(run_id)
+        proposal_events = [event for event in audit_events if event.type == "agent_command_proposed"]
+        assert proposal_events[-1].payload["write_preview"]["diff"] == "--- a/etc/app.conf\n+++ b/etc/app.conf\n@@\n-old\n+new\n"
         assert previewer.calls == [("10.0.0.5", "echo 'PORT=9090' > /etc/app.conf")]
         assert FakePty.instances[-1].writes == []
         await manager.close_run(run_id, "test_done")

@@ -32,6 +32,21 @@ def test_sed_in_place_preview_generates_redacted_unified_diff():
     assert runner.commands == ["cat -- /etc/app.conf"]
 
 
+def test_sed_in_place_preview_supports_common_sed_basic_regex():
+    runner = FakePreviewRunner("127.0.0.2 partner-api.internal\n127.0.0.1 localhost\n")
+    preview = WritePreviewer(runner).preview(
+        system(),
+        r"sudo -n sed -i 's/^127\.0\.0\.2[[:space:]]\+partner-api\.internal$/127.0.0.1 partner-api.internal/' /etc/hosts",
+    )
+
+    assert preview["status"] == "available"
+    assert preview["command_kind"] == "sed_i"
+    assert preview["target_path"] == "/etc/hosts"
+    assert "-127.0.0.2 partner-api.internal" in preview["diff"]
+    assert "+127.0.0.1 partner-api.internal" in preview["diff"]
+    assert runner.commands == ["sudo -n cat -- /etc/hosts"]
+
+
 def test_echo_redirect_and_append_are_previewed():
     replace = WritePreviewer(FakePreviewRunner("old\n")).preview(system(), "echo 'new value' > /tmp/example.conf")
     append = WritePreviewer(FakePreviewRunner("old\n")).preview(system(), "echo added >> /tmp/example.conf")

@@ -186,6 +186,7 @@ class ActivityDraftRead(BaseModel):
     commands_summary: str | None = None
     validation_result: str | None = None
     description: str | None = None
+    fix_score: int | None = Field(default=None, ge=0, le=3)
     review_status: ActivityReviewStatus
     created_at: datetime
     updated_at: datetime
@@ -206,6 +207,7 @@ class ActivityDraftUpdate(BaseModel):
     commands_summary: str | None = None
     validation_result: str | None = None
     description: str | None = None
+    fix_score: int | None = Field(default=None, ge=0, le=3)
 
 
 class ActivityReviewRequest(BaseModel):

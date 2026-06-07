@@ -502,6 +502,9 @@ def test_activity_draft_review_submission_sets_ticket_done_and_returns_completio
         assert "set to DONE" in completion_event[2]["message"]
         assert completion_event[2]["status"] == TicketStatus.DONE.value
         assert phoenix.activities[0].root_cause == "nginx was inactive, so the API proxy was unavailable."
+        assert phoenix.activities[0].description.endswith(
+            "Fix score: 3/3 - Main test green and underlying condition cleanly fixed, no fragile workaround."
+        )
         assert phoenix.status_updates[-1] == (7001, TicketStatus.DONE)
         assert state.run.status == RunStatus.SUBMITTED
         assert state.activity_draft.review_status == ActivityReviewStatus.SUBMITTED

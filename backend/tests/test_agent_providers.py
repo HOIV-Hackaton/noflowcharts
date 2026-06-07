@@ -325,6 +325,7 @@ def test_generated_activity_draft_coerces_list_text_fields():
     )
 
     assert draft.actions_taken == "Checked status.\nRestarted service.\nValidated endpoint."
+    assert draft.fix_score == 3
 
 
 def test_activity_generator_prompt_requires_detailed_grounded_technician_log():
@@ -348,7 +349,9 @@ def test_activity_generator_prompt_requires_detailed_grounded_technician_log():
     prompt = provider.messages[0]["content"]
 
     assert draft.summary == "Restored the customer-facing status API."
+    assert draft.fix_score == 3
     assert "detailed technician log" in prompt
+    assert "fix_score must be an integer from 0 to 3" in prompt
     assert "Do not assume facts" in prompt
     assert "technical root cause" in prompt
     assert "concrete proof" in prompt

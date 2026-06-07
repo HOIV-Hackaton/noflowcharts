@@ -53,6 +53,13 @@ ACTIVITY_SUBMITTED_MESSAGE = (
     "Activity submitted to Phoenix and ticket status set to DONE."
 )
 
+FIX_SCORE_LABELS = {
+    0: "No real effect, or still broken.",
+    1: "Partial improvement or temporary workaround.",
+    2: "Customer benefit restored, but fragile or only partly addressing the cause.",
+    3: "Main test green and underlying condition cleanly fixed, no fragile workaround.",
+}
+
 
 class RunManager:
     def __init__(
@@ -404,8 +411,11 @@ class RunManager:
             validation={"status": run.validation_status, "confirmed": run.validation_confirmed, "events": validation_events},
             run_id=run.id,
         )
-        draft = self.repo.upsert_activity_draft(run, **generated.model_dump())
-        self.audit.record("activity_draft_generated", generated.model_dump(), run.id)
+        generated_fields = generated.model_dump()
+        if generated_fields.get("fix_score") is None:
+            generated_fields["fix_score"] = 3
+        draft = self.repo.upsert_activity_draft(run, **generated_fields)
+        self.audit.record("activity_draft_generated", generated_fields, run.id)
         self._event(run.id, "activity_draft_generated", {"draft_id": draft.id})
         self._status(run.id, "activity_ready", "Activity draft is ready for technician review.", phase="final_analysis", busy=False)
         return ActivityDraftRead.model_validate(draft, from_attributes=True)
@@ -450,7 +460,7 @@ class RunManager:
             ticket_id=run.ticket_id,
             start_datetime=run.created_at,
             end_datetime=utc_now(),
-            description=draft.description,
+            description=_phoenix_activity_description(draft),
             summary=draft.summary,
             root_cause=draft.root_cause,
             actions_taken=draft.actions_taken,
@@ -728,6 +738,10 @@ class RunManager:
         missing = [field for field in required_fields if not (getattr(draft, field) or "").strip()]
         if missing:
             raise ValidationError(f"Activity draft is missing required field(s): {', '.join(missing)}")
+        if draft.fix_score is None:
+            raise ValidationError("Activity draft is missing required field(s): fix_score")
+        if draft.fix_score not in FIX_SCORE_LABELS:
+            raise ValidationError("Activity draft fix_score must be an integer from 0 to 3")
 
     def _prepare_related_ticket(self, ticket) -> RelatedTicketContext | None:
         try:
@@ -848,3 +862,20 @@ class RunManager:
         if phase is not None:
             payload["phase"] = phase
         self._event(run_id, "run_status", payload)
+
+
+def _phoenix_activity_description(draft: ActivityDraft) -> str:
+    description = (draft.description or "").strip()
+    if draft.fix_score is None:
+        return description
+
+    label = FIX_SCORE_LABELS.get(draft.fix_score)
+    if label is None:
+        return description
+
+    score_line = f"Fix score: {draft.fix_score}/3 - {label}"
+    if not description:
+        return score_line
+    if "fix score:" in description.lower():
+        return description
+    return f"{description}\n\n{score_line}"

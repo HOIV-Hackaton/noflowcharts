@@ -203,7 +203,7 @@ class RunRepository:
         statement = select(AuditEvent).where(AuditEvent.run_id == run_id).order_by(AuditEvent.id)
         return list(self.session.exec(statement))
 
-    def upsert_activity_draft(self, run: Run, **fields: str | None) -> ActivityDraft:
+    def upsert_activity_draft(self, run: Run, **fields: Any) -> ActivityDraft:
         statement = select(ActivityDraft).where(ActivityDraft.run_id == run.id)
         draft = self.session.exec(statement).first()
         if draft is None:

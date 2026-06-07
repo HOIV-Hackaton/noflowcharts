@@ -81,6 +81,7 @@ class ActivityDraft(SQLModel, table=True):
     commands_summary: str | None = None
     validation_result: str | None = None
     description: str | None = None
+    fix_score: int | None = None
     review_status: str = Field(default=ActivityReviewStatus.DRAFT.value)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

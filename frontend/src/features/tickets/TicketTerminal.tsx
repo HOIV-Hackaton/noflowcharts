@@ -42,6 +42,10 @@ type PendingConfirmation = {
 };
 
 type SetPendingCommand = (pending: PendingConfirmation | null) => void;
+type TerminalWaitingState = {
+  message: string;
+  timer: number;
+};
 
 export function TicketTerminal({
   autodiagnosisRunning = false,
@@ -73,6 +77,7 @@ export function TicketTerminal({
   const suppressRawInputUntilRef = useRef(0);
   const lastFitSizeRef = useRef({ height: 0, width: 0 });
   const resizeFrameRef = useRef<number | null>(null);
+  const terminalWaitingRef = useRef<TerminalWaitingState | null>(null);
   const [connectionState, setConnectionState] = useState<"disconnected" | "connecting" | "connected">("disconnected");
   const [agentStarted, setAgentStarted] = useState(false);
   const [terminalHasContent, setTerminalHasContent] = useState(false);
@@ -382,6 +387,7 @@ export function TicketTerminal({
         window.cancelAnimationFrame(resizeFrameRef.current);
       }
       socketRef.current?.close();
+      finishTerminalWaiting({ keepLine: false });
       resizeObserver.disconnect();
       inputDisposable.dispose();
       terminal.dispose();
@@ -404,7 +410,7 @@ export function TicketTerminal({
     setConnectionState("connecting");
     setTerminalHasContent(true);
     terminal.clear();
-    terminal.writeln("\r\nOpening backend terminal bridge...");
+    startTerminalWaiting("Opening backend terminal bridge...");
     const socket = new WebSocket(runTerminalWebSocketUrl(runId, terminal.cols, terminal.rows));
     socketRef.current = socket;
 
@@ -419,12 +425,14 @@ export function TicketTerminal({
       }
 
       if (message.type === "output" || message.type === "terminal_output") {
+        finishTerminalWaiting();
         setTerminalHasContent(true);
         terminal.write(message.data);
         return;
       }
 
       if (message.type === "error") {
+        finishTerminalWaiting();
         terminalHadErrorRef.current = true;
         setTerminalHasContent(true);
         terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
@@ -461,10 +469,14 @@ export function TicketTerminal({
         setAgentStarted(false);
       }
 
-      handleTerminalStatusMessage(terminal, message, setPendingCommand);
+      handleTerminalStatusMessage(terminal, message, setPendingCommand, {
+        finish: finishTerminalWaiting,
+        start: startTerminalWaiting,
+      });
     };
 
     socket.onerror = () => {
+      finishTerminalWaiting();
       terminalHadErrorRef.current = true;
       terminal.writeln("\r\n\x1b[31mTerminal websocket failed.\x1b[0m");
     };
@@ -475,6 +487,7 @@ export function TicketTerminal({
       setPendingCommand(null);
       setAgentStarted(false);
       setConnectionState("disconnected");
+      finishTerminalWaiting({ keepLine: !terminalHadErrorRef.current });
       if (terminalHadErrorRef.current) {
         return;
       }
@@ -502,7 +515,7 @@ export function TicketTerminal({
 
     socket.send(JSON.stringify({ type: agentStarted ? "agent_next" : "agent_start" }));
     setTerminalHasContent(true);
-    terminal.writeln(`\r\n\x1b[90m${agentStarted ? "Requesting next agent action..." : "Starting agent..."}\x1b[0m`);
+    startTerminalWaiting(agentStarted ? "Requesting next agent action..." : "Starting agent...");
     setAgentStarted(true);
   };
 
@@ -533,9 +546,60 @@ export function TicketTerminal({
 
     socket.send(JSON.stringify({ type: "agent_cancel" }));
     setTerminalHasContent(true);
-    terminal.writeln("\r\n\x1b[90mCancelling agent mode...\x1b[0m");
+    finishTerminalWaiting();
+    startTerminalWaiting("Cancelling agent mode...");
     setAgentStarted(false);
   };
+
+  function startTerminalWaiting(message: string) {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    const currentWaiting = terminalWaitingRef.current;
+    if (currentWaiting?.message === message) {
+      return;
+    }
+
+    finishTerminalWaiting({ keepLine: false });
+
+    if (prefersReducedTerminalMotion()) {
+      terminal.writeln(`\r\n\x1b[90m${message}\x1b[0m`);
+      return;
+    }
+
+    let frame = 0;
+    const render = () => {
+      terminal.write(`\r\x1b[2K${formatTerminalWaitingFrame(message, frame)}`);
+      frame += 1;
+    };
+
+    terminal.write("\r\n");
+    render();
+    const timer = window.setInterval(render, 360);
+    terminalWaitingRef.current = { message, timer };
+  }
+
+  function finishTerminalWaiting(options: { keepLine?: boolean } = {}) {
+    const terminal = terminalRef.current;
+    const waiting = terminalWaitingRef.current;
+    if (!waiting) {
+      return;
+    }
+
+    window.clearInterval(waiting.timer);
+    terminalWaitingRef.current = null;
+
+    if (!terminal) {
+      return;
+    }
+
+    terminal.write("\r\x1b[2K");
+    if (options.keepLine ?? true) {
+      terminal.writeln(`\x1b[90m${waiting.message}\x1b[0m`);
+    }
+  }
 
   const scheduleFit = () => {
     if (resizeFrameRef.current !== null) {
@@ -603,7 +667,7 @@ export function TicketTerminal({
         )}
         {connectionState === "connected" ? (
           <Button onClick={requestAgentAction} type="button" variant="outline">
-            {agentStarted ? "Next agent action" : "Start automated diagnosis"}
+            {agentStarted ? "Next agent action" : "Start agent"}
           </Button>
         ) : null}
         {onStartAutodiagnosis && (canStartAutodiagnosis || autodiagnosisRunning) ? (
@@ -708,11 +772,75 @@ function isTerminalOpenError(message: string) {
   );
 }
 
+function prefersReducedTerminalMotion() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+}
+
+function formatTerminalWaitingFrame(message: string, frame: number) {
+  const base = message.replace(/[.\s]+$/, "");
+  const characters = Array.from(base);
+  const highlightableIndexes = characters
+    .map((character, index) => (/\s/.test(character) ? -1 : index))
+    .filter((index) => index >= 0);
+  const activePosition = highlightableIndexes.length ? frame % highlightableIndexes.length : -1;
+  const scannedText = characters
+    .map((character, index) => {
+      const characterPosition = highlightableIndexes.indexOf(index);
+      if (characterPosition < 0 || activePosition < 0) {
+        return character;
+      }
+
+      const distance = Math.min(
+        Math.abs(characterPosition - activePosition),
+        highlightableIndexes.length - Math.abs(characterPosition - activePosition),
+      );
+
+      if (distance === 0) {
+        return `\x1b[97m\x1b[1m${character}\x1b[38;5;245m`;
+      }
+      if (distance === 1) {
+        return `\x1b[38;5;252m${character}\x1b[38;5;245m`;
+      }
+      if (distance === 2) {
+        return `\x1b[38;5;248m${character}\x1b[38;5;245m`;
+      }
+      return character;
+    })
+    .join("");
+  const dots = ".".repeat((frame % 3) + 1);
+  return `\x1b[38;5;245m${scannedText}\x1b[0m\x1b[90m${dots}\x1b[0m`;
+}
+
+function isAnimatedTerminalStatus(message: string) {
+  const normalized = message.toLowerCase();
+  return [
+    "cancelling",
+    "connecting",
+    "generating",
+    "loading",
+    "opening",
+    "preparing",
+    "requesting",
+    "running",
+    "starting",
+    "thinking",
+    "waiting",
+  ].some((term) => normalized.includes(term));
+}
+
 function handleTerminalStatusMessage(
   terminal: Terminal,
   message: TerminalMessage,
   setPendingCommand: SetPendingCommand,
+  waiting: {
+    finish: (options?: { keepLine?: boolean }) => void;
+    start: (message: string) => void;
+  },
 ) {
+  if (message.type !== "status" || !isAnimatedTerminalStatus(message.message)) {
+    waiting.finish();
+  }
+
   switch (message.type) {
     case "agent_cancelled":
       terminal.writeln("\r\n\x1b[90mAgent mode cancelled.\x1b[0m");
@@ -788,7 +916,7 @@ function handleTerminalStatusMessage(
       }
       break;
     case "command_running":
-      terminal.writeln("\r\n\x1b[36mCommand running...\x1b[0m");
+      waiting.start("Command running...");
       break;
     case "confirmation_required":
       setPendingCommand({
@@ -820,7 +948,11 @@ function handleTerminalStatusMessage(
       break;
     }
     case "status":
-      terminal.writeln(`\r\n\x1b[90m${message.message}\x1b[0m`);
+      if (isAnimatedTerminalStatus(message.message)) {
+        waiting.start(message.message);
+      } else {
+        terminal.writeln(`\r\n\x1b[90m${message.message}\x1b[0m`);
+      }
       break;
     case "terminal_closed":
       setPendingCommand(null);

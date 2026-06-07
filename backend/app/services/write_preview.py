@@ -21,6 +21,17 @@ SECRET_TARGET_PATTERNS = [
     re.compile(r"(^|/)[^\s]+\.(pem|key)$"),
 ]
 
+SED_POSIX_CLASS_REPLACEMENTS = {
+    "[[:alnum:]]": r"[A-Za-z0-9]",
+    "[[:alpha:]]": r"[A-Za-z]",
+    "[[:blank:]]": r"[ \t]",
+    "[[:digit:]]": r"\d",
+    "[[:lower:]]": r"[a-z]",
+    "[[:space:]]": r"\s",
+    "[[:upper:]]": r"[A-Z]",
+    "[[:xdigit:]]": r"[A-Fa-f0-9]",
+}
+
 
 class PreviewSshRunner(Protocol):
     def run(self, system: SystemInfo, command: str) -> SshCommandResult: ...
@@ -251,11 +262,27 @@ def _apply_sed_substitute(before: str, expression: str) -> str:
     if len(parts) != 3:
         raise ValueError("Could not safely parse sed substitute expression")
     pattern, replacement, flags = parts
+    pattern = _sed_basic_regex_to_python(pattern)
+    replacement = _sed_replacement_to_python(replacement, delimiter)
     count = 0 if "g" in flags else 1
     try:
         return re.sub(pattern, replacement, before, count=count, flags=re.MULTILINE)
     except re.error as exc:
         raise ValueError(f"Could not simulate sed expression: {exc}") from exc
+
+
+def _sed_basic_regex_to_python(pattern: str) -> str:
+    for sed_class, python_class in SED_POSIX_CLASS_REPLACEMENTS.items():
+        pattern = pattern.replace(sed_class, python_class)
+
+    pattern = re.sub(r"\\([+?])", r"\1", pattern)
+    pattern = re.sub(r"\\\{([^{}]+)\\\}", r"{\1}", pattern)
+    pattern = pattern.replace(r"\(", "(").replace(r"\)", ")")
+    return pattern
+
+
+def _sed_replacement_to_python(replacement: str, delimiter: str) -> str:
+    return replacement.replace(f"\\{delimiter}", delimiter)
 
 
 def _unified_diff(before: str, after: str, path: str) -> str:

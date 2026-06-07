@@ -15,12 +15,21 @@ class GeneratedActivityDraft(BaseModel):
     commands_summary: str = Field(min_length=1)
     validation_result: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    fix_score: int = Field(default=3, ge=0, le=3)
 
     @field_validator("summary", "root_cause", "actions_taken", "commands_summary", "validation_result", "description", mode="before")
     @classmethod
     def coerce_text_field(cls, value: Any) -> Any:
         if isinstance(value, list):
             return "\n".join(str(item) for item in value if item is not None)
+        return value
+
+    @field_validator("fix_score", mode="before")
+    @classmethod
+    def coerce_fix_score(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            match = next((character for character in value if character in {"0", "1", "2", "3"}), None)
+            return int(match) if match is not None else value
         return value
 
 
@@ -38,9 +47,10 @@ Rules:
 - Preserve safety: do not include secrets, tokens, private keys, passwords, raw environment contents, or unnecessary raw log excerpts.
 - Be specific about persistence when evidence exists, such as service restart checks, enabled-state checks, config syntax checks, or reboot-safe configuration changes.
 - Keep the wording professional and technical. Prefer clear paragraphs or semicolon-separated steps over vague phrases.
-- Every JSON value must be a string. Do not return arrays, objects, markdown lists, or null values. In particular, actions_taken must be one string, not a JSON array.
+- Every JSON value except fix_score must be a string. Do not return arrays, objects, markdown lists, or null values. In particular, actions_taken must be one string, not a JSON array.
+- fix_score must be an integer from 0 to 3 using this rubric: 3 = main test green and underlying condition cleanly fixed with no fragile workaround; 2 = customer benefit restored but fragile or only partly addressing the cause; 1 = partial improvement or temporary workaround; 0 = no real effect or still broken.
 
-Return JSON only with keys: summary, root_cause, actions_taken, commands_summary, validation_result, description.
+Return JSON only with keys: summary, root_cause, actions_taken, commands_summary, validation_result, description, fix_score.
 
 Field guidance:
 - summary: one sentence describing the restored customer-facing service or capability.
@@ -49,6 +59,7 @@ Field guidance:
 - commands_summary: concise sanitized summary of command classes, not raw output.
 - validation_result: concrete evidence that the customer benefit is restored and, when shown, persists.
 - description: polished ERP note combining the essential root cause, actions, and result without secrets.
+- fix_score: integer 0, 1, 2, or 3 according to the rubric above.
 """
 
 

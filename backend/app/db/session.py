@@ -74,6 +74,10 @@ def _ensure_runtime_columns(db_engine: Engine) -> None:
             columns = {column["name"] for column in inspector.get_columns("terminalcommand")}
             if "write_preview" not in columns:
                 connection.execute(text("ALTER TABLE terminalcommand ADD COLUMN write_preview JSON"))
+        if "activitydraft" in tables:
+            columns = {column["name"] for column in inspector.get_columns("activitydraft")}
+            if "fix_score" not in columns:
+                connection.execute(text("ALTER TABLE activitydraft ADD COLUMN fix_score INTEGER"))
 
 
 def get_session() -> Generator[Session, None, None]:
