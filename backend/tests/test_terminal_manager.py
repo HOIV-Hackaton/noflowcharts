@@ -61,13 +61,14 @@ class ConfirmingReviewer:
 
 
 class FakePlanner:
-    def __init__(self, command="systemctl status nginx"):
+    def __init__(self, command="systemctl status nginx", phase="diagnose"):
         self.command = command
+        self.phase = phase
         self.observations = []
 
     def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
         self.observations = observations
-        return CommandProposal(intent="Check service status", command=self.command, expected_signal="Service state is visible")
+        return CommandProposal(intent="Check service status", command=self.command, expected_signal="Service state is visible", phase=self.phase)
 
 
 def _marker_id(data: str) -> int | None:
@@ -248,6 +249,27 @@ def test_agent_reject_records_without_writing_to_pty():
         logs = manager.logs(run_id)
         assert logs[-1].status == TerminalCommandStatus.REJECTED.value
         assert "not the right service" in logs[-1].risk_reason
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_agent_proposal_reports_current_phase():
+    async def run_test():
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=FakePlanner(phase="fix"))
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        phase = await wait_for(queue, "agent_phase_selected")
+        proposal = await wait_for(queue, "agent_proposal")
+
+        assert phase["phase"] == "fix"
+        assert proposal["phase"] == "fix"
+        with Session(engine) as session:
+            audit_events = RunRepository(session).list_audit_events(run_id)
+        assert any(event.type == "agent_phase_selected" and event.payload["phase"] == "fix" for event in audit_events)
         await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())

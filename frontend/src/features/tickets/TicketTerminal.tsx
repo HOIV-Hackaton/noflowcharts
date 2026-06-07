@@ -9,7 +9,8 @@ import { runTerminalWebSocketUrl } from "../../services/backendApi";
 type TerminalMessage =
   | { type: "agent_cancelled" }
   | { type: "agent_guidance_recorded" }
-  | { type: "agent_proposal"; command_id: number; command: string; classification?: string; intent?: string; reason?: string }
+  | { type: "agent_phase_selected"; phase: string }
+  | { type: "agent_proposal"; command_id: number; command: string; classification?: string; intent?: string; phase?: string | null; reason?: string }
   | { type: "agent_waiting_for_guidance"; command_id?: number }
   | { type: "command_blocked"; command_id?: number; reason?: string }
   | { type: "command_cancelled"; command_id?: number }
@@ -380,6 +381,10 @@ export function TicketTerminal({
         setAgentStarted(true);
       }
 
+      if (message.type === "agent_phase_selected") {
+        setAgentStarted(true);
+      }
+
       if (message.type === "agent_cancelled") {
         setAgentStarted(false);
       }
@@ -552,6 +557,7 @@ function parseTerminalMessage(value: string): TerminalMessage | null {
     if (
       message.type === "agent_cancelled" ||
       message.type === "agent_guidance_recorded" ||
+      message.type === "agent_phase_selected" ||
       message.type === "agent_proposal" ||
       message.type === "agent_waiting_for_guidance" ||
       message.type === "command_blocked" ||
@@ -587,6 +593,9 @@ function handleTerminalStatusMessage(
     case "agent_guidance_recorded":
       terminal.writeln("\r\n\x1b[90mAgent guidance recorded.\x1b[0m");
       break;
+    case "agent_phase_selected":
+      terminal.writeln(`\r\n\x1b[35mAgent phase: ${formatAgentPhase(message.phase)}\x1b[0m`);
+      break;
     case "agent_proposal":
       setPendingCommand({
         classification: message.classification,
@@ -599,6 +608,9 @@ function handleTerminalStatusMessage(
         source: "agent",
       });
       terminal.writeln("\r\n\x1b[36m╭─ Agent proposed command\x1b[0m");
+      if (message.phase) {
+        terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mPhase\x1b[0m ${formatAgentPhase(message.phase)}`);
+      }
       terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mIntent\x1b[0m ${message.intent ?? "Review command in terminal."}`);
       terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mRisk\x1b[0m ${message.classification ?? "unclassified"}`);
       if (message.reason) {
@@ -662,4 +674,9 @@ function handleTerminalStatusMessage(
     case "terminal_output":
       break;
   }
+}
+
+function formatAgentPhase(phase: string) {
+  const normalized = phase.replace(/[_-]+/g, " ").trim();
+  return normalized ? normalized[0].toUpperCase() + normalized.slice(1) : "Unknown";
 }

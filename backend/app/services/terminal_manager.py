@@ -43,6 +43,7 @@ class TerminalRuntime:
     pending_confirmation: int | None = None
     pending_commands: dict[int, PendingCommand] = field(default_factory=dict)
     agent_active: bool = False
+    current_agent_phase: str | None = None
     waiting_after_rejection: bool = False
     last_activity: float = field(default_factory=monotonic_seconds)
     secret_input_mode: bool = False
@@ -63,6 +64,8 @@ class TerminalManager:
         runtime.subscribers.add(queue)
         runtime.last_activity = monotonic_seconds()
         await queue.put({"type": "terminal_opened", "session_id": runtime.db_session_id, "run_id": run_id})
+        if runtime.current_agent_phase:
+            await queue.put({"type": "agent_phase_selected", "phase": runtime.current_agent_phase})
         self._audit(run_id, "terminal_reconnected" if len(runtime.subscribers) > 1 else "terminal_connected", {"terminal_session_id": runtime.db_session_id})
         return runtime, queue
 
@@ -250,6 +253,10 @@ class TerminalManager:
             context.get("related_ticket"),
         )
         command = _make_command_non_interactive(proposal.command)
+        phase = _agent_phase(proposal.phase)
+        runtime.current_agent_phase = phase
+        self._audit(runtime.run_id, "agent_phase_selected", {"phase": phase})
+        await self._broadcast(runtime, {"type": "agent_phase_selected", "phase": phase})
         safety = self.safety_reviewer.review(command, context)
         status = TerminalCommandStatus.BLOCKED if safety.decision == "block" else TerminalCommandStatus.SUBMITTED
         with Session(engine) as session:
@@ -264,7 +271,7 @@ class TerminalManager:
                 classification=safety.classification,
                 risk_reason=safety.reason,
             )
-        self._audit(runtime.run_id, "agent_command_proposed", {"command_id": terminal_command.id, "command": command, "original_command": proposal.command, "intent": proposal.intent})
+        self._audit(runtime.run_id, "agent_command_proposed", {"command_id": terminal_command.id, "command": command, "original_command": proposal.command, "intent": proposal.intent, "phase": phase})
         if safety.decision == "block":
             self._audit(runtime.run_id, "agent_command_blocked", {"command_id": terminal_command.id, "reason": safety.reason})
             await self._broadcast(runtime, {"type": "command_blocked", "command_id": terminal_command.id, "reason": safety.reason})
@@ -276,6 +283,7 @@ class TerminalManager:
                     "command_id": terminal_command.id,
                     "command": command,
                     "intent": proposal.intent,
+                    "phase": phase,
                     "classification": safety.classification.value,
                     "reason": safety.reason,
                 },
@@ -338,7 +346,7 @@ class TerminalManager:
         if safety.decision == "block":
             await self._broadcast(runtime, {"type": "command_blocked", "command_id": command_id, "reason": safety.reason})
         else:
-            await self._broadcast(runtime, {"type": "agent_proposal", "command_id": command_id, "command": final_command, "classification": safety.classification.value, "reason": safety.reason})
+            await self._broadcast(runtime, {"type": "agent_proposal", "command_id": command_id, "command": final_command, "phase": runtime.current_agent_phase, "classification": safety.classification.value, "reason": safety.reason})
 
     async def _execute(self, runtime: TerminalRuntime, command_id: int, command: str, source: TerminalCommandSource) -> None:
         with Session(engine) as session:
@@ -495,6 +503,13 @@ def _make_command_non_interactive(command: str) -> str:
         if changed:
             return shlex.join(parts)
     return command
+
+
+def _agent_phase(phase: str | None) -> str:
+    normalized = (phase or "").strip().lower()
+    if normalized in {"diagnose", "fix", "validate", "recover"}:
+        return normalized
+    return "diagnose"
 
 
 def _main_command_index(parts: list[str]) -> int | None:
