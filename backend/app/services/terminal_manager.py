@@ -135,6 +135,21 @@ class TerminalManager:
         else:
             loop.create_task(self.close_run(run_id, reason))
 
+    async def announce_completion(self, run_id: str, message: str, ascii_art: str) -> None:
+        runtime = self._runtimes.get(run_id)
+        if runtime is None or runtime.closing:
+            return
+        data = f"\r\n\x1b[32m{ascii_art}\x1b[0m\r\n\x1b[32m{message}\x1b[0m\r\n"
+        await self._broadcast(runtime, {"type": "terminal_output", "data": data})
+
+    def announce_completion_sync(self, run_id: str, message: str, ascii_art: str) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.announce_completion(run_id, message, ascii_art))
+        else:
+            loop.create_task(self.announce_completion(run_id, message, ascii_art))
+
     def logs(self, run_id: str) -> list[TerminalCommand]:
         with Session(engine) as session:
             return RunRepository(session).list_terminal_commands(run_id)
