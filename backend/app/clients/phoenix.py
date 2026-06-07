@@ -11,6 +11,7 @@ from app.schemas.phoenix import Activity, ActivityCreate, Customer, CustomerSyst
 
 
 TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+PHOENIX_RESET_BASE_URL = "http://68.210.101.85:8000"
 
 
 class PhoenixClient:
@@ -70,18 +71,26 @@ class PhoenixClient:
         )
 
     def reset_me(self) -> SimpleMessage:
-        return self._validate(SimpleMessage, self._request("POST", "/api/v1/me/reset"), "reset response")
+        return self._validate(
+            SimpleMessage,
+            self._request("POST", "/api/v1/me/reset", request_base_url=PHOENIX_RESET_BASE_URL),
+            "reset response",
+        )
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+    def _request(self, method: str, path: str, *, request_base_url: str | None = None, **kwargs: Any) -> Any:
         try:
-            self.settings.require_phoenix()
+            if request_base_url is None:
+                self.settings.require_phoenix()
+            elif not self.settings.phoenix_api_token:
+                raise RuntimeError("Missing required Phoenix setting(s): PHOENIX_API_TOKEN")
         except RuntimeError as exc:
             raise ConfigurationError(str(exc)) from exc
 
-        assert self.settings.phoenix_api_base_url is not None
         assert self.settings.phoenix_api_token is not None
 
-        base_url = self.settings.phoenix_api_base_url.rstrip("/")
+        base_url = (request_base_url or self.settings.phoenix_api_base_url)
+        assert base_url is not None
+        base_url = base_url.rstrip("/")
         headers = {"Authorization": f"Bearer {self.settings.phoenix_api_token}"}
         last_error: PhoenixError | None = None
 

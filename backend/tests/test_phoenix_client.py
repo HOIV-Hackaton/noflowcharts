@@ -110,6 +110,9 @@ def test_reset_me_posts_to_v1_reset_endpoint():
 
     request = captured["request"]
     assert request.method == "POST"
+    assert request.url.scheme == "http"
+    assert request.url.host == "68.210.101.85"
+    assert request.url.port == 8000
     assert request.url.path == "/api/v1/me/reset"
     assert request.headers["Authorization"] == "Bearer secret-token"
 
