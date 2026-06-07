@@ -77,6 +77,7 @@ class RunRepository:
         intent: str | None = None,
         risk_reason: str | None = None,
         expected_signal: str | None = None,
+        write_preview: dict[str, Any] | None = None,
         typed_confirmation_status: ConfirmationStatus = ConfirmationStatus.NOT_REQUIRED,
     ) -> Action:
         action = Action(
@@ -86,6 +87,7 @@ class RunRepository:
             intent=intent,
             risk_reason=risk_reason,
             expected_signal=expected_signal,
+            write_preview=redact_payload(write_preview, self.secrets) if write_preview is not None else None,
             typed_confirmation_status=typed_confirmation_status.value,
         )
         self.session.add(action)
@@ -136,11 +138,13 @@ class RunRepository:
         risk_reason: str | None,
         typed_confirmation_status: ConfirmationStatus,
         intent: str | None = None,
+        write_preview: dict[str, Any] | None = None,
     ) -> Action:
         action.command = command
         action.edited_command = command
         action.command_classification = classification.value
         action.risk_reason = risk_reason
+        action.write_preview = redact_payload(write_preview, self.secrets) if write_preview is not None else None
         action.typed_confirmation_status = typed_confirmation_status.value
         action.status = ActionStatus.EDITED.value
         if intent is not None:
@@ -281,6 +285,7 @@ class RunRepository:
         status: TerminalCommandStatus = TerminalCommandStatus.SUBMITTED,
         classification: CommandClassification | None = None,
         risk_reason: str | None = None,
+        write_preview: dict[str, Any] | None = None,
     ) -> TerminalCommand:
         command = TerminalCommand(
             run_id=run_id,
@@ -291,6 +296,7 @@ class RunRepository:
             final_command=redact_payload(final_command, self.secrets) if final_command is not None else None,
             classification=classification.value if classification is not None else None,
             risk_reason=redact_payload(risk_reason, self.secrets) if risk_reason is not None else None,
+            write_preview=redact_payload(write_preview, self.secrets) if write_preview is not None else None,
         )
         self.session.add(command)
         self.session.commit()
@@ -309,6 +315,7 @@ class RunRepository:
         edited_to: str | None = None,
         classification: CommandClassification | None = None,
         risk_reason: str | None = None,
+        write_preview: dict[str, Any] | None = None,
         exit_code: int | None = None,
         output: str | None = None,
         started: bool = False,
@@ -326,6 +333,8 @@ class RunRepository:
             command.classification = classification.value
         if risk_reason is not None:
             command.risk_reason = redact_payload(risk_reason, self.secrets)
+        if write_preview is not None:
+            command.write_preview = redact_payload(write_preview, self.secrets)
         if exit_code is not None:
             command.exit_code = exit_code
         if output is not None:
