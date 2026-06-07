@@ -18,6 +18,48 @@ This repo gives you the structure and the Docker setup. **The implementation is 
 
 ---
 
+## Jury quick start
+
+Use this path for a clean demo or evaluation setup.
+
+```bash
+cp .env.example .env
+mkdir -p keysyes (provide the link)/no
+cp /path/to/provided-key.pem keys/customer-vm.pem
+```
+
+Open `.env` and fill in the values from Builder Base:
+
+- `PHOENIX_API_BASE_URL`
+- `PHOENIX_API_TOKEN`
+- `SSH_PRIVATE_KEY_PATH=/keys/customer-vm.pem`
+- `SSH_USERNAME=azureuser`
+- Azure OpenAI values, if the agent should propose commands and draft activities
+
+Then launch everything with Docker:
+
+```bash
+docker compose up --build
+```
+
+Open the technician workspace at http://localhost:5173.
+
+Demo click path:
+
+1. Click a ticket row in the ticket table.
+2. Click `Load ERP system info`.
+3. Click `Approve SSH access`, then confirm `Approve connection`.
+4. Click `Start automated diagnosis` and watch the `Agent phase` progress.
+5. Open `Actions` or `Open terminal` when a command needs review.
+6. For each proposed command, use `Approve`, edit/retry/reject as needed, or abort the run.
+7. Click `Confirm validation` once the customer-facing service is restored.
+8. Review the generated activity fields in `Activity`.
+9. Click `Submit activity` to write the documentation back to Phoenix and mark the ticket done.
+
+If you only want to check that the stack started, open http://localhost:8000/health.
+
+---
+
 ## 1. What's in here
 
 ```
