@@ -44,6 +44,7 @@ class Action(SQLModel, table=True):
     intent: str | None = None
     risk_reason: str | None = None
     expected_signal: str | None = None
+    write_preview: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
     typed_confirmation_status: str = Field(default=ConfirmationStatus.NOT_REQUIRED.value)
     edited_command: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -143,6 +144,7 @@ class TerminalCommand(SQLModel, table=True):
     edited_to: str | None = None
     classification: str | None = None
     risk_reason: str | None = None
+    write_preview: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
     exit_code: int | None = None
     output: str = ""
     started_at: datetime | None = None

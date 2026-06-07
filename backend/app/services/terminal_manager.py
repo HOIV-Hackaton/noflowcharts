@@ -19,6 +19,8 @@ from app.services.audit_log import AuditLog
 from app.services.events import persist_and_publish_ws_event_sync
 from app.services.terminal_safety import TerminalSafetyReviewer
 from app.services.terminal_session import SshPtySession, monotonic_seconds
+from app.services.ssh_runner import SshRunner
+from app.services.write_preview import WritePreviewer
 
 
 IDLE_TIMEOUT_SECONDS = 15 * 60
@@ -52,11 +54,18 @@ class TerminalRuntime:
 
 
 class TerminalManager:
-    def __init__(self, pty_factory=None, safety_reviewer: TerminalSafetyReviewer | None = None, planner: Planner | None = None):
+    def __init__(
+        self,
+        pty_factory=None,
+        safety_reviewer: TerminalSafetyReviewer | None = None,
+        planner: Planner | None = None,
+        write_previewer: WritePreviewer | None = None,
+    ):
         self._runtimes: dict[str, TerminalRuntime] = {}
         self.pty_factory = pty_factory or SshPtySession
         self.safety_reviewer = safety_reviewer or TerminalSafetyReviewer()
         self.planner = planner
+        self.write_previewer = write_previewer
 
     async def connect(self, run_id: str, cols: int = 120, rows: int = 32) -> tuple[TerminalRuntime, asyncio.Queue[dict[str, Any]]]:
         runtime = await self._runtime(run_id, cols, rows)
@@ -259,6 +268,7 @@ class TerminalManager:
         await self._broadcast(runtime, {"type": "agent_phase_selected", "phase": phase})
         safety = self.safety_reviewer.review(command, context)
         status = TerminalCommandStatus.BLOCKED if safety.decision == "block" else TerminalCommandStatus.SUBMITTED
+        write_preview = None if safety.decision == "block" else self._write_preview(runtime.run_id, command)
         with Session(engine) as session:
             repo = RunRepository(session)
             terminal_command = repo.add_terminal_command(
@@ -270,6 +280,7 @@ class TerminalManager:
                 status=status,
                 classification=safety.classification,
                 risk_reason=safety.reason,
+                write_preview=write_preview,
             )
         self._audit(runtime.run_id, "agent_command_proposed", {"command_id": terminal_command.id, "command": command, "original_command": proposal.command, "intent": proposal.intent, "phase": phase})
         if safety.decision == "block":
@@ -286,6 +297,7 @@ class TerminalManager:
                     "phase": phase,
                     "classification": safety.classification.value,
                     "reason": safety.reason,
+                    "write_preview": write_preview,
                 },
             )
 
@@ -328,6 +340,7 @@ class TerminalManager:
             raise ValidationError("Edited command must not be empty")
         final_command = _make_command_non_interactive(command)
         safety = self.safety_reviewer.review(final_command, self._context(runtime.run_id))
+        write_preview = None if safety.decision == "block" else self._write_preview(runtime.run_id, final_command)
         with Session(engine) as session:
             repo = RunRepository(session)
             terminal_command = repo.get_terminal_command(command_id)
@@ -341,12 +354,13 @@ class TerminalManager:
                 edited_to=final_command,
                 classification=safety.classification,
                 risk_reason=safety.reason,
+                write_preview=write_preview,
             )
         self._audit(runtime.run_id, "agent_command_edited", {"command_id": command_id, "from": terminal_command.original_command, "to": final_command, "original_edit": command})
         if safety.decision == "block":
             await self._broadcast(runtime, {"type": "command_blocked", "command_id": command_id, "reason": safety.reason})
         else:
-            await self._broadcast(runtime, {"type": "agent_proposal", "command_id": command_id, "command": final_command, "phase": runtime.current_agent_phase, "classification": safety.classification.value, "reason": safety.reason})
+            await self._broadcast(runtime, {"type": "agent_proposal", "command_id": command_id, "command": final_command, "phase": runtime.current_agent_phase, "classification": safety.classification.value, "reason": safety.reason, "write_preview": write_preview})
 
     async def _execute(self, runtime: TerminalRuntime, command_id: int, command: str, source: TerminalCommandSource) -> None:
         with Session(engine) as session:
@@ -461,6 +475,19 @@ class TerminalManager:
                 "related_ticket": snapshot.get("related_ticket"),
                 "observations": observations,
             }
+
+    def _write_preview(self, run_id: str, command: str) -> dict[str, Any] | None:
+        with Session(engine) as session:
+            repo = RunRepository(session)
+            run = repo.get_run(run_id)
+            if run is None:
+                return None
+            snapshot = run.customer_system_snapshot or {}
+            customer_system = snapshot.get("customer_system")
+            if not customer_system:
+                return None
+            previewer = self.write_previewer or WritePreviewer(SshRunner(), repo.secrets)
+            return previewer.preview(CustomerSystem.model_validate(customer_system).system, command)
 
     def _audit(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
         with Session(engine) as session:

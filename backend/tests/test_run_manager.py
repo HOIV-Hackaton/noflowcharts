@@ -167,6 +167,14 @@ class FakeSshRunner:
         return SshCommandResult(command=command, exit_code=0, stdout="active", stderr="", timed_out=False)
 
 
+class FakePreviewSshRunner(FakeSshRunner):
+    def run(self, system, command):
+        self.commands.append((system.ip, command))
+        if command.startswith("cat --") or command.startswith("sudo -n cat --"):
+            return SshCommandResult(command=command, exit_code=0, stdout="PORT=8080\n", stderr="", timed_out=False)
+        return SshCommandResult(command=command, exit_code=0, stdout="changed", stderr="", timed_out=False)
+
+
 class FakeActivityGenerator:
     def generate(self, ticket, customer_system, actions, command_results, validation, run_id=None):
         return ActivityDraftUpdate(
@@ -249,6 +257,22 @@ def test_run_manager_requires_approval_before_command_execution():
 
         assert ssh_runner.commands == [("10.0.0.5", "systemctl status nginx")]
         assert state.command_results[0].stdout == "active"
+
+
+def test_run_manager_write_proposal_includes_preview_before_approval_without_executing_write():
+    with make_session() as session:
+        ssh_runner = FakePreviewSshRunner()
+        manager = make_manager(session, planner=FakePlanner("echo 'PORT=9090' > /etc/app.conf"), ssh_runner=ssh_runner)
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+
+        state = manager.propose_next(run_id)
+
+        assert state.current_action.write_preview["status"] == "available"
+        assert state.current_action.write_preview["target_path"] == "/etc/app.conf"
+        assert "-PORT=8080" in state.current_action.write_preview["diff"]
+        assert "+PORT=9090" in state.current_action.write_preview["diff"]
+        assert ssh_runner.commands == [("10.0.0.5", "cat -- /etc/app.conf")]
 
 
 def test_run_manager_routes_successful_fix_to_verification_agent():
