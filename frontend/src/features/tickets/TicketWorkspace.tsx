@@ -370,7 +370,7 @@ function AgentPhaseProgress({
           <StatusLabel label={currentLabel} />
           {autodiagnosisRunning ? <StatusLabel label="autonomous diagnosis running" /> : null}
         </div>
-        <ol className="flex w-full min-w-0 overflow-x-auto py-1 sm:w-auto sm:min-w-[520px]">
+        <ol className="relative flex w-full min-w-0 overflow-x-auto py-1 sm:w-auto sm:min-w-[520px]">
           {AGENT_PHASE_STEPS.map((step, index) => {
             const active = index === activeIndex;
             const completed = activeIndex > index;
@@ -379,13 +379,22 @@ function AgentPhaseProgress({
             return (
               <li
                 aria-current={active ? "step" : undefined}
-                className="min-w-28 flex-1"
+                className="relative min-w-28 flex-1"
                 key={step.phase}
               >
-                <div className="flex items-center">
+                {index < AGENT_PHASE_STEPS.length - 1 ? (
                   <span
                     className={cn(
-                      "relative z-10 flex size-4 shrink-0 rounded-full border-2 bg-background",
+                      "absolute left-1/2 right-[-50%] top-2 h-px",
+                      reached ? "bg-primary/70" : "bg-border",
+                    )}
+                    aria-hidden="true"
+                  />
+                ) : null}
+                <div className="relative z-10 flex justify-center">
+                  <span
+                    className={cn(
+                      "flex size-4 shrink-0 rounded-full border-2 bg-background",
                       active
                         ? "border-primary ring-4 ring-primary/20"
                         : completed
@@ -393,16 +402,8 @@ function AgentPhaseProgress({
                           : "border-muted-foreground/40",
                     )}
                   />
-                  {index < AGENT_PHASE_STEPS.length - 1 ? (
-                    <span
-                      className={cn(
-                        "h-px flex-1",
-                        reached ? "bg-primary/70" : "bg-border",
-                      )}
-                    />
-                  ) : null}
                 </div>
-                <div className="mt-2 pr-3">
+                <div className="mt-2 px-2 text-center">
                   <p className={cn("text-sm font-medium", reached ? "text-foreground" : "text-muted-foreground")}>
                     {step.label}
                   </p>

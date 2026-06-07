@@ -582,7 +582,6 @@ function parseTerminalMessage(value: string): TerminalMessage | null {
       message.type === "agent_cancelled" ||
       message.type === "agent_guidance_recorded" ||
       message.type === "agent_phase_selected" ||
-      message.type === "agent_phase_selected" ||
       message.type === "agent_proposal" ||
       message.type === "agent_waiting_for_guidance" ||
       message.type === "command_blocked" ||
