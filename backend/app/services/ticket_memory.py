@@ -3,7 +3,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlmodel import Session
 
-from app.agent.providers import LlmProvider, get_llm_provider
+from app.agent.providers import LlmProvider, complete_json_with_metrics, get_llm_provider
 from app.core.redaction import redact_payload, redact_text
 from app.db.models import ActivityDraft, TicketMemory
 from app.repositories.ticket_memory import (
@@ -159,12 +159,14 @@ class TicketMemoryService:
             }
         )
         try:
-            response = provider.complete_json(
+            response = complete_json_with_metrics(
+                provider,
                 [
                     {"role": "system", "content": RELATED_TICKET_SELECTOR_SYSTEM_PROMPT},
                     {"role": "user", "content": str(payload)},
                 ],
                 timeout=30.0,
+                operation="ticket_memory.select_related_ticket",
             )
             return RelatedTicketDecision.model_validate(response)
         except Exception as exc:

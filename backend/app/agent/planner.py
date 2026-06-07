@@ -2,7 +2,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from app.agent.providers import LlmProvider, get_llm_provider
+from app.agent.providers import LlmProvider, complete_json_with_metrics, get_llm_provider
 from app.core.config import get_settings
 from app.core.errors import AgentError
 from app.core.redaction import redact_payload
@@ -140,6 +140,7 @@ class Planner:
         observations: list[dict],
         safety_policy: str,
         related_ticket: dict | None = None,
+        run_id: str | None = None,
     ) -> CommandProposal:
         messages = [
             {
@@ -164,7 +165,7 @@ class Planner:
             },
         ]
         try:
-            payload = self.provider.complete_json(messages)
+            payload = complete_json_with_metrics(self.provider, messages, timeout=30.0, operation="planner.propose_next_command", run_id=run_id)
             return CommandProposal.model_validate(payload)
         except ValidationError as exc:
             raise AgentError(f"Planner returned invalid command proposal: {exc}") from exc
@@ -175,6 +176,7 @@ class Planner:
         customer_system: dict,
         observations: list[dict],
         related_ticket: dict | None = None,
+        run_id: str | None = None,
     ) -> DiagnosticToolProposal:
         messages = [
             {"role": "system", "content": DIAGNOSTIC_TOOL_SYSTEM_PROMPT},
@@ -196,7 +198,7 @@ class Planner:
             },
         ]
         try:
-            payload = self.provider.complete_json(messages)
+            payload = complete_json_with_metrics(self.provider, messages, timeout=30.0, operation="planner.propose_diagnostic_tool", run_id=run_id)
             proposal = DiagnosticToolProposal.model_validate(payload)
             if proposal.mode == "diagnostic_tool" and not proposal.tool:
                 raise AgentError("Diagnostic planner omitted tool name")
