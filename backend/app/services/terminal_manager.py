@@ -14,7 +14,7 @@ from app.db.session import engine
 from app.db.models import TerminalCommand
 from app.repositories.runs import RunRepository
 from app.schemas.phoenix import CustomerSystem
-from app.schemas.runs import CommandClassification, RunStatus, TerminalCommandSource, TerminalCommandStatus, ValidationStatus
+from app.schemas.runs import RunStatus, TerminalCommandSource, TerminalCommandStatus, ValidationStatus
 from app.services.audit_log import AuditLog
 from app.services.events import persist_and_publish_ws_event_sync
 from app.services.terminal_safety import TerminalSafetyReviewer
@@ -24,6 +24,7 @@ from app.services.write_preview import WritePreviewer
 
 
 IDLE_TIMEOUT_SECONDS = 15 * 60
+COMMAND_TIMEOUT_SECONDS = 30
 EXIT_MARKER_RE = re.compile(r"__NOFLOW_EXIT:(\d+):(-?\d+)__")
 SECRET_PROMPT_RE = re.compile(r"(?i)(password|passphrase|token|secret|api\s*key|private\s*key|sudo password)\s*:")
 NONINTERACTIVE_ENV = "SYSTEMD_PAGER=cat SYSTEMD_COLORS=0 PAGER=cat LESS=FRXMK"
@@ -34,6 +35,7 @@ class PendingCommand:
     command_id: int
     phase: str | None = None
     output: str = ""
+    started_at: float = field(default_factory=monotonic_seconds)
 
 
 @dataclass
@@ -46,6 +48,7 @@ class TerminalRuntime:
     pending_confirmation: int | None = None
     pending_commands: dict[int, PendingCommand] = field(default_factory=dict)
     agent_active: bool = False
+    agent_workflow_phase: str = "diagnosis"
     current_agent_phase: str | None = None
     waiting_after_rejection: bool = False
     last_activity: float = field(default_factory=monotonic_seconds)
@@ -61,12 +64,14 @@ class TerminalManager:
         safety_reviewer: TerminalSafetyReviewer | None = None,
         planner: Planner | None = None,
         write_previewer: WritePreviewer | None = None,
+        command_timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
     ):
         self._runtimes: dict[str, TerminalRuntime] = {}
         self.pty_factory = pty_factory or SshPtySession
         self.safety_reviewer = safety_reviewer or TerminalSafetyReviewer()
         self.planner = planner
         self.write_previewer = write_previewer
+        self.command_timeout_seconds = command_timeout_seconds
 
     async def connect(self, run_id: str, cols: int = 120, rows: int = 32) -> tuple[TerminalRuntime, asyncio.Queue[dict[str, Any]]]:
         runtime = await self._runtime(run_id, cols, rows)
@@ -98,11 +103,16 @@ class TerminalManager:
         elif message_type == "manual_cancel":
             await self._cancel_command(runtime, int(message.get("command_id")), TerminalCommandSource.MANUAL)
         elif message_type == "agent_start":
+            if await self._agent_is_waiting_on_existing_work(runtime):
+                return
             runtime.agent_active = True
+            runtime.agent_workflow_phase = "diagnosis"
             runtime.waiting_after_rejection = False
             self._audit(runtime.run_id, "agent_mode_started", {})
             await self._safe_propose_agent(runtime)
         elif message_type == "agent_next":
+            if await self._agent_is_waiting_on_existing_work(runtime):
+                return
             runtime.agent_active = True
             runtime.waiting_after_rejection = False
             await self._safe_propose_agent(runtime)
@@ -278,7 +288,8 @@ class TerminalManager:
     async def _propose_agent(self, runtime: TerminalRuntime, forced_phase: str | None = None) -> None:
         planner = self.planner or Planner()
         context = self._context(runtime.run_id)
-        selected_phase = forced_phase or self._select_agent_phase(context.get("observations", []))
+        selected_phase = _workflow_phase(forced_phase or runtime.agent_workflow_phase)
+        runtime.agent_workflow_phase = selected_phase
         proposal = await asyncio.to_thread(
             self._propose_for_phase,
             planner,
@@ -292,6 +303,7 @@ class TerminalManager:
         )
         command = _make_command_non_interactive(proposal.command)
         phase = _agent_phase(proposal.phase or selected_phase)
+        runtime.agent_workflow_phase = _workflow_phase(phase)
         runtime.current_agent_phase = phase
         self._audit(runtime.run_id, "agent_phase_selected", {"phase": phase, "routed_phase": selected_phase})
         await self._broadcast(runtime, {"type": "agent_phase_selected", "phase": phase})
@@ -397,6 +409,24 @@ class TerminalManager:
             self._audit(runtime.run_id, "agent_proposal_failed", {"error": message})
             await self._broadcast(runtime, {"type": "error", "message": f"Agent could not propose the next command: {message}"})
 
+    async def _agent_is_waiting_on_existing_work(self, runtime: TerminalRuntime) -> bool:
+        if runtime.pending_commands:
+            await self._broadcast(runtime, {"type": "status", "message": "A command is still running. Wait for completion or timeout before requesting another agent action."})
+            return True
+        if self._has_pending_agent_proposal(runtime.run_id):
+            await self._broadcast(runtime, {"type": "status", "message": "Review the current agent proposal before requesting another action."})
+            return True
+        return False
+
+    def _has_pending_agent_proposal(self, run_id: str) -> bool:
+        with Session(engine) as session:
+            repo = RunRepository(session)
+            return any(
+                command.source == TerminalCommandSource.AGENT.value
+                and command.status in {TerminalCommandStatus.SUBMITTED.value, TerminalCommandStatus.EDITED.value}
+                for command in repo.list_terminal_commands(run_id)
+            )
+
     async def _accept_agent(self, runtime: TerminalRuntime, command_id: int) -> None:
         with Session(engine) as session:
             repo = RunRepository(session)
@@ -481,6 +511,7 @@ class TerminalManager:
                     await self._broadcast(runtime, {"type": "terminal_output", "data": data})
                     await self._capture_output(runtime, data)
                 else:
+                    await self._timeout_pending_commands(runtime)
                     if runtime.pty.is_closed():
                         await self._close_runtime(runtime, "ssh_closed")
                         return
@@ -508,7 +539,7 @@ class TerminalManager:
                 validation_evidence_collected = exit_code == 0 and _terminal_command_is_validation_evidence(
                     terminal_command.final_command or terminal_command.original_command,
                     cleaned_output,
-                    runtime.current_agent_phase,
+                    pending.phase,
                 )
                 if validation_evidence_collected:
                     run = repo.get_run(runtime.run_id)
@@ -537,11 +568,49 @@ class TerminalManager:
                 )
                 continue
             if source == TerminalCommandSource.AGENT and runtime.agent_active and not runtime.waiting_after_rejection:
-                forced_phase = "verification" if exit_code == 0 and pending.phase == "fix" else None
-                self._audit(runtime.run_id, "agent_continuing", {"after_command_id": command_id, "forced_phase": forced_phase})
-                message = "Agent is preparing validation evidence..." if forced_phase else "Agent is preparing the next action..."
+                next_phase = _next_workflow_phase_after_command(pending.phase, exit_code)
+                runtime.agent_workflow_phase = next_phase
+                self._audit(runtime.run_id, "agent_continuing", {"after_command_id": command_id, "next_phase": next_phase})
+                message = "Agent is preparing validation evidence..." if next_phase == "verification" else "Agent is preparing the next action..."
                 await self._broadcast(runtime, {"type": "status", "message": message})
-                await self._safe_propose_agent(runtime, forced_phase=forced_phase)
+                await self._safe_propose_agent(runtime, forced_phase=next_phase)
+
+    async def _timeout_pending_commands(self, runtime: TerminalRuntime) -> None:
+        now = monotonic_seconds()
+        expired = [
+            pending
+            for pending in list(runtime.pending_commands.values())
+            if now - pending.started_at > self.command_timeout_seconds
+        ]
+        for pending in expired:
+            runtime.pending_commands.pop(pending.command_id, None)
+            try:
+                await asyncio.to_thread(runtime.pty.write, "\x03")
+            except Exception:
+                pass
+            cleaned_output = EXIT_MARKER_RE.sub("", pending.output)
+            timeout_message = f"\nCommand timed out after {int(self.command_timeout_seconds)} seconds and was interrupted."
+            with Session(engine) as session:
+                repo = RunRepository(session)
+                terminal_command = repo.get_terminal_command(pending.command_id)
+                if terminal_command is None:
+                    continue
+                repo.update_terminal_command(
+                    terminal_command,
+                    TerminalCommandStatus.FAILED,
+                    exit_code=124,
+                    output=f"{cleaned_output}{timeout_message}",
+                    ended=True,
+                )
+                source = TerminalCommandSource(terminal_command.source)
+            event_prefix = "agent" if source == TerminalCommandSource.AGENT else "manual"
+            self._audit(runtime.run_id, f"{event_prefix}_command_timed_out", {"command_id": pending.command_id, "timeout_seconds": self.command_timeout_seconds})
+            await self._broadcast(runtime, {"type": "command_completed", "command_id": pending.command_id, "exit_code": 124})
+            if source == TerminalCommandSource.AGENT and runtime.agent_active and not runtime.waiting_after_rejection:
+                runtime.agent_workflow_phase = "diagnosis"
+                self._audit(runtime.run_id, "agent_continuing", {"after_command_id": pending.command_id, "next_phase": "diagnosis", "reason": "command_timeout"})
+                await self._broadcast(runtime, {"type": "status", "message": "Command timed out; agent is returning to diagnosis."})
+                await self._safe_propose_agent(runtime, forced_phase="diagnosis")
 
     async def _close_runtime(self, runtime: TerminalRuntime, reason: str) -> None:
         if runtime.closing:
@@ -618,30 +687,6 @@ class TerminalManager:
                 "observations": observations,
             }
 
-    def _select_agent_phase(self, observations: list[dict[str, Any]]) -> str:
-        completed = [
-            observation
-            for observation in observations
-            if observation.get("status") in {TerminalCommandStatus.COMPLETED.value, TerminalCommandStatus.FAILED.value}
-        ]
-        if not completed:
-            return "diagnosis"
-
-        latest = completed[-1]
-        latest_failed = latest.get("status") == TerminalCommandStatus.FAILED.value or latest.get("exit_code") not in {0, None}
-        latest_was_validation = _terminal_observation_is_validation_evidence(latest)
-        if latest_failed and latest_was_validation:
-            return "diagnosis"
-
-        if latest.get("classification") in {CommandClassification.MUTATING.value, CommandClassification.RISKY_MUTATING.value}:
-            return "verification" if not latest_failed else "diagnosis"
-
-        if latest_was_validation:
-            return "verification" if not latest_failed else "diagnosis"
-
-        return "diagnosis"
-
-
     def _write_preview(self, run_id: str, command: str) -> dict[str, Any] | None:
         with Session(engine) as session:
             repo = RunRepository(session)
@@ -666,7 +711,8 @@ terminal_manager = TerminalManager()
 
 def _wrap_command_for_pty(command: str, command_id: int) -> str:
     command = _make_command_non_interactive(command)
-    return f"{NONINTERACTIVE_ENV} {command}\nprintf '\\n__NOFLOW_EXIT:{command_id}:%s__\\n' \"$?\"\n"
+    wrapped_command = shlex.quote(command)
+    return f"env {NONINTERACTIVE_ENV} bash -lc {wrapped_command}; __noflow_exit=$?; printf '\\n__NOFLOW_EXIT:{command_id}:%s__\\n' \"$__noflow_exit\"\n"
 
 
 def _make_command_non_interactive(command: str) -> str:
@@ -712,6 +758,26 @@ def _agent_phase(phase: str | None) -> str:
     if normalized in aliases:
         return aliases[normalized]
     return "diagnose"
+
+
+def _workflow_phase(phase: str | None) -> str:
+    normalized = _agent_phase(phase)
+    if normalized == "fix":
+        return "execution"
+    if normalized == "validate":
+        return "verification"
+    return "diagnosis"
+
+
+def _next_workflow_phase_after_command(phase: str | None, exit_code: int) -> str:
+    normalized = _agent_phase(phase)
+    if exit_code != 0:
+        return "diagnosis"
+    if normalized == "fix":
+        return "verification"
+    if normalized == "validate":
+        return "verification"
+    return "diagnosis"
 
 
 def _terminal_observation_is_validation_evidence(observation: dict[str, Any]) -> bool:

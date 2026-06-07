@@ -7,7 +7,7 @@ from app.agent.planner import CommandProposal, DiagnosticToolProposal
 from app.core.errors import PhoenixError, ValidationError
 from app.schemas.phoenix import Activity, ActivityCreate, CustomerSystem, SystemInfo, Ticket, TicketStatus
 from app.repositories.runs import RunRepository
-from app.schemas.runs import ActivityDraftUpdate, ActivityReviewStatus, ActivitySubmitRequest, RunStatus, TerminalCommandSource, TerminalCommandStatus
+from app.schemas.runs import ActivityDraftUpdate, ActivityReviewStatus, ActivitySubmitRequest, RunStatus, TerminalCommandSource, TerminalCommandStatus, ValidationStatus
 from app.services.run_manager import RunManager
 from app.services.ssh_runner import MAX_STREAM_CHARS, SshCommandResult
 from app.services.ticket_memory import RelatedTicketContext
@@ -295,6 +295,23 @@ def test_run_manager_routes_successful_fix_to_verification_agent():
 
         assert planner.calls[-1][0] == "verification"
         assert state.current_action.command == "curl --max-time 5 -fsS http://localhost/health"
+
+
+def test_confirm_validation_accepts_terminal_collected_validation_status():
+    with make_session() as session:
+        manager = make_manager(session)
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+        repo = RunRepository(session)
+        run = repo.get_run(run_id)
+        repo.set_validation_status(run, ValidationStatus.EVIDENCE_COLLECTED)
+        repo.update_run_status(run, RunStatus.AWAITING_VALIDATION_CONFIRMATION)
+
+        state = manager.confirm_validation(run_id, "Validation script exited successfully and restored the customer-facing service.")
+
+        assert state.run.status == RunStatus.READY_FOR_ACTIVITY
+        assert state.run.validation_status == ValidationStatus.HUMAN_CONFIRMED
+
 
 def test_run_manager_prefers_ticket_health_and_public_validation_before_generic_planner():
     with make_session() as session:
