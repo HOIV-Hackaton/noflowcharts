@@ -498,6 +498,14 @@ export function TechnicianConsole() {
     };
   }, [backendReady, backendRunId, refreshAuditEvents, refreshRunMetrics, selectedTicketId, syncRunState]);
 
+  const setTicketTab = useCallback((tab: TabId) => {
+    setActiveTab(tab);
+
+    if (selectedTicketId) {
+      replaceAppRoute(ticketRoute(selectedTicketId, tab));
+    }
+  }, [selectedTicketId]);
+
   const handleRunWebSocketEvent = useCallback((event: BackendRunWebSocketEvent) => {
     if (event.event_id !== null) {
       runEventCursorRef.current = event.event_id;
@@ -527,6 +535,12 @@ export function TechnicianConsole() {
       setAgentPhase("verification");
     }
 
+    if (event.type === "validation_evidence_collected") {
+      setAgentPhase("verification");
+      setNotice("Validation evidence is ready for technician confirmation. Confirm validation to generate the activity draft.");
+      setTicketTab("activity");
+    }
+
     if (event.type === "validation_confirmed" || event.type === "activity_draft_generated") {
       setAgentPhase("final_analysis");
     }
@@ -548,7 +562,7 @@ export function TechnicianConsole() {
       void refreshAuditEvents(event.run_id).catch(() => undefined);
       void refreshRunMetrics(event.run_id).catch(() => undefined);
     }
-  }, [refreshAuditEvents, refreshRunMetrics, syncRunState]);
+  }, [refreshAuditEvents, refreshRunMetrics, setTicketTab, syncRunState]);
 
   useEffect(() => {
     runEventCursorRef.current = null;
@@ -618,14 +632,6 @@ export function TechnicianConsole() {
     setSidebarView("all");
     resetTicketWorkspace(ticketId, "overview");
   };
-
-  const setTicketTab = useCallback((tab: TabId) => {
-    setActiveTab(tab);
-
-    if (selectedTicketId) {
-      replaceAppRoute(ticketRoute(selectedTicketId, tab));
-    }
-  }, [selectedTicketId]);
 
   const loadSystemInfo = async () => {
     if (!selectedTicket) {
@@ -987,20 +993,34 @@ export function TechnicianConsole() {
       return;
     }
 
-    const evidence = "Technician validated that the customer-facing service is restored after approved action execution.";
+    let latestTerminalCommands = terminalCommands;
+    try {
+      latestTerminalCommands = (await backendApi.getTerminalLogs(backendRunId)).map(mapTerminalCommand);
+      setTerminalCommands(latestTerminalCommands);
+    } catch {
+      latestTerminalCommands = terminalCommands;
+    }
+
+    const evidence =
+      latestTerminalValidationEvidence(latestTerminalCommands) ??
+      "Technician validated that the customer-facing service is restored after approved action execution.";
     setAgentPhase("verification");
 
     try {
       const state = await backendApi.confirmValidation(backendRunId, evidence);
       syncRunState(state);
+      const draftResponse = await backendApi.generateActivityDraft(backendRunId);
+      setDraft(mapActivityDraft(draftResponse));
       setAgentPhase("final_analysis");
       await refreshAuditEvents(backendRunId);
       await refreshRunMetrics(backendRunId);
       appendEvent("validation", "Validation passed", evidence);
+      appendEvent("output", "Activity draft generated", "Backend generated the ERP activity draft after validation confirmation.");
+      setTicketTab("activity");
       return;
     } catch (error) {
-      setNotice(`Validation confirmation failed. ${getApiErrorMessage(error)}`);
-      appendEvent("error", "Validation blocked", "Backend did not accept the validation evidence.");
+      setNotice(`Validation confirmation or draft generation failed. ${getApiErrorMessage(error)}`);
+      appendEvent("error", "Validation handoff blocked", "Backend did not complete validation confirmation and activity draft generation.");
       return;
     }
   };
@@ -1115,9 +1135,6 @@ export function TechnicianConsole() {
       });
       await backendApi.reviewActivityDraft(backendRunId, true);
       await backendApi.submitActivity(backendRunId);
-      if (ticketId) {
-        await backendApi.setTicketStatus(ticketId, "DONE");
-      }
       const state = await backendApi.getRun(backendRunId);
       syncRunState(state);
       if (ticketId) {
@@ -1729,6 +1746,43 @@ function shouldRefreshRunArtifacts(type: string) {
     type.includes("command") ||
     type.includes("terminal") ||
     type.includes("validation")
+  );
+}
+
+function latestTerminalValidationEvidence(commands: TerminalCommandLog[]) {
+  const command = [...commands].reverse().find((candidate) => {
+    if (candidate.status !== "completed" || candidate.exitCode !== 0) {
+      return false;
+    }
+
+    return isTerminalValidationCommand(candidate.command, candidate.output);
+  });
+
+  if (!command) {
+    return null;
+  }
+
+  const output = command.output.trim().replace(/\s+/g, " ").slice(0, 240);
+  const outputEvidence = output ? ` Output evidence: ${output}` : "";
+  return `Successful terminal validation command \`${command.command}\` exited 0.${outputEvidence}`;
+}
+
+function isTerminalValidationCommand(command: string, output: string) {
+  const commandText = command.toLowerCase();
+  const outputText = output.toLowerCase();
+  return (
+    ["curl", "health", "is-active", "smoke", "wget --spider"].some((term) => commandText.includes(term)) ||
+    [
+      "validation passed",
+      "validated successfully",
+      "health check passed",
+      "http 200",
+      "status 200",
+      "service reachable",
+      "service is reachable",
+      "service healthy",
+      "service is healthy",
+    ].some((term) => outputText.includes(term))
   );
 }
 

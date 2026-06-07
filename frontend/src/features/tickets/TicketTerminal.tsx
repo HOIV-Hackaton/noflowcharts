@@ -24,7 +24,8 @@ type TerminalMessage =
   | { type: "status"; message: string }
   | { type: "terminal_closed"; reason?: string }
   | { type: "terminal_opened"; run_id?: string; session_id?: number }
-  | { type: "terminal_output"; data: string };
+  | { type: "terminal_output"; data: string }
+  | { type: "validation_evidence_collected"; command_id?: number; status?: string; validation_status?: string };
 
 type PendingConfirmation = {
   classification?: string;
@@ -436,6 +437,10 @@ export function TicketTerminal({
         setAgentStarted(false);
       }
 
+      if (message.type === "validation_evidence_collected") {
+        setAgentStarted(false);
+      }
+
       handleTerminalStatusMessage(terminal, message, setPendingCommand);
     };
 
@@ -617,7 +622,8 @@ function parseTerminalMessage(value: string): TerminalMessage | null {
       message.type === "status" ||
       message.type === "terminal_closed" ||
       message.type === "terminal_opened" ||
-      message.type === "terminal_output"
+      message.type === "terminal_output" ||
+      message.type === "validation_evidence_collected"
     ) {
       return message;
     }
@@ -756,6 +762,10 @@ function handleTerminalStatusMessage(
       break;
     case "terminal_opened":
       terminal.writeln("\r\n\x1b[90mConnected.\x1b[0m");
+      break;
+    case "validation_evidence_collected":
+      setPendingCommand(null);
+      terminal.writeln("\r\n\x1b[32mValidation evidence collected. Agent stopped. Confirm validation to generate the activity draft; Phoenix submission remains manual.\x1b[0m");
       break;
     case "error":
     case "output":

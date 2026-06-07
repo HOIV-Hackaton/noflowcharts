@@ -6,7 +6,8 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.agent.planner import CommandProposal, DiagnosticToolProposal
 from app.core.errors import PhoenixError, ValidationError
 from app.schemas.phoenix import Activity, ActivityCreate, CustomerSystem, SystemInfo, Ticket, TicketStatus
-from app.schemas.runs import ActivityDraftUpdate, ActivityReviewStatus, ActivitySubmitRequest, RunStatus
+from app.repositories.runs import RunRepository
+from app.schemas.runs import ActivityDraftUpdate, ActivityReviewStatus, ActivitySubmitRequest, RunStatus, TerminalCommandSource, TerminalCommandStatus
 from app.services.run_manager import RunManager
 from app.services.ssh_runner import MAX_STREAM_CHARS, SshCommandResult
 from app.services.ticket_memory import RelatedTicketContext
@@ -374,6 +375,33 @@ def test_validation_confirmation_requires_successful_validation_command_evidence
 
         assert state.run.status == RunStatus.READY_FOR_ACTIVITY
         assert state.run.validation_confirmed is True
+
+
+def test_validation_confirmation_accepts_successful_terminal_validation_evidence():
+    with make_session() as session:
+        manager = make_manager(session)
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+        repo = RunRepository(session)
+        terminal_command = repo.add_terminal_command(
+            run_id,
+            TerminalCommandSource.AGENT,
+            "curl --max-time 5 -fsS http://localhost/health",
+            final_command="curl --max-time 5 -fsS http://localhost/health",
+        )
+        repo.update_terminal_command(
+            terminal_command,
+            TerminalCommandStatus.COMPLETED,
+            exit_code=0,
+            output="ok",
+            ended=True,
+        )
+
+        state = manager.confirm_validation(run_id, "Terminal validation returned HTTP 200 and ok")
+
+        assert state.run.status == RunStatus.READY_FOR_ACTIVITY
+        assert state.run.validation_confirmed is True
+        assert any(event[1] == "validation_confirmed" for event in manager.events)
 
 
 def ready_run(manager):
