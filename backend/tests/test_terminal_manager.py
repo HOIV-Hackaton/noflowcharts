@@ -449,7 +449,7 @@ def test_agent_read_only_diagnosis_auto_runs_in_terminal():
         runtime, queue = await manager.connect(run_id)
         await wait_for(queue, "terminal_opened")
 
-        await manager.handle_message(runtime, {"type": "agent_start"})
+        await manager.handle_message(runtime, {"type": "agent_start", "auto_run_read_only_diagnosis": True})
         auto_command = await wait_for(queue, "agent_auto_command")
         await wait_for(queue, "command_completed")
 
@@ -458,6 +458,24 @@ def test_agent_read_only_diagnosis_auto_runs_in_terminal():
         logs = manager.logs(run_id)
         assert logs[0].status == TerminalCommandStatus.COMPLETED.value
         assert runtime.auto_diagnosis_steps == 1
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_plain_agent_start_reviews_read_only_diagnosis():
+    async def run_test():
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=FakePlanner("systemctl status nginx", phase="diagnose"))
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        proposal = await wait_for(queue, "agent_proposal")
+
+        assert proposal["command"] == "systemctl --no-pager status nginx"
+        assert FakePty.instances[-1].writes == []
+        assert runtime.auto_diagnosis_steps == 0
         await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())
@@ -592,7 +610,7 @@ def test_agent_command_timeout_interrupts_and_returns_to_diagnosis():
         runtime, queue = await manager.connect(run_id)
         await wait_for(queue, "terminal_opened")
 
-        await manager.handle_message(runtime, {"type": "agent_start"})
+        await manager.handle_message(runtime, {"type": "agent_start", "auto_run_read_only_diagnosis": True})
         await wait_for(queue, "agent_phase_selected")
         await wait_for(queue, "agent_auto_command")
         await wait_for(queue, "command_running")
@@ -677,7 +695,7 @@ def test_agent_next_is_blocked_while_command_is_running():
         runtime, queue = await manager.connect(run_id)
         await wait_for(queue, "terminal_opened")
 
-        await manager.handle_message(runtime, {"type": "agent_start"})
+        await manager.handle_message(runtime, {"type": "agent_start", "auto_run_read_only_diagnosis": True})
         await wait_for(queue, "agent_phase_selected")
         await wait_for(queue, "agent_auto_command")
         await wait_for(queue, "command_running")
@@ -730,7 +748,7 @@ def test_successful_diagnosis_phase_continues_diagnosis_without_heuristic_jump()
         runtime, queue = await manager.connect(run_id)
         await wait_for(queue, "terminal_opened")
 
-        await manager.handle_message(runtime, {"type": "agent_start"})
+        await manager.handle_message(runtime, {"type": "agent_start", "auto_run_read_only_diagnosis": True})
         first_phase = await wait_for(queue, "agent_phase_selected")
         first = await wait_for(queue, "agent_auto_command")
 

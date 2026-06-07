@@ -53,6 +53,7 @@ class TerminalRuntime:
     agent_workflow_phase: str = "diagnosis"
     current_agent_phase: str | None = None
     waiting_after_rejection: bool = False
+    auto_run_read_only_diagnosis: bool = False
     auto_diagnosis_steps: int = 0
     last_activity: float = field(default_factory=monotonic_seconds)
     secret_input_mode: bool = False
@@ -112,6 +113,7 @@ class TerminalManager:
                 return
             runtime.agent_active = True
             runtime.agent_workflow_phase = "diagnosis"
+            runtime.auto_run_read_only_diagnosis = message.get("auto_run_read_only_diagnosis") is True
             runtime.waiting_after_rejection = False
             self._audit(runtime.run_id, "agent_mode_started", {})
             await self._safe_propose_agent(runtime)
@@ -119,6 +121,7 @@ class TerminalManager:
             if await self._agent_is_waiting_on_existing_work(runtime):
                 return
             runtime.agent_active = True
+            runtime.auto_run_read_only_diagnosis = message.get("auto_run_read_only_diagnosis") is True
             runtime.waiting_after_rejection = False
             await self._safe_propose_agent(runtime)
         elif message_type == "agent_accept":
@@ -131,6 +134,7 @@ class TerminalManager:
             await self._record_agent_guidance(runtime, str(message.get("message") or ""))
         elif message_type == "agent_cancel":
             runtime.agent_active = False
+            runtime.auto_run_read_only_diagnosis = False
             runtime.waiting_after_rejection = False
             self._audit(runtime.run_id, "agent_mode_cancelled", {})
             await self._broadcast(runtime, {"type": "agent_cancelled"})
@@ -356,12 +360,14 @@ class TerminalManager:
             },
         )
         auto_run_read_only_diagnosis = (
-            safety.decision == "allow"
+            runtime.auto_run_read_only_diagnosis
+            and safety.decision == "allow"
             and safety.classification == CommandClassification.READ_ONLY
             and _agent_phase(phase) == "diagnose"
             and runtime.auto_diagnosis_steps < MAX_TERMINAL_AUTO_DIAGNOSIS_STEPS
         )
         if safety.decision == "block":
+            runtime.auto_run_read_only_diagnosis = False
             self._audit(runtime.run_id, "agent_command_blocked", {"command_id": terminal_command.id, "reason": safety.reason})
             self._status(runtime.run_id, "blocked", "Agent command was blocked by the safety layer.", phase=phase, busy=False)
             await self._broadcast(runtime, {"type": "command_blocked", "command_id": terminal_command.id, "reason": safety.reason})
@@ -383,6 +389,7 @@ class TerminalManager:
             )
             await self._execute(runtime, terminal_command.id, command, TerminalCommandSource.AGENT)
         else:
+            runtime.auto_run_read_only_diagnosis = False
             if safety.classification == CommandClassification.READ_ONLY and _agent_phase(phase) == "diagnose" and runtime.auto_diagnosis_steps >= MAX_TERMINAL_AUTO_DIAGNOSIS_STEPS:
                 self._audit(runtime.run_id, "agent_auto_diagnosis_limit_reached", {"max_steps": MAX_TERMINAL_AUTO_DIAGNOSIS_STEPS})
             self._status(runtime.run_id, "awaiting_review", "Agent command is ready for technician review.", phase=phase, busy=False)
