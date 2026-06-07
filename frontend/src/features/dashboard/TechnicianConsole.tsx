@@ -1683,6 +1683,10 @@ function runWebSocketEventTitle(type: string, phase: AgentPhase | null) {
     return "Diagnostic result captured";
   }
 
+  if (type === "knowledge_search_performed") {
+    return "Knowledge memory retrieved";
+  }
+
   return type.split("_").join(" ");
 }
 
@@ -1709,6 +1713,17 @@ function runWebSocketEventDetail(event: BackendRunWebSocketEvent, phase: AgentPh
     return `Reason: ${reason}.`;
   }
 
+  if (event.type === "knowledge_search_performed") {
+    const query = typeof event.payload.query === "string" ? event.payload.query : "similar issue";
+    const count = typeof event.payload.result_count === "number" ? event.payload.result_count : 0;
+    const results = Array.isArray(event.payload.results) ? event.payload.results : [];
+    const firstResult = results[0] as Record<string, unknown> | undefined;
+    const ticket = typeof firstResult?.ticket_id === "number" ? `ticket ${firstResult.ticket_id}` : "seeded memory";
+    const chunkType = typeof firstResult?.chunk_type === "string" ? firstResult.chunk_type : "snippet";
+    const score = typeof firstResult?.similarity_score === "number" ? ` score ${firstResult.similarity_score.toFixed(2)}` : "";
+    return `Agent searched "${query}" and found ${count} snippet${count === 1 ? "" : "s"}. Top match: ${ticket} ${chunkType}${score}.`;
+  }
+
   return JSON.stringify(event.payload);
 }
 
@@ -1722,6 +1737,9 @@ function runWebSocketEventType(event: BackendRunWebSocketEvent): EventType {
 
   if (type.includes("validation")) {
     return "validation";
+  }
+  if (type.includes("knowledge")) {
+    return "analysis";
   }
   if (type.includes("command") || type.includes("ssh")) {
     return "command";
@@ -1744,6 +1762,7 @@ function shouldRefreshRunArtifacts(type: string) {
     type === "safe_autodiagnosis_handed_to_human" ||
     type.includes("activity") ||
     type.includes("command") ||
+    type.includes("knowledge") ||
     type.includes("terminal") ||
     type.includes("validation")
   );

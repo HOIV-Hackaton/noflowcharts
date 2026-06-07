@@ -114,6 +114,17 @@ class TicketRelation(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class KnowledgeChunk(SQLModel, table=True):
+    __tablename__ = "knowledge_chunks"
+
+    id: int | None = Field(default=None, primary_key=True)
+    ticket_id: int | None = Field(default=None, index=True)
+    source: str = Field(index=True)
+    chunk_type: str = Field(index=True)
+    content: str
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class WebSocketEvent(SQLModel, table=True):
     event_id: int | None = Field(default=None, primary_key=True)
     run_id: str = Field(foreign_key="run.id", index=True)

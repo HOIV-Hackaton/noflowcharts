@@ -44,6 +44,14 @@ class AzureOpenAiEmbeddingProvider:
             raise
         except Exception as exc:
             message = redact_text(str(exc), self.settings.configured_secrets())
+            status_code = getattr(exc, "status_code", None)
+            if status_code == 404 or "Error code: 404" in message:
+                message = (
+                    f"deployment '{self.deployment}' was not found by Azure OpenAI. "
+                    "Set AZURE_OPENAI_EMBEDDING_DEPLOYMENT to the actual Azure embedding deployment name, "
+                    "not necessarily the model name. Original error: "
+                    f"{message}"
+                )
             raise AgentError(f"Azure OpenAI embedding request failed: {message}") from exc
 
 

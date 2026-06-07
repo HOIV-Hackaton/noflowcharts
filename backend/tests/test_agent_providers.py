@@ -127,6 +127,34 @@ def test_embedding_provider_redacts_secrets_on_failure(monkeypatch):
     assert "[REDACTED]" in str(exc_info.value)
 
 
+def test_embedding_provider_explains_azure_404_deployment_name(monkeypatch):
+    class NotFoundEmbeddingError(RuntimeError):
+        status_code = 404
+
+    class FailingEmbeddings:
+        def create(self, **kwargs):
+            raise NotFoundEmbeddingError("Error code: 404")
+
+    class FakeAzureOpenAI:
+        def __init__(self, **kwargs):
+            self.embeddings = FailingEmbeddings()
+
+    monkeypatch.setattr(embeddings, "AzureOpenAI", FakeAzureOpenAI)
+    settings = Settings(
+        _env_file=None,
+        azure_openai_endpoint="https://example.openai.azure.com",
+        azure_openai_api_key="azure-secret",
+        azure_openai_embedding_deployment="text-embedding-3-small",
+        azure_openai_api_version="2024-02-01",
+    )
+
+    with pytest.raises(AgentError) as exc_info:
+        AzureOpenAiEmbeddingProvider(settings=settings).embed("text")
+
+    assert "actual Azure embedding deployment name" in str(exc_info.value)
+    assert "text-embedding-3-small" in str(exc_info.value)
+
+
 def test_azure_provider_rejects_invalid_and_non_object_json(monkeypatch):
     class FakeCompletions:
         def __init__(self, content):
@@ -201,6 +229,79 @@ def test_azure_provider_records_llm_usage_metrics(monkeypatch):
     assert metric.completion_tokens == 8
     assert metric.total_tokens == 20
     assert metric.error is None
+
+
+def test_azure_provider_executes_knowledge_tool_before_final_json(monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(providers, "engine", engine)
+    calls = []
+
+    class FakeFunction:
+        name = "search_knowledge_base"
+        arguments = '{"query":"nginx 502","top_k":1}'
+
+    class FakeToolCall:
+        id = "call-1"
+        function = FakeFunction()
+
+    class FakeToolMessage:
+        content = None
+        tool_calls = [FakeToolCall()]
+
+        def model_dump(self, exclude_none=True):
+            return {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "search_knowledge_base", "arguments": FakeFunction.arguments},
+                    }
+                ],
+            }
+
+    class FakeFinalMessage:
+        content = '{"intent":"Check nginx","command":"systemctl status nginx","expected_signal":"service state"}'
+        tool_calls = []
+
+    class FakeCompletions:
+        def __init__(self):
+            self.count = 0
+
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            self.count += 1
+            message = FakeToolMessage() if self.count == 1 else FakeFinalMessage()
+            choice = type("Choice", (), {"message": message})()
+            usage = type("Usage", (), {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})()
+            return type("Completion", (), {"choices": [choice], "usage": usage})()
+
+    class FakeAzureOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    tool_calls = []
+    monkeypatch.setattr(providers, "AzureOpenAI", FakeAzureOpenAI)
+    monkeypatch.setattr(providers, "execute_search_knowledge_base", lambda arguments, run_id=None: tool_calls.append((arguments, run_id)) or [{"content": "nginx memory"}])
+    settings = Settings(
+        _env_file=None,
+        azure_openai_endpoint="https://example.openai.azure.com",
+        azure_openai_api_key="azure-secret",
+        azure_openai_deployment="gpt",
+        azure_openai_api_version="2024-02-01",
+    )
+
+    result = AzureOpenAiProvider(settings=settings).complete_json_with_knowledge_tools([{"role": "user", "content": "ticket"}], run_id="run-1")
+
+    assert result["command"] == "systemctl status nginx"
+    assert tool_calls == [('{"query":"nginx 502","top_k":1}', "run-1")]
+    assert "tools" in calls[0]
+    assert calls[1]["messages"][-1]["role"] == "tool"
 
 def test_activity_generator_converts_invalid_draft_payload_to_agent_error():
     class FakeProvider:
