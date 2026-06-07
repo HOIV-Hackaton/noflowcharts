@@ -133,7 +133,7 @@ def classify_command(command: str) -> SafetyResult:
         return SafetyResult(CommandClassification.BLOCKED, "Commands that read likely secret material are blocked", blocked=True)
 
     base = _base_command(tokens)
-    if base in INTERACTIVE_COMMANDS:
+    if base in INTERACTIVE_COMMANDS and not _is_bounded_non_interactive_invocation(tokens):
         return SafetyResult(CommandClassification.BLOCKED, f"Interactive command '{base}' is blocked in the logged terminal", blocked=True)
 
     if _is_follow_mode(tokens):
@@ -147,7 +147,8 @@ def classify_command(command: str) -> SafetyResult:
 
     if base == "sudo":
         sudo_target = _sudo_target(tokens)
-        if sudo_target in INTERACTIVE_COMMANDS:
+        sudo_command_tokens = _without_sudo(tokens)
+        if sudo_target in INTERACTIVE_COMMANDS and not _is_bounded_non_interactive_invocation(sudo_command_tokens):
             return SafetyResult(CommandClassification.BLOCKED, f"Interactive command '{sudo_target}' is blocked in the logged terminal", blocked=True)
         if sudo_target in NESTED_SHELL_COMMANDS:
             return SafetyResult(CommandClassification.BLOCKED, f"Nested shell or interpreter '{sudo_target}' is blocked in the logged terminal", blocked=True)
@@ -221,6 +222,22 @@ def _is_read_only(tokens: list[str]) -> bool:
 def _looks_mutating(tokens: list[str]) -> bool:
     mutating_flags = {"-w", "--write", "--delete", "--remove", "--force"}
     return any(token in mutating_flags for token in tokens)
+
+
+def _is_bounded_non_interactive_invocation(tokens: list[str]) -> bool:
+    base = _base_command(tokens)
+    if base == "psql":
+        return _has_psql_command_option(tokens[1:])
+    return False
+
+
+def _has_psql_command_option(tokens: list[str]) -> bool:
+    for token in tokens:
+        if token in {"-c", "--command"} or token.startswith("--command="):
+            return True
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            return True
+    return False
 
 
 def _is_follow_mode(tokens: list[str]) -> bool:

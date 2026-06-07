@@ -339,6 +339,27 @@ def test_manual_interactive_command_is_blocked_before_ssh():
     asyncio.run(run_test())
 
 
+def test_manual_bounded_psql_command_executes():
+    async def run_test():
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer())
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "input", "data": "psql -c 'select 1'\r"})
+        await wait_for(queue, "command_completed")
+
+        written = FakePty.instances[-1].writes[0]
+        assert "psql -c" in written
+        assert "select 1" in written
+        log = manager.logs(run_id)[-1]
+        assert log.original_command == "psql -c 'select 1'"
+        assert log.status == TerminalCommandStatus.COMPLETED.value
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
 def test_manual_semantic_confirmation_required_then_executes():
     async def run_test():
         manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer())
