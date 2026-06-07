@@ -21,7 +21,6 @@ import {
 import {
   PageHeading,
   StatsGrid,
-  WorkflowCards,
   type DashboardStat,
 } from "@/components/service-desk-ui";
 import { Button } from "@/components/ui/button";
@@ -39,9 +38,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { hypotheses, tabs } from "@/data/mockData";
-import { formatConnection, formatDate, formatRunState, isDraftComplete } from "@/lib/serviceDesk";
+import { cn } from "@/lib/utils";
+import {
+  formatConnection,
+  formatDate,
+  formatRunState,
+  isDraftComplete,
+} from "@/lib/serviceDesk";
 import type {
   ActivityDraft,
+  AgentPhase,
   ConnectionStatus,
   CustomerSystem,
   EventType,
@@ -64,6 +70,8 @@ type ConnectionIntent = "analysis" | "autodiagnosis" | "terminal";
 export function TicketWorkspace(props: {
   activeTab: TabId;
   actions: ProposedAction[];
+  agentPhase: AgentPhase | null;
+  analyticsStats: DashboardStat[];
   analysisReady: boolean;
   backendRunId: string | null;
   connectionStatus: ConnectionStatus;
@@ -83,6 +91,7 @@ export function TicketWorkspace(props: {
   onRejectAction: (actionId: string) => void;
   onRetryAction: (actionId: string) => void;
   onRunValidation: () => void;
+  onSaferAlternative: (actionId: string) => void;
   onStartAutodiagnosis: () => void;
   onStartAnalysis: () => void;
   onSubmitActivity: () => void;
@@ -111,37 +120,6 @@ export function TicketWorkspace(props: {
       : props.pendingActions.length
         ? "Action approval required"
         : "";
-  const overviewStats: DashboardStat[] = [
-    {
-      detail: "Commands or connection steps awaiting technician review.",
-      label: "Pending approvals",
-      progress: props.pendingActions.length ? 100 : 0,
-      tone: props.pendingActions.length ? "warning" : "success",
-      value: props.pendingActions.length,
-    },
-    {
-      detail: "Audit and run events captured for the activity draft.",
-      label: "Run events",
-      progress: Math.min(props.events.length * 12, 100),
-      tone: "default",
-      value: props.events.length,
-    },
-    {
-      detail: props.validation.evidence,
-      label: "Validation",
-      progress: props.validation.status === "passed" ? 100 : 0,
-      tone: props.validation.status === "passed" ? "success" : "warning",
-      value: props.validation.status,
-    },
-    {
-      detail: "Backend-owned SSH approval state.",
-      label: "Connection",
-      progress: props.connectionStatus === "connected" ? 100 : 0,
-      tone: props.connectionStatus === "connected" ? "success" : "warning",
-      value: formatConnection(props.connectionStatus),
-    },
-  ];
-
   const requestConnectionApproval = async (intent: ConnectionIntent) => {
     setConnectionIntent(intent);
 
@@ -212,6 +190,12 @@ export function TicketWorkspace(props: {
         title={props.ticket.title}
       />
 
+      <AgentPhaseProgress
+        autodiagnosisRunning={props.autodiagnosisRunning}
+        phase={props.agentPhase}
+        runState={props.runState}
+      />
+
       {pendingMessage ? (
         <Card className="border-destructive/30 bg-destructive/10" size="sm">
           <CardContent className="flex items-center gap-3">
@@ -225,31 +209,38 @@ export function TicketWorkspace(props: {
       ) : null}
 
       <Tabs onValueChange={(value) => props.onTabChange(value as TabId)} value={props.activeTab}>
-        <TabsList className="max-w-full gap-2 overflow-x-auto" variant="line">
-          {tabs.map((tab) => (
-            <TabsTrigger key={tab.id} value={tab.id}>
-              {tab.label}
-              {tab.id === "actions" && props.pendingActions.length ? (
-                <span className="rounded-full bg-destructive/20 px-1.5 py-0.5 text-[10px] text-destructive">
-                  {props.pendingActions.length}
-                </span>
-              ) : null}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+        <div className="-mx-1 max-w-full overflow-x-auto px-1 pb-1">
+          <TabsList className="min-w-max gap-2" variant="line">
+            {tabs.map((tab) => (
+              <TabsTrigger key={tab.id} value={tab.id}>
+                {tab.label}
+                {tab.id === "actions" && props.pendingActions.length ? (
+                  <span className="rounded-full bg-destructive/20 px-1.5 py-0.5 text-[10px] text-destructive">
+                    {props.pendingActions.length}
+                  </span>
+                ) : null}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
 
         <TabsContent value="overview">
           <OverviewTab
-            analyticsStats={overviewStats}
+            analysisReady={props.analysisReady}
             connectionStatus={props.connectionStatus}
             onGenerateDraft={props.onGenerateDraft}
             onLoadSystem={props.onLoadSystem}
+            onOpenActivity={() => props.onTabChange("activity")}
             onOpenTerminal={() => props.onTabChange("actions")}
             onRunValidation={props.onRunValidation}
             onRequestConnectionApproval={requestConnectionApproval}
+            onStartAutodiagnosis={props.onStartAutodiagnosis}
             onStartAnalysis={props.onStartAnalysis}
             pendingApprovals={props.pendingActions.length}
             runState={props.runState}
+            autodiagnosisRunning={props.autodiagnosisRunning}
+            canStartAutodiagnosis={props.canStartAutodiagnosis}
+            executedActionCount={props.executedActions.length}
             systemLoaded={props.systemLoaded}
             ticket={props.ticket}
             validation={props.validation}
@@ -267,20 +258,14 @@ export function TicketWorkspace(props: {
         </TabsContent>
         <TabsContent value="analysis">
           <AnalysisTab
-            analyticsStats={[
-              ...overviewStats,
-              {
-                detail: "Approved commands with stored results.",
-                label: "Actions executed",
-                progress: Math.min(props.executedActions.length * 25, 100),
-                tone: "success",
-                value: props.executedActions.length,
-              },
-            ]}
+            analyticsStats={props.analyticsStats}
             analysisReady={props.analysisReady}
             connectionStatus={props.connectionStatus}
             onRequestConnectionApproval={requestConnectionApproval}
+            onStartAutodiagnosis={props.onStartAutodiagnosis}
             onStartAnalysis={props.onStartAnalysis}
+            autodiagnosisRunning={props.autodiagnosisRunning}
+            canStartAutodiagnosis={props.canStartAutodiagnosis}
           />
         </TabsContent>
         <TabsContent className="min-h-[560px]" value="actions">
@@ -337,14 +322,119 @@ export function TicketWorkspace(props: {
   );
 }
 
+const AGENT_PHASE_STEPS: Array<{ phase: AgentPhase; label: string }> = [
+  { phase: "diagnosis", label: "Diagnosis" },
+  { phase: "execution", label: "Fixing" },
+  { phase: "verification", label: "Verifying" },
+  { phase: "final_analysis", label: "Final Analysis" },
+];
+
+function AgentPhaseProgress({
+  autodiagnosisRunning,
+  phase,
+  runState,
+}: {
+  autodiagnosisRunning: boolean;
+  phase: AgentPhase | null;
+  runState: RunState;
+}) {
+  const effectivePhase = mostAdvancedPhase(phase, phaseFromRunState(runState));
+  const activeIndex =
+    effectivePhase === "waiting"
+      ? -1
+      : AGENT_PHASE_STEPS.findIndex((step) => step.phase === effectivePhase);
+  const currentLabel = effectivePhase === "waiting" ? "Waiting" : AGENT_PHASE_STEPS[activeIndex]?.label ?? "Waiting";
+
+  return (
+    <div className="rounded-lg border bg-muted/20 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-foreground">Agent phase</span>
+          <StatusLabel label={currentLabel} />
+          {autodiagnosisRunning ? <StatusLabel label="autonomous diagnosis running" /> : null}
+        </div>
+        <div className="grid w-full grid-cols-2 gap-2 sm:w-auto sm:grid-cols-4">
+          {AGENT_PHASE_STEPS.map((step, index) => {
+            const active = index === activeIndex;
+            const completed = activeIndex > index;
+
+            return (
+              <div
+                aria-current={active ? "step" : undefined}
+                className={cn(
+                  "flex min-h-10 items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors",
+                  active
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : completed
+                      ? "border-primary/50 bg-primary/10 text-foreground"
+                      : "border-border bg-background text-muted-foreground",
+                )}
+                key={step.phase}
+              >
+                <span
+                  className={cn(
+                    "flex size-2.5 shrink-0 rounded-full",
+                    active ? "bg-primary-foreground" : completed ? "bg-primary" : "bg-muted-foreground/40",
+                  )}
+                />
+                <span className="min-w-0 truncate">{step.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function mostAdvancedPhase(eventPhase: AgentPhase | null, statePhase: AgentPhase | "waiting") {
+  if (!eventPhase) {
+    return statePhase;
+  }
+
+  if (statePhase === "waiting") {
+    return eventPhase;
+  }
+
+  return phaseRank(statePhase) > phaseRank(eventPhase) ? statePhase : eventPhase;
+}
+
+function phaseRank(phase: AgentPhase) {
+  return AGENT_PHASE_STEPS.findIndex((step) => step.phase === phase);
+}
+
+function phaseFromRunState(runState: RunState): AgentPhase | "waiting" {
+  switch (runState) {
+    case "analyzing":
+      return "diagnosis";
+    case "awaiting_action_approval":
+    case "executing":
+      return "execution";
+    case "validating":
+      return "verification";
+    case "ready_to_submit":
+    case "submitted":
+      return "final_analysis";
+    case "idle":
+    case "awaiting_connection_approval":
+    case "aborted":
+      return "waiting";
+  }
+}
+
 function OverviewTab({
-  analyticsStats,
+  analysisReady,
+  autodiagnosisRunning,
+  canStartAutodiagnosis,
   connectionStatus,
+  executedActionCount,
   onGenerateDraft,
   onLoadSystem,
+  onOpenActivity,
   onOpenTerminal,
   onRunValidation,
   onRequestConnectionApproval,
+  onStartAutodiagnosis,
   onStartAnalysis,
   pendingApprovals,
   runState,
@@ -352,13 +442,18 @@ function OverviewTab({
   ticket,
   validation,
 }: {
-  analyticsStats: DashboardStat[];
+  analysisReady: boolean;
+  autodiagnosisRunning: boolean;
+  canStartAutodiagnosis: boolean;
   connectionStatus: ConnectionStatus;
+  executedActionCount: number;
   onGenerateDraft: () => void;
   onLoadSystem: () => void;
+  onOpenActivity: () => void;
   onOpenTerminal: () => void;
   onRunValidation: () => void;
   onRequestConnectionApproval: (intent: ConnectionIntent) => void;
+  onStartAutodiagnosis: () => void;
   onStartAnalysis: () => void;
   pendingApprovals: number;
   runState: RunState;
@@ -386,11 +481,24 @@ function OverviewTab({
 
   return (
     <div className="flex flex-col gap-4">
-      <StatsGrid stats={analyticsStats} />
-      <WorkflowCards
-        connected={connectionStatus === "connected"}
+      <IncidentPath
+        analysisReady={analysisReady}
+        autodiagnosisRunning={autodiagnosisRunning}
+        canStartAutodiagnosis={canStartAutodiagnosis}
+        connectionStatus={connectionStatus}
+        onGenerateDraft={onGenerateDraft}
+        onLoadSystem={onLoadSystem}
+        onOpenActivity={onOpenActivity}
+        onOpenTerminal={handleOpenTerminal}
+        onRunValidation={onRunValidation}
+        onRequestConnectionApproval={onRequestConnectionApproval}
+        onStartAutodiagnosis={onStartAutodiagnosis}
+        onStartAnalysis={handleStartAnalysis}
         pendingApprovals={pendingApprovals}
-        validated={validation.status === "passed"}
+        runState={runState}
+        executedActionCount={executedActionCount}
+        systemLoaded={systemLoaded}
+        validation={validation}
       />
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <Card>
@@ -422,49 +530,169 @@ function OverviewTab({
           </CardContent>
         </Card>
 
-        <Card className="xl:col-span-2">
-          <CardHeader>
-            <CardTitle>Next actions</CardTitle>
-            <CardDescription>
-              <StatusLabel label={`connection: ${formatConnection(connectionStatus)}`} />{" "}
-              <StatusLabel label={`validation: ${validation.status}`} />
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            <Button onClick={onLoadSystem} type="button" variant={systemLoaded ? "outline" : "default"}>
-              <ShieldCheckIcon data-icon="inline-start" />
-              {systemLoaded ? "Reload system info" : "Load system info"}
-            </Button>
-            {requiresConnection ? (
-              <Button onClick={() => onRequestConnectionApproval("terminal")} type="button" variant="default">
-                <ShieldCheckIcon data-icon="inline-start" />
-                Approve connection
-              </Button>
-            ) : null}
-            <Button
-              onClick={handleOpenTerminal}
-              type="button"
-              variant={systemLoaded && connectionStatus !== "connected" ? "default" : "outline"}
-            >
-              <TerminalIcon data-icon="inline-start" />
-              Open terminal
-            </Button>
-            <Button onClick={handleStartAnalysis} type="button" variant="outline">
-              <PlayIcon data-icon="inline-start" />
-              Start analysis
-            </Button>
-            <Button onClick={onRunValidation} type="button" variant="outline">
-              <CheckIcon data-icon="inline-start" />
-              Validate
-            </Button>
-            <Button onClick={onGenerateDraft} type="button" variant="outline">
-              <ClipboardCheckIcon data-icon="inline-start" />
-              Draft activity
-            </Button>
-          </CardContent>
-        </Card>
       </div>
     </div>
+  );
+}
+
+function IncidentPath({
+  analysisReady,
+  autodiagnosisRunning,
+  canStartAutodiagnosis,
+  connectionStatus,
+  executedActionCount,
+  onGenerateDraft,
+  onLoadSystem,
+  onOpenActivity,
+  onOpenTerminal,
+  onRunValidation,
+  onRequestConnectionApproval,
+  onStartAutodiagnosis,
+  onStartAnalysis,
+  pendingApprovals,
+  runState,
+  systemLoaded,
+  validation,
+}: {
+  analysisReady: boolean;
+  autodiagnosisRunning: boolean;
+  canStartAutodiagnosis: boolean;
+  connectionStatus: ConnectionStatus;
+  executedActionCount: number;
+  onGenerateDraft: () => void;
+  onLoadSystem: () => void;
+  onOpenActivity: () => void;
+  onOpenTerminal: () => void;
+  onRunValidation: () => void;
+  onRequestConnectionApproval: (intent: ConnectionIntent) => void;
+  onStartAutodiagnosis: () => void;
+  onStartAnalysis: () => void;
+  pendingApprovals: number;
+  runState: RunState;
+  systemLoaded: boolean;
+  validation: ValidationResult;
+}) {
+  const connected = connectionStatus === "connected";
+  const commandReviewComplete =
+    pendingApprovals === 0 &&
+    (executedActionCount > 0 ||
+      runState === "executing" ||
+      runState === "validating" ||
+      runState === "ready_to_submit" ||
+      runState === "submitted");
+  const activityComplete = runState === "submitted";
+  const steps = [
+    {
+      complete: systemLoaded,
+      detail: systemLoaded ? "Customer system context loaded." : "Load redacted system context.",
+      label: "Load system",
+    },
+    {
+      complete: connected,
+      detail: connected ? "Backend SSH access approved." : "Approve backend SSH access.",
+      label: "Approve connection",
+    },
+    {
+      complete: analysisReady,
+      detail: analysisReady ? "Diagnostic context is available." : "Run safe read-only diagnostics.",
+      label: "Diagnose",
+    },
+    {
+      complete: commandReviewComplete,
+      detail: pendingApprovals ? `${pendingApprovals} command needs review.` : "No command waiting for review.",
+      label: "Review command",
+    },
+    {
+      complete: validation.status === "passed",
+      detail: validation.status === "passed" ? validation.evidence : "Confirm customer benefit is restored.",
+      label: "Validate",
+    },
+    {
+      complete: activityComplete,
+      detail: activityComplete ? "Activity submitted to Phoenix." : "Review complete activity fields.",
+      label: "Submit activity",
+    },
+  ];
+
+  const nextAction = (() => {
+    if (!systemLoaded) {
+      return { label: "Load system info", onClick: onLoadSystem };
+    }
+    if (!connected) {
+      return { label: "Approve connection", onClick: () => onRequestConnectionApproval("terminal") };
+    }
+    if (pendingApprovals) {
+      return { label: "Review command", onClick: onOpenTerminal };
+    }
+    if (!analysisReady) {
+      return {
+        label: autodiagnosisRunning ? "Read-only diagnostics running" : "Run read-only diagnostics",
+        onClick: canStartAutodiagnosis ? onStartAutodiagnosis : onStartAnalysis,
+        disabled: autodiagnosisRunning,
+      };
+    }
+    if (validation.status !== "passed") {
+      return { label: "Confirm validation", onClick: onRunValidation };
+    }
+    if (!activityComplete) {
+      return { label: "Review activity", onClick: onOpenActivity };
+    }
+    return { label: "Activity submitted", onClick: onOpenActivity, disabled: true };
+  })();
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <CardTitle>Incident path</CardTitle>
+            <CardDescription>
+              One safe action at a time. Terminal shortcuts remain available for experienced technicians.
+            </CardDescription>
+          </div>
+          <Button disabled={nextAction.disabled} onClick={nextAction.onClick} type="button">
+            <PlayIcon data-icon="inline-start" />
+            {nextAction.label}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <ol className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
+          {steps.map((step, index) => {
+            const active = !step.complete && steps.slice(0, index).every((candidate) => candidate.complete);
+            return (
+              <li
+                className={cn(
+                  "flex min-h-24 flex-col gap-2 rounded-lg border p-3",
+                  step.complete
+                    ? "border-primary/40 bg-primary/10"
+                    : active
+                      ? "border-ring bg-muted/60"
+                      : "border-border bg-background text-muted-foreground",
+                )}
+                key={step.label}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-foreground">{step.label}</span>
+                  <StatusLabel label={step.complete ? "done" : active ? "next" : "locked"} />
+                </div>
+                <p className="text-xs leading-5 text-muted-foreground">{step.detail}</p>
+              </li>
+            );
+          })}
+        </ol>
+        <div className="flex flex-wrap gap-2">
+          <Button disabled={!connected} onClick={onOpenTerminal} type="button" variant="outline">
+            <TerminalIcon data-icon="inline-start" />
+            Open terminal
+          </Button>
+          <Button disabled={validation.status !== "passed"} onClick={onGenerateDraft} type="button" variant="outline">
+            <ClipboardCheckIcon data-icon="inline-start" />
+            Draft activity
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -549,14 +777,20 @@ function SystemInfoSkeleton() {
 function AnalysisTab({
   analyticsStats,
   analysisReady,
+  autodiagnosisRunning,
+  canStartAutodiagnosis,
   connectionStatus,
   onRequestConnectionApproval,
+  onStartAutodiagnosis,
   onStartAnalysis,
 }: {
   analyticsStats: DashboardStat[];
   analysisReady: boolean;
+  autodiagnosisRunning: boolean;
+  canStartAutodiagnosis: boolean;
   connectionStatus: ConnectionStatus;
   onRequestConnectionApproval: (intent: ConnectionIntent) => void;
+  onStartAutodiagnosis: () => void;
   onStartAnalysis: () => void;
 }) {
   const requiresConnection = connectionStatus !== "connected";
@@ -579,10 +813,22 @@ function AnalysisTab({
                 Approve connection to start analysis
               </Button>
             ) : (
-              <Button className="w-fit" onClick={onStartAnalysis} type="button">
-                <PlayIcon data-icon="inline-start" />
-                {analysisReady ? "Re-run analysis" : "Start analysis"}
-              </Button>
+              <>
+                <Button
+                  className="w-fit"
+                  disabled={!canStartAutodiagnosis || autodiagnosisRunning}
+                  onClick={onStartAutodiagnosis}
+                  type="button"
+                  variant="default"
+                >
+                  <PlayIcon data-icon="inline-start" />
+                  {autodiagnosisRunning ? "Autonomous diagnosis running" : "Start autonomous diagnosis"}
+                </Button>
+                <Button className="w-fit" onClick={onStartAnalysis} type="button" variant="outline">
+                  <PlayIcon data-icon="inline-start" />
+                  {analysisReady ? "Refresh analysis state" : "Start analysis"}
+                </Button>
+              </>
             )}
           </div>
           {analysisReady ? (

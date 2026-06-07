@@ -27,7 +27,7 @@ export const tickets: Ticket[] = [
     customerId: 501,
     title: "Customer portal unavailable",
     customer: "Mayer & Partner Steuerberatung",
-    priority: "Critical",
+    priority: "High",
     status: "OPEN",
     createdAt: "2026-06-06T08:12:00Z",
     updatedAt: "2026-06-06T08:31:00Z",

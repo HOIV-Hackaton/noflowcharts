@@ -1,5 +1,5 @@
 export type TicketStatus = "OPEN" | "PENDING" | "DONE";
-export type Priority = "Critical" | "High" | "Medium" | "Low";
+export type Priority = "High" | "Medium" | "Low";
 
 export type ConnectionStatus = "not_requested" | "awaiting_approval" | "connected" | "disconnected";
 
@@ -14,6 +14,7 @@ export type RunState =
   | "submitted"
   | "aborted";
 
+export type AgentPhase = "diagnosis" | "execution" | "verification" | "final_analysis";
 export type TabId = "overview" | "system" | "analysis" | "actions" | "logs" | "activity";
 export type ActionStatus = "pending" | "executed" | "rejected" | "failed";
 export type RiskLevel = "Low" | "Medium" | "High";

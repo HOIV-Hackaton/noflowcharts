@@ -124,7 +124,7 @@
   }
 
   .terminal-panel {
-    @apply flex h-full min-h-[480px] flex-col gap-3;
+    @apply flex h-full min-h-0 flex-col gap-3;
   }
 
   .terminal-panel-compact {

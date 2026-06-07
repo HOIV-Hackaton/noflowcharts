@@ -203,9 +203,6 @@ export function mapTerminalTranscript(event: BackendTerminalTranscriptRead): Ter
 
 function normalizePriority(priority: string): Priority {
   const normalized = priority.trim().toLowerCase();
-  if (normalized === "critical") {
-    return "Critical";
-  }
   if (normalized === "high") {
     return "High";
   }

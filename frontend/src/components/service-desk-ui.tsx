@@ -31,7 +31,7 @@ export type DashboardStat = {
   value: number | string;
   detail?: string;
   progress?: number;
-  tone?: "critical" | "default" | "success" | "warning";
+  tone?: "danger" | "default" | "success" | "warning";
 };
 
 export function PageHeading({
@@ -64,7 +64,6 @@ export function PageHeading({
 export function StatusLabel({ label }: { label: string }) {
   const normalized = label.toLowerCase();
   const variant =
-    normalized.includes("critical") ||
     normalized.includes("failed") ||
     normalized.includes("rejected") ||
     normalized.includes("error") ||
@@ -87,9 +86,17 @@ export function StatusLabel({ label }: { label: string }) {
   );
 }
 
-export function StatsGrid({ loading = false, stats }: { loading?: boolean; stats: DashboardStat[] }) {
+export function StatsGrid({
+  children,
+  loading = false,
+  stats,
+}: {
+  children?: ReactNode;
+  loading?: boolean;
+  stats: DashboardStat[];
+}) {
   if (loading) {
-    return <StatsGridSkeleton />;
+    return <StatsGridSkeleton count={stats.length + (children ? 1 : 0)} />;
   }
 
   return (
@@ -107,6 +114,7 @@ export function StatsGrid({ loading = false, stats }: { loading?: boolean; stats
           </CardContent>
         </Card>
       ))}
+      {children}
     </div>
   );
 }
@@ -131,7 +139,14 @@ export function TicketTable({
   return (
     <Card>
       <CardContent className="px-0">
-        <Table>
+        <Table className="min-w-[820px] table-fixed">
+          <colgroup>
+            <col className="w-[38%]" />
+            <col className="w-[26%]" />
+            <col className="w-[12%]" />
+            <col className="w-[12%]" />
+            <col className="w-[12%]" />
+          </colgroup>
           <TableHeader>
             <TableRow>
               <TableHead>Ticket</TableHead>
@@ -144,7 +159,7 @@ export function TicketTable({
           <TableBody>
             {tickets.map((ticket) => (
               <TableRow
-                className="cursor-pointer"
+                className="h-16 cursor-pointer"
                 key={ticket.id}
                 onClick={() => onSelectTicket(ticket.id)}
                 tabIndex={0}
@@ -155,20 +170,20 @@ export function TicketTable({
                   }
                 }}
               >
-                <TableCell className="max-w-[340px]">
+                <TableCell>
                   <div className="flex min-w-0 flex-col gap-1">
                     <span className="truncate font-medium text-foreground">{ticket.title}</span>
                     <span className="text-xs text-muted-foreground">#{ticket.id}</span>
                   </div>
                 </TableCell>
-                <TableCell className="max-w-[260px] truncate">{ticket.customer}</TableCell>
-                <TableCell>
+                <TableCell className="truncate">{ticket.customer}</TableCell>
+                <TableCell className="overflow-hidden">
                   <StatusLabel label={ticket.priority} />
                 </TableCell>
-                <TableCell>
+                <TableCell className="overflow-hidden">
                   <StatusLabel label={ticket.status} />
                 </TableCell>
-                <TableCell>{formatDate(ticket.updatedAt)}</TableCell>
+                <TableCell className="truncate">{formatDate(ticket.updatedAt)}</TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -189,17 +204,25 @@ export function EmptyPanel({ detail, title }: { detail: string; title: string })
   );
 }
 
-export function PriorityBars({ loading = false, tickets }: { loading?: boolean; tickets: Ticket[] }) {
+export function PriorityBars({
+  compact = false,
+  loading = false,
+  tickets,
+}: {
+  compact?: boolean;
+  loading?: boolean;
+  tickets: Ticket[];
+}) {
   if (loading) {
     return (
-      <Card>
+      <Card size={compact ? "sm" : "default"}>
         <CardHeader>
           <Skeleton className="h-5 w-28" />
           <Skeleton className="h-4 w-44" />
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div className="flex flex-col gap-2" key={index}>
+        <CardContent className={compact ? "flex flex-col gap-2" : "flex flex-col gap-4"}>
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div className="flex flex-col gap-1.5" key={index}>
               <div className="flex items-center justify-between">
                 <Skeleton className="h-4 w-20" />
                 <Skeleton className="h-4 w-5" />
@@ -213,15 +236,15 @@ export function PriorityBars({ loading = false, tickets }: { loading?: boolean; 
   }
 
   const total = Math.max(tickets.length, 1);
-  const priorities: Priority[] = ["Critical", "High", "Medium", "Low"];
+  const priorities: Priority[] = ["High", "Medium", "Low"];
 
   return (
-    <Card>
+    <Card size={compact ? "sm" : "default"}>
       <CardHeader>
         <CardTitle>Priority mix</CardTitle>
         <CardDescription>Visible ticket load by urgency.</CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3">
+      <CardContent className={compact ? "flex flex-col gap-2" : "flex flex-col gap-3"}>
         {priorities.map((priority) => {
           const count = tickets.filter((ticket) => ticket.priority === priority).length;
           return (
@@ -281,7 +304,7 @@ function MiniSignal({ tone }: { tone: NonNullable<DashboardStat["tone"]> }) {
         <span
           className={cn(
             "flex-1 rounded-sm bg-primary/30",
-            tone === "critical" && "bg-destructive/40",
+            tone === "danger" && "bg-destructive/40",
             tone === "success" && "bg-foreground/40",
             tone === "warning" && "bg-muted-foreground/40",
           )}
@@ -293,10 +316,10 @@ function MiniSignal({ tone }: { tone: NonNullable<DashboardStat["tone"]> }) {
   );
 }
 
-function StatsGridSkeleton() {
+function StatsGridSkeleton({ count = 4 }: { count?: number }) {
   return (
     <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
-      {Array.from({ length: 4 }).map((_, index) => (
+      {Array.from({ length: count }).map((_, index) => (
         <Card key={index} size="sm">
           <CardHeader>
             <Skeleton className="h-4 w-28" />
@@ -325,7 +348,14 @@ function TicketTableSkeleton() {
   return (
     <Card>
       <CardContent className="px-0">
-        <Table>
+        <Table className="min-w-[820px] table-fixed">
+          <colgroup>
+            <col className="w-[38%]" />
+            <col className="w-[26%]" />
+            <col className="w-[12%]" />
+            <col className="w-[12%]" />
+            <col className="w-[12%]" />
+          </colgroup>
           <TableHeader>
             <TableRow>
               <TableHead>Ticket</TableHead>
@@ -337,8 +367,8 @@ function TicketTableSkeleton() {
           </TableHeader>
           <TableBody>
             {Array.from({ length: 5 }).map((_, index) => (
-              <TableRow key={index}>
-                <TableCell className="max-w-[340px]">
+              <TableRow className="h-16" key={index}>
+                <TableCell>
                   <div className="flex flex-col gap-2">
                     <Skeleton className="h-4 w-56" />
                     <Skeleton className="h-3 w-14" />

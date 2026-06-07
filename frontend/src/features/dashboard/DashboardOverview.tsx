@@ -24,47 +24,25 @@ export function DashboardOverview({
   tickets: Ticket[];
 }) {
   const pendingTickets = allTickets.filter((ticket) => ticket.status === "PENDING").length;
-  const doneTickets = allTickets.filter((ticket) => ticket.status === "DONE").length;
   const total = Math.max(allTickets.length, 1);
-  const overviewStats = stats.filter((stat) => stat.label !== "Pending approval");
 
   return (
     <div className="flex flex-col gap-5">
-      <StatsGrid
-        loading={loading}
-        stats={[
-          ...overviewStats,
-          {
-            detail: `${pendingTickets} tickets are waiting on technician review.`,
-            label: "Pending tickets",
-            progress: (pendingTickets / total) * 100,
-            tone: pendingTickets ? "warning" : "success",
-            value: pendingTickets,
-          },
-          {
-            detail: `${doneTickets} tickets have completed documentation.`,
-            label: "Done",
-            progress: (doneTickets / total) * 100,
-            tone: "success",
-            value: doneTickets,
-          },
-        ]}
-      />
+      <StatsGrid loading={loading} stats={stats}>
+        <PriorityBars compact loading={loading} tickets={allTickets} />
+      </StatsGrid>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-        <section className="flex min-w-0 flex-col gap-3">
+      <div className="grid gap-4 xl:grid-cols-4">
+        <section className="flex min-w-0 flex-col gap-3 xl:col-span-3">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="font-heading text-lg font-medium tracking-normal">High priority tickets</h2>
-              <p className="text-sm text-muted-foreground">Critical and high priority work stays visible.</p>
+              <p className="text-sm text-muted-foreground">High priority work stays visible.</p>
             </div>
           </div>
           <TicketTable loading={loading} tickets={highPriorityTickets} onSelectTicket={onSelectTicket} />
         </section>
-        <div className="flex flex-col gap-4">
-          <PriorityBars loading={loading} tickets={allTickets} />
-          {loading ? <StatusMixSkeleton /> : <StatusMixCard tickets={allTickets} total={total} />}
-        </div>
+        {loading ? <StatusMixSkeleton /> : <StatusMixCard tickets={allTickets} total={total} />}
       </div>
     </div>
   );

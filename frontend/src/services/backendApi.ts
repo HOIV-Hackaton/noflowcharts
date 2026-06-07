@@ -133,6 +133,78 @@ export type BackendRunStateRead = {
   current_action: BackendActionRead | null;
   command_results: BackendCommandResultRead[];
   activity_draft: BackendActivityDraftRead | null;
+  related_ticket: BackendRelatedTicketRead | null;
+};
+
+export type BackendRelatedTicketRead = {
+  ticket_id: number;
+  title: string;
+  description: string;
+  rationale: string | null;
+  confidence: string | null;
+};
+
+export type BackendRunWebSocketEvent = {
+  event_id: number | null;
+  type: string;
+  run_id: string;
+  timestamp: string | null;
+  payload: Record<string, unknown>;
+};
+
+export type BackendLatencyStats = {
+  count: number;
+  average_ms: number | null;
+  min_ms: number | null;
+  max_ms: number | null;
+};
+
+export type BackendTokenCostSummary = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number | null;
+};
+
+export type BackendLlmMetricsRead = {
+  request_count: number;
+  error_count: number;
+  latency: BackendLatencyStats;
+  tokens: BackendTokenCostSummary;
+  by_operation: Record<string, BackendTokenCostSummary>;
+  requests: Array<{
+    id: number;
+    run_id: string | null;
+    operation: string;
+    provider: string;
+    model: string;
+    latency_ms: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    estimated_cost_usd: number | null;
+    error: string | null;
+    created_at: string;
+  }>;
+};
+
+export type BackendRunMetricsRead = {
+  run_id: string;
+  ticket_id: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  run_duration_ms: number;
+  action_count: number;
+  command_result_count: number;
+  successful_command_count: number;
+  failed_command_count: number;
+  timed_out_command_count: number;
+  terminal_command_count: number;
+  audit_event_count: number;
+  command_latency: BackendLatencyStats;
+  terminal_command_latency: BackendLatencyStats;
+  llm: BackendLlmMetricsRead;
 };
 
 export type BackendAuditEventRead = {
@@ -349,6 +421,10 @@ export const backendApi = {
     return request<BackendTerminalTranscriptRead[]>(`/api/runs/${runId}/terminal/transcript`);
   },
 
+  getRunMetrics(runId: string) {
+    return request<BackendRunMetricsRead>(`/api/metrics/runs/${runId}`);
+  },
+
   generateActivityDraft(runId: string) {
     return request<BackendActivityDraftRead>(`/api/runs/${runId}/activity/draft`, { method: "POST" });
   },
@@ -409,6 +485,16 @@ export function runTerminalWebSocketUrl(runId: string, cols = 120, rows = 32) {
     cols: String(cols),
     rows: String(rows),
   }).toString();
+  return url.toString();
+}
+
+export function runEventsWebSocketUrl(runId: string, lastEventId?: number | null) {
+  const url = new URL(API_BASE);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = `/api/runs/${runId}/ws`;
+  if (lastEventId !== undefined && lastEventId !== null) {
+    url.search = new URLSearchParams({ last_event_id: String(lastEventId) }).toString();
+  }
   return url.toString();
 }
 
