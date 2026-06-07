@@ -530,6 +530,54 @@ def test_agent_command_timeout_interrupts_and_returns_to_diagnosis():
     asyncio.run(run_test())
 
 
+def test_agent_accept_clears_stray_confirmation_input_before_execution():
+    async def run_test():
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=FakePlanner())
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        proposal = await wait_for(queue, "agent_proposal")
+        await manager.handle_message(runtime, {"type": "input", "data": "a"})
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": proposal["command_id"]})
+        await wait_for(queue, "command_completed")
+
+        written = FakePty.instances[-1].writes[0]
+        assert written.startswith("\x15env ")
+        assert "aenv" not in written
+        assert runtime.input_buffer == ""
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_terminal_input_is_ignored_while_command_is_running():
+    async def run_test():
+        manager = TerminalManager(
+            pty_factory=HangingPty,
+            safety_reviewer=ConfirmingReviewer(),
+            planner=FakePlanner(),
+            command_timeout_seconds=60,
+        )
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        proposal = await wait_for(queue, "agent_proposal")
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": proposal["command_id"]})
+        await wait_for(queue, "command_running")
+        await manager.handle_message(runtime, {"type": "input", "data": "whoami\r"})
+
+        assert len(manager.logs(run_id)) == 1
+        assert runtime.input_buffer == ""
+        assert len(HangingPty.instances[-1].writes) == 1
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
 def test_agent_next_is_blocked_while_command_is_running():
     async def run_test():
         planner = DiagnosisThenDiagnosisPlanner()

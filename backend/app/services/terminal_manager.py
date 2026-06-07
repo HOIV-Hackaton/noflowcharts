@@ -208,6 +208,9 @@ class TerminalManager:
             if "\n" in data or "\r" in data:
                 runtime.secret_input_mode = False
             return
+        if runtime.pending_commands:
+            self._audit(runtime.run_id, "terminal_input_ignored_during_command", {"pending_command_ids": sorted(runtime.pending_commands)})
+            return
         for char in data:
             if char in {"\r", "\n"}:
                 command = runtime.input_buffer.strip()
@@ -493,6 +496,7 @@ class TerminalManager:
         event_prefix = "agent" if source == TerminalCommandSource.AGENT else "manual"
         self._audit(runtime.run_id, f"{event_prefix}_command_running", {"command_id": command_id, "command": command})
         await self._broadcast(runtime, {"type": "command_running", "command_id": command_id})
+        runtime.input_buffer = ""
         wrapped = _wrap_command_for_pty(command, command_id)
         await asyncio.to_thread(runtime.pty.write, wrapped)
 
@@ -714,7 +718,7 @@ terminal_manager = TerminalManager()
 def _wrap_command_for_pty(command: str, command_id: int) -> str:
     command = _make_command_non_interactive(command)
     wrapped_command = shlex.quote(command)
-    return f"env {NONINTERACTIVE_ENV} bash -lc {wrapped_command}; __noflow_exit=$?; printf '\\n__NOFLOW_EXIT:{command_id}:%s__\\n' \"$__noflow_exit\"\n"
+    return f"\x15env {NONINTERACTIVE_ENV} bash -lc {wrapped_command}; __noflow_exit=$?; printf '\\n__NOFLOW_EXIT:{command_id}:%s__\\n' \"$__noflow_exit\"\n"
 
 
 def _make_command_non_interactive(command: str) -> str:
