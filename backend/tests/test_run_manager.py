@@ -108,7 +108,7 @@ class FakePlanner:
         self.command = command
         self.related_ticket = None
 
-    def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
+    def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
         self.related_ticket = related_ticket
         return CommandProposal(intent="Check service", command=self.command, expected_signal="Service state is visible")
 
@@ -119,7 +119,7 @@ class FakeAutoDiagnosticPlanner(FakePlanner):
         self.proposals = list(proposals)
         self.diagnostic_observations = []
 
-    def propose_diagnostic_tool(self, ticket, customer_system, observations, related_ticket=None):
+    def propose_diagnostic_tool(self, ticket, customer_system, observations, related_ticket=None, run_id=None):
         self.diagnostic_observations.append(observations)
         if self.proposals:
             return self.proposals.pop(0)
@@ -135,7 +135,7 @@ class FakeValidationPlanner(FakePlanner):
     def __init__(self):
         super().__init__("curl -fsS http://localhost/health")
 
-    def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
+    def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
         self.observations = observations
         self.related_ticket = related_ticket
         return CommandProposal(intent="Validate customer service restoration", command=self.command, expected_signal="HTTP endpoint responds successfully")
@@ -145,15 +145,15 @@ class FakePhasedPlanner:
     def __init__(self):
         self.calls = []
 
-    def propose_diagnosis_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
+    def propose_diagnosis_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
         self.calls.append(("diagnosis", observations))
         return CommandProposal(intent="Apply targeted fix after diagnosis evidence.", command="systemctl restart nginx", expected_signal="Service restart succeeds", phase="fix")
 
-    def propose_execution_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
+    def propose_execution_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
         self.calls.append(("execution", observations))
         return CommandProposal(intent="Execute targeted fix.", command="systemctl restart nginx", expected_signal="Service restart succeeds", phase="fix")
 
-    def propose_verification_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
+    def propose_verification_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
         self.calls.append(("verification", observations))
         return CommandProposal(intent="Validate customer service restoration", command="curl --max-time 5 -fsS http://localhost/health", expected_signal="HTTP endpoint responds successfully", phase="validate")
 
@@ -168,7 +168,7 @@ class FakeSshRunner:
 
 
 class FakeActivityGenerator:
-    def generate(self, ticket, customer_system, actions, command_results, validation):
+    def generate(self, ticket, customer_system, actions, command_results, validation, run_id=None):
         return ActivityDraftUpdate(
             summary="Restored the status API service.",
             root_cause="nginx was inactive, so the API proxy was unavailable.",

@@ -96,7 +96,7 @@ class RunManager:
             phase = self._select_agent_phase(run, observations)
             self.audit.record("agent_phase_selected", {"phase": phase, "observation_count": len(observations)}, run.id)
             self._event(run.id, "agent_phase_selected", {"phase": phase})
-            proposal = self._propose_for_phase(planner, phase, snapshot, observations)
+            proposal = self._propose_for_phase(planner, phase, snapshot, observations, run.id)
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
         action = self.repo.add_action(
@@ -118,7 +118,7 @@ class RunManager:
             self._event(run.id, "command_proposed", {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value})
         return self.state(run.id)
 
-    def _propose_for_phase(self, planner: Planner, phase: str, snapshot: dict[str, Any], observations: list[dict[str, Any]]) -> CommandProposal:
+    def _propose_for_phase(self, planner: Planner, phase: str, snapshot: dict[str, Any], observations: list[dict[str, Any]], run_id: str) -> CommandProposal:
         ticket = snapshot.get("ticket", {})
         customer_system = snapshot.get("customer_system", {})
         related_ticket = snapshot.get("related_ticket")
@@ -129,6 +129,7 @@ class RunManager:
                 observations=observations,
                 safety_policy=SAFETY_POLICY_SUMMARY,
                 related_ticket=related_ticket,
+                run_id=run_id,
             )
         if phase == "execution" and hasattr(planner, "propose_execution_command"):
             return planner.propose_execution_command(
@@ -137,6 +138,7 @@ class RunManager:
                 observations=observations,
                 safety_policy=SAFETY_POLICY_SUMMARY,
                 related_ticket=related_ticket,
+                run_id=run_id,
             )
         if hasattr(planner, "propose_diagnosis_command"):
             return planner.propose_diagnosis_command(
@@ -145,6 +147,7 @@ class RunManager:
                 observations=observations,
                 safety_policy=SAFETY_POLICY_SUMMARY,
                 related_ticket=related_ticket,
+                run_id=run_id,
             )
         return planner.propose_next_command(
             ticket=ticket,
@@ -152,6 +155,7 @@ class RunManager:
             observations=observations,
             safety_policy=SAFETY_POLICY_SUMMARY,
             related_ticket=related_ticket,
+            run_id=run_id,
         )
 
     def start_safe_autodiagnosis(self, run_id: str) -> RunStateRead:
@@ -179,6 +183,7 @@ class RunManager:
                 customer_system=snapshot.get("customer_system", {}),
                 observations=observations,
                 related_ticket=snapshot.get("related_ticket"),
+                run_id=run.id,
             )
             self.audit.record(
                 "agent_diagnostic_requested",
@@ -266,6 +271,7 @@ class RunManager:
             ],
             safety_policy=SAFETY_POLICY_SUMMARY,
             related_ticket=snapshot.get("related_ticket"),
+            run_id=run.id,
         )
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
@@ -434,6 +440,7 @@ class RunManager:
             actions=actions + terminal_commands,
             command_results=command_results + terminal_commands,
             validation={"status": run.validation_status, "confirmed": run.validation_confirmed, "events": validation_events},
+            run_id=run.id,
         )
         draft = self.repo.upsert_activity_draft(run, **generated.model_dump())
         self.audit.record("activity_draft_generated", generated.model_dump(), run.id)

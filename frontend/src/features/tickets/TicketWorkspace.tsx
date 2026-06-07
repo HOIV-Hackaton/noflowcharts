@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import {
   AlertTriangleIcon,
   ArrowLeftIcon,
@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { hypotheses, tabs } from "@/data/mockData";
 import { formatConnection, formatDate, formatRunState, isDraftComplete } from "@/lib/serviceDesk";
@@ -58,6 +59,8 @@ const TicketTerminal = lazy(() =>
   import("./TicketTerminal").then((module) => ({ default: module.TicketTerminal })),
 );
 
+type ConnectionIntent = "analysis" | "autodiagnosis" | "terminal";
+
 export function TicketWorkspace(props: {
   activeTab: TabId;
   actions: ProposedAction[];
@@ -71,12 +74,12 @@ export function TicketWorkspace(props: {
   notice: string;
   onAbort: () => void;
   onApproveAction: (actionId: string) => void;
-  onApproveConnection: () => void;
+  onApproveConnection: () => Promise<void> | void;
   onBackToTickets: () => void;
   onCopyAudit: () => void;
   onDraftChange: (draft: ActivityDraft) => void;
   onGenerateDraft: () => void;
-  onLoadSystem: () => void;
+  onLoadSystem: () => Promise<void> | void;
   onRejectAction: (actionId: string) => void;
   onRetryAction: (actionId: string) => void;
   onRunValidation: () => void;
@@ -93,12 +96,15 @@ export function TicketWorkspace(props: {
   setLogFilter: (filter: "all" | EventType) => void;
   submitStatus: "idle" | "submitted";
   systemLoaded: boolean;
+  systemLoading: boolean;
   terminalCommands: TerminalCommandLog[];
   terminalTranscript: TerminalTranscriptLine[];
   ticket: Ticket;
   validation: ValidationResult;
 }) {
   const [abortDialogOpen, setAbortDialogOpen] = useState(false);
+  const [connectionDialogOpen, setConnectionDialogOpen] = useState(false);
+  const [connectionIntent, setConnectionIntent] = useState<ConnectionIntent | null>(null);
   const pendingMessage =
     props.systemLoaded && props.connectionStatus === "awaiting_approval"
       ? "Connection approval required"
@@ -135,6 +141,44 @@ export function TicketWorkspace(props: {
       value: formatConnection(props.connectionStatus),
     },
   ];
+
+  const requestConnectionApproval = async (intent: ConnectionIntent) => {
+    setConnectionIntent(intent);
+
+    if (!props.systemLoaded) {
+      await props.onLoadSystem();
+    }
+
+    setConnectionDialogOpen(true);
+  };
+
+  useEffect(() => {
+    if (props.connectionStatus !== "connected" || !connectionIntent) {
+      return;
+    }
+
+    const approvedIntent = connectionIntent;
+    setConnectionIntent(null);
+    setConnectionDialogOpen(false);
+
+    if (approvedIntent === "analysis") {
+      props.onStartAnalysis();
+      return;
+    }
+
+    if (approvedIntent === "autodiagnosis") {
+      props.onStartAutodiagnosis();
+      return;
+    }
+
+    props.onTabChange("actions");
+  }, [
+    connectionIntent,
+    props.connectionStatus,
+    props.onStartAnalysis,
+    props.onStartAutodiagnosis,
+    props.onTabChange,
+  ]);
 
   return (
     <section className="flex flex-1 flex-col gap-5">
@@ -202,6 +246,7 @@ export function TicketWorkspace(props: {
             onLoadSystem={props.onLoadSystem}
             onOpenTerminal={() => props.onTabChange("actions")}
             onRunValidation={props.onRunValidation}
+            onRequestConnectionApproval={requestConnectionApproval}
             onStartAnalysis={props.onStartAnalysis}
             pendingApprovals={props.pendingActions.length}
             runState={props.runState}
@@ -217,6 +262,7 @@ export function TicketWorkspace(props: {
             onOpenTerminal={() => props.onTabChange("actions")}
             system={props.selectedSystem}
             systemLoaded={props.systemLoaded}
+            systemLoading={props.systemLoading}
           />
         </TabsContent>
         <TabsContent value="analysis">
@@ -233,16 +279,18 @@ export function TicketWorkspace(props: {
             ]}
             analysisReady={props.analysisReady}
             connectionStatus={props.connectionStatus}
+            onRequestConnectionApproval={requestConnectionApproval}
             onStartAnalysis={props.onStartAnalysis}
           />
         </TabsContent>
         <TabsContent className="min-h-[560px]" value="actions">
           <ActionsTab
             connectionStatus={props.connectionStatus}
-            onApproveConnection={props.onApproveConnection}
             onLoadSystem={props.onLoadSystem}
+            onRequestConnectionApproval={requestConnectionApproval}
             runId={props.backendRunId}
             systemLoaded={props.systemLoaded}
+            systemLoading={props.systemLoading}
           />
         </TabsContent>
         <TabsContent value="logs">
@@ -277,6 +325,14 @@ export function TicketWorkspace(props: {
         title="Abort run?"
         variant="destructive"
       />
+      <ConfirmDialog
+        confirmLabel="Approve connection"
+        description={getConnectionApprovalDescription(connectionIntent)}
+        onConfirm={props.onApproveConnection}
+        onOpenChange={setConnectionDialogOpen}
+        open={connectionDialogOpen}
+        title="Approve backend connection?"
+      />
     </section>
   );
 }
@@ -288,6 +344,7 @@ function OverviewTab({
   onLoadSystem,
   onOpenTerminal,
   onRunValidation,
+  onRequestConnectionApproval,
   onStartAnalysis,
   pendingApprovals,
   runState,
@@ -301,6 +358,7 @@ function OverviewTab({
   onLoadSystem: () => void;
   onOpenTerminal: () => void;
   onRunValidation: () => void;
+  onRequestConnectionApproval: (intent: ConnectionIntent) => void;
   onStartAnalysis: () => void;
   pendingApprovals: number;
   runState: RunState;
@@ -308,6 +366,24 @@ function OverviewTab({
   ticket: Ticket;
   validation: ValidationResult;
 }) {
+  const requiresConnection = connectionStatus !== "connected";
+  const handleStartAnalysis = () => {
+    if (requiresConnection) {
+      onRequestConnectionApproval("analysis");
+      return;
+    }
+
+    onStartAnalysis();
+  };
+  const handleOpenTerminal = () => {
+    if (requiresConnection) {
+      onRequestConnectionApproval("terminal");
+      return;
+    }
+
+    onOpenTerminal();
+  };
+
   return (
     <div className="flex flex-col gap-4">
       <StatsGrid stats={analyticsStats} />
@@ -359,15 +435,21 @@ function OverviewTab({
               <ShieldCheckIcon data-icon="inline-start" />
               {systemLoaded ? "Reload system info" : "Load system info"}
             </Button>
+            {requiresConnection ? (
+              <Button onClick={() => onRequestConnectionApproval("terminal")} type="button" variant="default">
+                <ShieldCheckIcon data-icon="inline-start" />
+                Approve connection
+              </Button>
+            ) : null}
             <Button
-              onClick={onOpenTerminal}
+              onClick={handleOpenTerminal}
               type="button"
               variant={systemLoaded && connectionStatus !== "connected" ? "default" : "outline"}
             >
               <TerminalIcon data-icon="inline-start" />
               Open terminal
             </Button>
-            <Button onClick={onStartAnalysis} type="button" variant="outline">
+            <Button onClick={handleStartAnalysis} type="button" variant="outline">
               <PlayIcon data-icon="inline-start" />
               Start analysis
             </Button>
@@ -392,12 +474,14 @@ function SystemTab({
   onOpenTerminal,
   system,
   systemLoaded,
+  systemLoading,
 }: {
   connectionStatus: ConnectionStatus;
   onLoadSystem: () => void;
   onOpenTerminal: () => void;
   system: CustomerSystem | null;
   systemLoaded: boolean;
+  systemLoading: boolean;
 }) {
   return (
     <div className="flex flex-col gap-4">
@@ -409,7 +493,9 @@ function SystemTab({
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          {systemLoaded && system ? (
+          {systemLoading ? (
+            <SystemInfoSkeleton />
+          ) : systemLoaded && system ? (
             <DefinitionTable
               rows={[
                 ["Host", system.hostLabel],
@@ -423,11 +509,16 @@ function SystemTab({
             <EmptyState title="System not loaded" detail="Load redacted customer system context before approval." />
           )}
           <div className="flex flex-wrap items-center gap-2">
-            <Button onClick={onLoadSystem} type="button" variant="outline">
+            <Button disabled={systemLoading} onClick={onLoadSystem} type="button" variant="outline">
               <ShieldCheckIcon data-icon="inline-start" />
-              {systemLoaded ? "Reload system info" : "Load system info"}
+              {systemLoading ? "Loading system info" : systemLoaded ? "Reload system info" : "Load system info"}
             </Button>
-            <Button onClick={onOpenTerminal} type="button" variant={systemLoaded ? "default" : "outline"}>
+            <Button
+              disabled={systemLoading}
+              onClick={onOpenTerminal}
+              type="button"
+              variant={systemLoaded ? "default" : "outline"}
+            >
               <TerminalIcon data-icon="inline-start" />
               Open terminal
             </Button>
@@ -438,17 +529,38 @@ function SystemTab({
   );
 }
 
+function SystemInfoSkeleton() {
+  return (
+    <div className="overflow-hidden rounded-lg border">
+      {Array.from({ length: 5 }).map((_, index) => (
+        <div className="grid grid-cols-[180px_minmax(0,1fr)] border-b last:border-b-0" key={index}>
+          <div className="bg-muted/40 p-3">
+            <Skeleton className="h-4 w-24" />
+          </div>
+          <div className="p-3">
+            <Skeleton className="h-4 w-full max-w-sm" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AnalysisTab({
   analyticsStats,
   analysisReady,
   connectionStatus,
+  onRequestConnectionApproval,
   onStartAnalysis,
 }: {
   analyticsStats: DashboardStat[];
   analysisReady: boolean;
   connectionStatus: ConnectionStatus;
+  onRequestConnectionApproval: (intent: ConnectionIntent) => void;
   onStartAnalysis: () => void;
 }) {
+  const requiresConnection = connectionStatus !== "connected";
+
   return (
     <div className="flex flex-col gap-4">
       <StatsGrid stats={analyticsStats} />
@@ -460,10 +572,19 @@ function AnalysisTab({
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <Button className="w-fit" onClick={onStartAnalysis} type="button">
-            <PlayIcon data-icon="inline-start" />
-            {analysisReady ? "Re-run analysis" : "Start analysis"}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {requiresConnection ? (
+              <Button className="w-fit" onClick={() => onRequestConnectionApproval("analysis")} type="button">
+                <ShieldCheckIcon data-icon="inline-start" />
+                Approve connection to start analysis
+              </Button>
+            ) : (
+              <Button className="w-fit" onClick={onStartAnalysis} type="button">
+                <PlayIcon data-icon="inline-start" />
+                {analysisReady ? "Re-run analysis" : "Start analysis"}
+              </Button>
+            )}
+          </div>
           {analysisReady ? (
             <Table>
               <TableHeader>
@@ -496,19 +617,19 @@ function AnalysisTab({
 
 function ActionsTab({
   connectionStatus,
-  onApproveConnection,
   onLoadSystem,
+  onRequestConnectionApproval,
   runId,
   systemLoaded,
+  systemLoading,
 }: {
   connectionStatus: ConnectionStatus;
-  onApproveConnection: () => void;
-  onLoadSystem: () => void;
+  onLoadSystem: () => Promise<void> | void;
+  onRequestConnectionApproval: (intent: ConnectionIntent) => void;
   runId: string | null;
   systemLoaded: boolean;
+  systemLoading: boolean;
 }) {
-  const [connectionDialogOpen, setConnectionDialogOpen] = useState(false);
-
   return (
     <div className="flex h-full min-h-[560px] min-w-0 flex-col gap-3">
       {!runId ? (
@@ -521,10 +642,10 @@ function ActionsTab({
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button onClick={onLoadSystem} type="button" variant={systemLoaded ? "outline" : "default"}>
-                Load system info
+              <Button disabled={systemLoading} onClick={onLoadSystem} type="button" variant={systemLoaded ? "outline" : "default"}>
+                {systemLoading ? "Loading system info" : "Load system info"}
               </Button>
-              <Button disabled={!systemLoaded} onClick={() => setConnectionDialogOpen(true)} type="button">
+              <Button disabled={systemLoading} onClick={() => onRequestConnectionApproval("terminal")} type="button">
                 {connectionStatus === "connected" ? "Prepare terminal" : "Approve connection"}
               </Button>
             </div>
@@ -534,14 +655,6 @@ function ActionsTab({
       <Suspense fallback={<EmptyState title="Loading terminal" detail="Preparing the remote terminal surface." />}>
         <TicketTerminal runId={runId} />
       </Suspense>
-      <ConfirmDialog
-        confirmLabel="Approve"
-        description="This approves backend SSH access for the selected customer system."
-        onConfirm={onApproveConnection}
-        onOpenChange={setConnectionDialogOpen}
-        open={connectionDialogOpen}
-        title="Approve connection?"
-      />
     </div>
   );
 }
@@ -676,6 +789,22 @@ function formatTerminalCommandStatus(status: TerminalCommandLog["status"]) {
   }
 }
 
+function getConnectionApprovalDescription(intent: ConnectionIntent | null) {
+  if (intent === "analysis") {
+    return "This approves backend SSH access for the selected customer system, then starts the analysis flow.";
+  }
+
+  if (intent === "autodiagnosis") {
+    return "This approves backend SSH access for the selected customer system, then starts safe autodiagnosis.";
+  }
+
+  if (intent === "terminal") {
+    return "This approves backend SSH access for the selected customer system before opening the terminal.";
+  }
+
+  return "This approves backend SSH access for the selected customer system.";
+}
+
 function ActivityTab({
   draft,
   notice,
@@ -750,14 +879,14 @@ function ConfirmDialog({
 }: {
   confirmLabel: string;
   description: string;
-  onConfirm: () => void;
+  onConfirm: () => Promise<void> | void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
   title: string;
   variant?: "default" | "destructive";
 }) {
-  const confirm = () => {
-    onConfirm();
+  const confirm = async () => {
+    await onConfirm();
     onOpenChange(false);
   };
 

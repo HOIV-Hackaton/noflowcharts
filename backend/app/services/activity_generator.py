@@ -2,7 +2,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError as PydanticValidationError, field_validator
 
-from app.agent.providers import LlmProvider, get_llm_provider
+from app.agent.providers import LlmProvider, complete_json_with_metrics, get_llm_provider
 from app.core.errors import AgentError
 from app.core.redaction import redact_payload
 from app.core.config import get_settings
@@ -63,6 +63,7 @@ class ActivityGenerator:
         actions: list[dict[str, Any]],
         command_results: list[dict[str, Any]],
         validation: dict[str, Any],
+        run_id: str | None = None,
     ) -> GeneratedActivityDraft:
         messages = [
             {
@@ -86,7 +87,7 @@ class ActivityGenerator:
             },
         ]
         try:
-            payload = self.provider.complete_json(messages, timeout=45.0)
+            payload = complete_json_with_metrics(self.provider, messages, timeout=45.0, operation="activity.generate_draft", run_id=run_id)
             return GeneratedActivityDraft.model_validate(payload)
         except PydanticValidationError as exc:
             raise AgentError(f"Activity generator returned invalid draft: {exc}") from exc

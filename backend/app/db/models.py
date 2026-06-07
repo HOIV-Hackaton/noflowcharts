@@ -160,3 +160,17 @@ class TerminalTranscriptEvent(SQLModel, table=True):
     data: str
     created_at: datetime = Field(default_factory=utc_now, index=True)
     redacted: bool = Field(default=True)
+
+
+class LlmUsageMetric(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: str | None = Field(default=None, foreign_key="run.id", index=True)
+    operation: str = Field(index=True)
+    provider: str
+    model: str
+    latency_ms: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now, index=True)

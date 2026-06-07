@@ -2,7 +2,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from app.agent.providers import LlmProvider, get_llm_provider
+from app.agent.providers import LlmProvider, complete_json_with_metrics, get_llm_provider
 from app.core.config import get_settings
 from app.core.errors import AgentError
 from app.core.redaction import redact_payload
@@ -241,6 +241,7 @@ class Planner:
         observations: list[dict],
         safety_policy: str,
         related_ticket: dict | None = None,
+        run_id: str | None = None,
     ) -> CommandProposal:
         return self._propose_command(
             system_prompt=PLANNER_SYSTEM_PROMPT,
@@ -249,6 +250,8 @@ class Planner:
             observations=observations,
             safety_policy=safety_policy,
             related_ticket=related_ticket,
+            run_id=run_id,
+            operation="planner.propose_next_command",
         )
 
     def propose_diagnosis_command(
@@ -259,6 +262,7 @@ class Planner:
         safety_policy: str,
         related_ticket: dict | None = None,
         handoff_context: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> CommandProposal:
         payload = self._complete_agent_json(
             DIAGNOSIS_AGENT_SYSTEM_PROMPT,
@@ -268,6 +272,8 @@ class Planner:
             safety_policy,
             related_ticket,
             handoff_context,
+            run_id=run_id,
+            operation="planner.propose_diagnosis_command",
         )
         decision = AgentHandoffDecision.model_validate(payload)
         if decision.mode == "handoff_to_execution":
@@ -278,6 +284,7 @@ class Planner:
                 safety_policy,
                 related_ticket=related_ticket,
                 handoff_context={"from_agent": "diagnosis", "reason": decision.reason},
+                run_id=run_id,
             )
         try:
             return CommandProposal.model_validate(payload)
@@ -292,6 +299,7 @@ class Planner:
         safety_policy: str,
         related_ticket: dict | None = None,
         handoff_context: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> CommandProposal:
         payload = self._complete_agent_json(
             EXECUTION_AGENT_SYSTEM_PROMPT,
@@ -301,6 +309,8 @@ class Planner:
             safety_policy,
             related_ticket,
             handoff_context,
+            run_id=run_id,
+            operation="planner.propose_execution_command",
         )
         decision = AgentHandoffDecision.model_validate(payload)
         if decision.mode == "needs_more_diagnosis":
@@ -319,6 +329,7 @@ class Planner:
                 safety_policy,
                 related_ticket=related_ticket,
                 handoff_context={"from_agent": "execution", "reason": decision.reason, "diagnostic_question": decision.diagnostic_question},
+                run_id=run_id,
             )
         try:
             return CommandProposal.model_validate(payload)
@@ -333,6 +344,7 @@ class Planner:
         safety_policy: str,
         related_ticket: dict | None = None,
         handoff_context: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> CommandProposal:
         payload = self._complete_agent_json(
             VERIFICATION_AGENT_SYSTEM_PROMPT,
@@ -342,6 +354,8 @@ class Planner:
             safety_policy,
             related_ticket,
             handoff_context,
+            run_id=run_id,
+            operation="planner.propose_verification_command",
         )
         decision = AgentHandoffDecision.model_validate(payload)
         if decision.mode == "return_to_diagnosis":
@@ -360,6 +374,7 @@ class Planner:
                 safety_policy,
                 related_ticket=related_ticket,
                 handoff_context={"from_agent": "verification", "reason": decision.reason, "diagnostic_question": decision.diagnostic_question},
+                run_id=run_id,
             )
         try:
             return CommandProposal.model_validate(payload)
@@ -375,9 +390,21 @@ class Planner:
         safety_policy: str,
         related_ticket: dict | None = None,
         handoff_context: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        operation: str = "planner.propose_command",
     ) -> CommandProposal:
         try:
-            payload = self._complete_agent_json(system_prompt, ticket, customer_system, observations, safety_policy, related_ticket, handoff_context)
+            payload = self._complete_agent_json(
+                system_prompt,
+                ticket,
+                customer_system,
+                observations,
+                safety_policy,
+                related_ticket,
+                handoff_context,
+                run_id=run_id,
+                operation=operation,
+            )
             return CommandProposal.model_validate(payload)
         except ValidationError as exc:
             raise AgentError(f"Planner returned invalid command proposal: {exc}") from exc
@@ -391,6 +418,8 @@ class Planner:
         safety_policy: str,
         related_ticket: dict | None = None,
         handoff_context: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        operation: str = "planner.complete_agent_json",
     ) -> dict[str, Any]:
         messages = [
             {
@@ -416,7 +445,7 @@ class Planner:
             },
         ]
         try:
-            return self.provider.complete_json(messages)
+            return complete_json_with_metrics(self.provider, messages, timeout=30.0, operation=operation, run_id=run_id)
         except AgentError:
             raise
 
@@ -426,6 +455,7 @@ class Planner:
         customer_system: dict,
         observations: list[dict],
         related_ticket: dict | None = None,
+        run_id: str | None = None,
     ) -> DiagnosticToolProposal:
         messages = [
             {"role": "system", "content": DIAGNOSTIC_TOOL_SYSTEM_PROMPT},
@@ -447,7 +477,7 @@ class Planner:
             },
         ]
         try:
-            payload = self.provider.complete_json(messages)
+            payload = complete_json_with_metrics(self.provider, messages, timeout=30.0, operation="planner.propose_diagnostic_tool", run_id=run_id)
             proposal = DiagnosticToolProposal.model_validate(payload)
             if proposal.mode == "diagnostic_tool" and not proposal.tool:
                 raise AgentError("Diagnostic planner omitted tool name")

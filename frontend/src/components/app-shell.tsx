@@ -14,6 +14,7 @@ export function AppShell({
 	headerAction,
 	headerBadges,
 	headerDescription,
+	loading,
 	onLogout,
 	onNavigate,
 	onSelectTicket,
@@ -29,6 +30,7 @@ export function AppShell({
 	headerAction?: ReactNode;
 	headerBadges?: ReactNode;
 	headerDescription?: string;
+	loading?: boolean;
 	onLogout: () => void;
 	onNavigate: (view: SidebarView) => void;
 	onSelectTicket: (ticketId: number) => void;
@@ -48,6 +50,7 @@ export function AppShell({
 				<AppSidebar
 					activeView={activeView}
 					counts={counts}
+					loading={loading}
 					onLogout={onLogout}
 					onNavigate={onNavigate}
 					onSelectTicket={onSelectTicket}

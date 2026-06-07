@@ -65,7 +65,7 @@ class FakePlanner:
         self.command = command
         self.observations = []
 
-    def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
+    def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
         self.observations = observations
         return CommandProposal(intent="Check service status", command=self.command, expected_signal="Service state is visible")
 
