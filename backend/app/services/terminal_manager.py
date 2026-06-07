@@ -14,7 +14,7 @@ from app.db.session import engine
 from app.db.models import TerminalCommand
 from app.repositories.runs import RunRepository
 from app.schemas.phoenix import CustomerSystem
-from app.schemas.runs import CommandClassification, RunStatus, TerminalCommandSource, TerminalCommandStatus
+from app.schemas.runs import CommandClassification, RunStatus, TerminalCommandSource, TerminalCommandStatus, ValidationStatus
 from app.services.audit_log import AuditLog
 from app.services.events import persist_and_publish_ws_event_sync
 from app.services.terminal_safety import TerminalSafetyReviewer
@@ -32,6 +32,7 @@ NONINTERACTIVE_ENV = "SYSTEMD_PAGER=cat SYSTEMD_COLORS=0 PAGER=cat LESS=FRXMK"
 @dataclass
 class PendingCommand:
     command_id: int
+    phase: str | None = None
     output: str = ""
 
 
@@ -274,10 +275,10 @@ class TerminalManager:
             self._audit(runtime.run_id, "manual_command_cancelled", {"command_id": command_id})
         await self._broadcast(runtime, {"type": "command_cancelled", "command_id": command_id})
 
-    async def _propose_agent(self, runtime: TerminalRuntime) -> None:
+    async def _propose_agent(self, runtime: TerminalRuntime, forced_phase: str | None = None) -> None:
         planner = self.planner or Planner()
         context = self._context(runtime.run_id)
-        selected_phase = self._select_agent_phase(context.get("observations", []))
+        selected_phase = forced_phase or self._select_agent_phase(context.get("observations", []))
         proposal = await asyncio.to_thread(
             self._propose_for_phase,
             planner,
@@ -386,9 +387,9 @@ class TerminalManager:
         await self._broadcast(runtime, {"type": "agent_guidance_recorded"})
         await self._safe_propose_agent(runtime)
 
-    async def _safe_propose_agent(self, runtime: TerminalRuntime) -> None:
+    async def _safe_propose_agent(self, runtime: TerminalRuntime, forced_phase: str | None = None) -> None:
         try:
-            await self._propose_agent(runtime)
+            await self._propose_agent(runtime, forced_phase=forced_phase)
         except Exception as exc:
             runtime.agent_active = False
             runtime.waiting_after_rejection = False
@@ -453,7 +454,10 @@ class TerminalManager:
             terminal_command = repo.get_terminal_command(command_id)
             if terminal_command is not None:
                 repo.update_terminal_command(terminal_command, TerminalCommandStatus.RUNNING, final_command=command, started=True)
-        runtime.pending_commands[command_id] = PendingCommand(command_id)
+        runtime.pending_commands[command_id] = PendingCommand(
+            command_id,
+            phase=runtime.current_agent_phase if source == TerminalCommandSource.AGENT else None,
+        )
         event_prefix = "agent" if source == TerminalCommandSource.AGENT else "manual"
         self._audit(runtime.run_id, f"{event_prefix}_command_running", {"command_id": command_id, "command": command})
         await self._broadcast(runtime, {"type": "command_running", "command_id": command_id})
@@ -487,7 +491,7 @@ class TerminalManager:
     async def _capture_output(self, runtime: TerminalRuntime, data: str) -> None:
         for pending in list(runtime.pending_commands.values()):
             pending.output += data
-        for match in EXIT_MARKER_RE.finditer(data):
+        for match in _pending_exit_markers(runtime):
             command_id = int(match.group(1))
             exit_code = int(match.group(2))
             pending = runtime.pending_commands.pop(command_id, None)
@@ -501,14 +505,43 @@ class TerminalManager:
                     continue
                 status = TerminalCommandStatus.COMPLETED if exit_code == 0 else TerminalCommandStatus.FAILED
                 repo.update_terminal_command(terminal_command, status, exit_code=exit_code, output=cleaned_output, ended=True)
+                validation_evidence_collected = exit_code == 0 and _terminal_command_is_validation_evidence(
+                    terminal_command.final_command or terminal_command.original_command,
+                    cleaned_output,
+                    runtime.current_agent_phase,
+                )
+                if validation_evidence_collected:
+                    run = repo.get_run(runtime.run_id)
+                    if run is not None:
+                        repo.set_validation_status(run, ValidationStatus.EVIDENCE_COLLECTED)
+                        repo.update_run_status(run, RunStatus.AWAITING_VALIDATION_CONFIRMATION)
                 source = TerminalCommandSource(terminal_command.source)
             event_prefix = "agent" if source == TerminalCommandSource.AGENT else "manual"
             self._audit(runtime.run_id, f"{event_prefix}_command_completed", {"command_id": command_id, "exit_code": exit_code})
             await self._broadcast(runtime, {"type": "command_completed", "command_id": command_id, "exit_code": exit_code})
+            if validation_evidence_collected:
+                runtime.agent_active = False
+                payload = {
+                    "command_id": command_id,
+                    "status": RunStatus.AWAITING_VALIDATION_CONFIRMATION.value,
+                    "validation_status": ValidationStatus.EVIDENCE_COLLECTED.value,
+                }
+                self._audit(runtime.run_id, "validation_evidence_collected", payload)
+                await self._broadcast(runtime, {"type": "validation_evidence_collected", **payload})
+                await self._broadcast(
+                    runtime,
+                    {
+                        "type": "terminal_output",
+                        "data": "\r\n\x1b[32mValidation evidence collected. Agent stopped; confirm validation in the activity workflow to generate the draft.\x1b[0m\r\n",
+                    },
+                )
+                continue
             if source == TerminalCommandSource.AGENT and runtime.agent_active and not runtime.waiting_after_rejection:
-                self._audit(runtime.run_id, "agent_continuing", {"after_command_id": command_id})
-                await self._broadcast(runtime, {"type": "status", "message": "Agent is preparing the next action..."})
-                await self._safe_propose_agent(runtime)
+                forced_phase = "verification" if exit_code == 0 and pending.phase == "fix" else None
+                self._audit(runtime.run_id, "agent_continuing", {"after_command_id": command_id, "forced_phase": forced_phase})
+                message = "Agent is preparing validation evidence..." if forced_phase else "Agent is preparing the next action..."
+                await self._broadcast(runtime, {"type": "status", "message": message})
+                await self._safe_propose_agent(runtime, forced_phase=forced_phase)
 
     async def _close_runtime(self, runtime: TerminalRuntime, reason: str) -> None:
         if runtime.closing:
@@ -682,11 +715,50 @@ def _agent_phase(phase: str | None) -> str:
 
 
 def _terminal_observation_is_validation_evidence(observation: dict[str, Any]) -> bool:
+    phase_text = str(observation.get("phase") or "").lower()
     command_text = str(observation.get("command") or "").lower()
     output_text = str(observation.get("output") or "").lower()
-    if any(term in command_text for term in ("curl", "health", "is-active", "smoke", "wget --spider")):
+    if _terminal_command_looks_like_validation(command_text, phase_text):
         return True
-    return any(term in output_text for term in ("validation", "validated", "health", "http 200", "status 200", "ok", "passed", "reachable"))
+    return _terminal_output_indicates_validation_success(output_text)
+
+
+def _terminal_command_is_validation_evidence(command: str, output: str, phase: str | None = None) -> bool:
+    return _terminal_observation_is_validation_evidence({"command": command, "output": output, "phase": phase})
+
+
+def _terminal_command_looks_like_validation(command_text: str, phase_text: str | None = None) -> bool:
+    if phase_text in {"validate", "validation", "verification"}:
+        return True
+    return any(term in command_text for term in ("curl", "health", "is-active", "smoke", "wget --spider"))
+
+
+def _terminal_output_indicates_validation_success(output_text: str) -> bool:
+    return any(
+        term in output_text
+        for term in (
+            "validation passed",
+            "validated successfully",
+            "health check passed",
+            "http 200",
+            "status 200",
+            "service reachable",
+            "service is reachable",
+            "service healthy",
+            "service is healthy",
+        )
+    )
+
+
+def _pending_exit_markers(runtime: TerminalRuntime):
+    seen: set[tuple[int, int]] = set()
+    for pending in list(runtime.pending_commands.values()):
+        for match in EXIT_MARKER_RE.finditer(pending.output):
+            marker = (int(match.group(1)), match.start())
+            if marker in seen:
+                continue
+            seen.add(marker)
+            yield match
 
 
 def _main_command_index(parts: list[str]) -> int | None:
