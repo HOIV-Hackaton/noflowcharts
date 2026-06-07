@@ -26,6 +26,7 @@ import {
 	CommandShortcut,
 } from "@/components/ui/command";
 import { Kbd } from "@/components/ui/kbd";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
 	Collapsible,
 	CollapsibleContent,
@@ -61,6 +62,7 @@ const ticketViews: Array<{
 export function AppSidebar({
 	activeView,
 	counts,
+	loading = false,
 	onLogout,
 	onNavigate,
 	onSelectTicket,
@@ -71,6 +73,7 @@ export function AppSidebar({
 }: {
 	activeView: SidebarView;
 	counts: SidebarCounts;
+	loading?: boolean;
 	onLogout: () => void;
 	onNavigate: (view: SidebarView) => void;
 	onSelectTicket: (ticketId: number) => void;
@@ -106,6 +109,10 @@ export function AppSidebar({
 	}, [commandOpen, search]);
 
 	const matchingTickets = useMemo(() => {
+		if (loading) {
+			return [];
+		}
+
 		const query = commandQuery.trim().toLowerCase();
 		if (!query) {
 			return tickets.slice(0, 7);
@@ -122,7 +129,7 @@ export function AppSidebar({
 				].some((value) => value.toLowerCase().includes(query)),
 			)
 			.slice(0, 8);
-	}, [commandQuery, tickets]);
+	}, [commandQuery, loading, tickets]);
 
 	const navigate = (view: SidebarView) => {
 		onNavigate(view);
@@ -205,9 +212,13 @@ export function AppSidebar({
 															>
 																<Icon />
 																<span>{item.label}</span>
-																<span className="ml-auto text-xs font-medium tabular-nums text-sidebar-foreground">
-																	{counts[item.view]}
-																</span>
+																{loading ? (
+																	<Skeleton className="ml-auto h-4 w-5" />
+																) : (
+																	<span className="ml-auto text-xs font-medium tabular-nums text-sidebar-foreground">
+																		{counts[item.view]}
+																	</span>
+																)}
 															</SidebarMenuSubButton>
 														</SidebarMenuSubItem>
 													);
@@ -238,7 +249,7 @@ export function AppSidebar({
 						value={commandQuery}
 					/>
 					<CommandList>
-						<CommandEmpty>No results found.</CommandEmpty>
+						<CommandEmpty>{loading ? "Loading tickets..." : "No results found."}</CommandEmpty>
 						<CommandGroup heading="Pages">
 							<CommandItem onSelect={() => navigate("overview")} value="overview dashboard">
 								<LayoutDashboardIcon />
@@ -255,14 +266,23 @@ export function AppSidebar({
 									>
 										<Icon />
 										{item.label}
-										<CommandShortcut>{counts[item.view]}</CommandShortcut>
+										<CommandShortcut>{loading ? "..." : counts[item.view]}</CommandShortcut>
 									</CommandItem>
 								);
 							})}
 						</CommandGroup>
 						<CommandSeparator />
 						<CommandGroup heading="Tickets">
-							{matchingTickets.map((ticket) => (
+							{loading
+								? Array.from({ length: 4 }).map((_, index) => (
+									<CommandItem disabled key={index} value={`loading-ticket-${index}`}>
+										<span className="grid min-w-0 flex-1 gap-1.5">
+											<Skeleton className="h-4 w-48" />
+											<Skeleton className="h-3 w-32" />
+										</span>
+									</CommandItem>
+								))
+								: matchingTickets.map((ticket) => (
 								<CommandItem
 									key={ticket.id}
 									onSelect={() => selectTicket(ticket.id)}

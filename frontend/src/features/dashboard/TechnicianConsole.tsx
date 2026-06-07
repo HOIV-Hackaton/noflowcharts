@@ -3,10 +3,11 @@ import { RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import type { DashboardStat, SidebarCounts, SidebarView } from "@/components/service-desk-ui";
+import { EmptyPanel, type DashboardStat, type SidebarCounts, type SidebarView } from "@/components/service-desk-ui";
+import { Skeleton } from "@/components/ui/skeleton";
 import { getQueueHeading } from "@/lib/queue";
 import { Toast } from "../../components/ui/Toast";
-import { emptyDraft, initialValidation, systems, tickets } from "../../data/mockData";
+import { emptyDraft, initialValidation } from "../../data/mockData";
 import { useAuth } from "../auth/AuthProvider";
 import {
   createActions,
@@ -65,10 +66,11 @@ const routeByView: Record<SidebarView, string> = {
 export function TechnicianConsole() {
   const { session, logout } = useAuth();
   const initialRoute = getAppRouteState();
-  const [ticketList, setTicketList] = useState<Ticket[]>(tickets);
-  const [systemsByTicket, setSystemsByTicket] = useState<Record<number, CustomerSystem>>(systems);
+  const [ticketList, setTicketList] = useState<Ticket[]>([]);
+  const [systemsByTicket, setSystemsByTicket] = useState<Record<number, CustomerSystem>>({});
   const [backendReady, setBackendReady] = useState(false);
   const [ticketsLoading, setTicketsLoading] = useState(true);
+  const [systemLoading, setSystemLoading] = useState(false);
   const [lastTicketFetchAt, setLastTicketFetchAt] = useState<string | null>(null);
   const [backendRunId, setBackendRunId] = useState<string | null>(null);
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(() => initialRoute.ticketId);
@@ -130,10 +132,10 @@ export function TechnicianConsole() {
           return;
         }
 
-        setTicketList(tickets);
+        setTicketList([]);
         setLastTicketFetchAt(null);
         setBackendReady(false);
-        setNotice(`Using mock dashboard data. ${getApiErrorMessage(error)}`);
+        setNotice(`Ticket queue failed to load. ${getApiErrorMessage(error)}`);
       } finally {
         if (!cancelled) {
           setTicketsLoading(false);
@@ -283,6 +285,7 @@ export function TechnicianConsole() {
     setBackendRunId(null);
     setActiveTab(tab);
     setSystemLoaded(false);
+    setSystemLoading(false);
     setConnectionStatus("not_requested");
     setRunState("idle");
     setAnalysisReady(false);
@@ -383,7 +386,13 @@ export function TechnicianConsole() {
       return;
     }
 
-    if (backendReady) {
+    setSystemLoading(true);
+
+    try {
+      if (!backendReady) {
+        throw new Error("Backend is unavailable.");
+      }
+
       try {
         const backendSystem = await backendApi.getCustomerSystem(selectedTicket.id);
         setSystemsByTicket((currentSystems) => ({
@@ -392,27 +401,26 @@ export function TechnicianConsole() {
         }));
       } catch (error) {
         if (selectedTicket.customerId) {
-          try {
-            const backendCustomer = await backendApi.getCustomer(selectedTicket.customerId);
-            setSystemsByTicket((currentSystems) => ({
-              ...currentSystems,
-              [selectedTicket.id]: mapBackendCustomer(backendCustomer, selectedTicket.id),
-            }));
-          } catch (customerError) {
-            setNotice(
-              `Using local system context. ${getApiErrorMessage(error)} ${getApiErrorMessage(customerError)}`,
-            );
-          }
+          const backendCustomer = await backendApi.getCustomer(selectedTicket.customerId);
+          setSystemsByTicket((currentSystems) => ({
+            ...currentSystems,
+            [selectedTicket.id]: mapBackendCustomer(backendCustomer, selectedTicket.id),
+          }));
         } else {
-          setNotice(`Using local system context. ${getApiErrorMessage(error)}`);
+          throw error;
         }
       }
-    }
 
-    setSystemLoaded(true);
-    setConnectionStatus("awaiting_approval");
-    setRunState("awaiting_connection_approval");
-    appendEvent("approval", "System info loaded", "Redacted customer system context loaded.");
+      setSystemLoaded(true);
+      setConnectionStatus("awaiting_approval");
+      setRunState("awaiting_connection_approval");
+      appendEvent("approval", "System info loaded", "Redacted customer system context loaded.");
+    } catch (error) {
+      setSystemLoaded(false);
+      setNotice(`System info failed to load. ${getApiErrorMessage(error)}`);
+    } finally {
+      setSystemLoading(false);
+    }
   };
 
   const approveConnection = async () => {
@@ -834,9 +842,11 @@ export function TechnicianConsole() {
 
   const refreshTickets = async () => {
     if (!backendReady) {
-      setNotice("Mock ticket queue refreshed.");
+      setNotice("Backend ticket queue is unavailable.");
       return;
     }
+
+    setTicketsLoading(true);
 
     try {
       const backendTickets = await backendApi.listTickets({
@@ -850,6 +860,8 @@ export function TechnicianConsole() {
       setNotice("Backend ticket queue refreshed.");
     } catch (error) {
       setNotice(`Ticket refresh failed. ${getApiErrorMessage(error)}`);
+    } finally {
+      setTicketsLoading(false);
     }
   };
 
@@ -873,6 +885,7 @@ export function TechnicianConsole() {
       setBackendRunId(null);
       setActiveTab("overview");
       setSystemLoaded(false);
+      setSystemLoading(false);
       setConnectionStatus("not_requested");
       setRunState("idle");
       setAnalysisReady(false);
@@ -942,13 +955,18 @@ export function TechnicianConsole() {
   );
   const latestQueueUpdate = lastTicketFetchAt ?? newestTicket?.updatedAt ?? null;
   const queueHeading = getQueueHeading(sidebarView, filteredTickets.length);
+  const ticketRouteLoading = Boolean(selectedTicketId && ticketsLoading && !selectedTicket);
   const pageTitle = selectedTicket
     ? `Ticket #${selectedTicket.id}`
+    : ticketRouteLoading
+      ? "Ticket"
     : sidebarView === "overview"
       ? "Service desk overview"
       : queueHeading.title;
   const headerDescription = selectedTicket
     ? undefined
+    : ticketRouteLoading
+      ? "Loading ticket details."
     : sidebarView === "overview"
       ? latestQueueUpdate
         ? `Last queue update ${formatDate(latestQueueUpdate)}.`
@@ -999,6 +1017,7 @@ export function TechnicianConsole() {
         }}
         search={search}
         setSearch={setSearch}
+        loading={ticketsLoading}
         tickets={ticketList}
       >
         <div className="flex min-h-[calc(100svh-7rem)] flex-col">
@@ -1038,14 +1057,20 @@ export function TechnicianConsole() {
               setLogFilter={setLogFilter}
               submitStatus={submitStatus}
               systemLoaded={systemLoaded}
+              systemLoading={systemLoading}
               terminalCommands={terminalCommands}
               terminalTranscript={terminalTranscript}
               ticket={selectedTicket}
               validation={validation}
             />
+          ) : ticketRouteLoading ? (
+            <TicketWorkspaceSkeleton />
+          ) : selectedTicketId ? (
+            <EmptyPanel detail="The ticket was not returned by the backend." title="Ticket not found" />
           ) : sidebarView === "overview" ? (
             <DashboardOverview
               highPriorityTickets={highPriorityTickets}
+              loading={ticketsLoading}
               onSelectTicket={selectTicket}
               stats={stats}
               tickets={ticketList}
@@ -1053,6 +1078,7 @@ export function TechnicianConsole() {
           ) : (
             <DashboardHome
               filteredTickets={filteredTickets}
+              loading={ticketsLoading}
               onSelectTicket={selectTicket}
               priorityFilter={priorityFilter}
               setPriorityFilter={setPriorityFilter}
@@ -1144,6 +1170,53 @@ function upsertTicket(tickets: Ticket[], ticket: Ticket) {
   }
 
   return tickets.map((candidate) => (candidate.id === ticket.id ? ticket : candidate));
+}
+
+function TicketWorkspaceSkeleton() {
+  return (
+    <section className="flex flex-1 flex-col gap-5">
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Skeleton className="h-8 w-72" />
+          <Skeleton className="h-5 w-20" />
+          <Skeleton className="h-5 w-16" />
+        </div>
+        <Skeleton className="h-4 w-80" />
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {Array.from({ length: 6 }).map((_, index) => (
+          <Skeleton className="h-9 w-24" key={index} />
+        ))}
+      </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, index) => (
+          <div className="rounded-lg border bg-card p-4" key={index}>
+            <Skeleton className="h-4 w-32" />
+            <Skeleton className="mt-3 h-8 w-16" />
+            <Skeleton className="mt-6 h-16 w-full" />
+          </div>
+        ))}
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="rounded-lg border bg-card p-5">
+          <Skeleton className="h-7 w-48" />
+          <div className="mt-8 flex flex-col gap-3">
+            <Skeleton className="h-5 w-full" />
+            <Skeleton className="h-5 w-11/12" />
+            <Skeleton className="h-5 w-4/5" />
+          </div>
+        </div>
+        <div className="rounded-lg border bg-card p-5">
+          <Skeleton className="h-7 w-36" />
+          <div className="mt-6 flex flex-col gap-3">
+            {Array.from({ length: 5 }).map((_, index) => (
+              <Skeleton className="h-5 w-full" key={index} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function upsertAction(actions: ProposedAction[], action: ProposedAction) {

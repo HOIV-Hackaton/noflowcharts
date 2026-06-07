@@ -18,6 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatDate } from "@/lib/serviceDesk";
 import type { Priority, Ticket } from "@/types";
@@ -86,7 +87,11 @@ export function StatusLabel({ label }: { label: string }) {
   );
 }
 
-export function StatsGrid({ stats }: { stats: DashboardStat[] }) {
+export function StatsGrid({ loading = false, stats }: { loading?: boolean; stats: DashboardStat[] }) {
+  if (loading) {
+    return <StatsGridSkeleton />;
+  }
+
   return (
     <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
       {stats.map((stat) => (
@@ -107,12 +112,18 @@ export function StatsGrid({ stats }: { stats: DashboardStat[] }) {
 }
 
 export function TicketTable({
+  loading = false,
   onSelectTicket,
   tickets,
 }: {
+  loading?: boolean;
   onSelectTicket: (ticketId: number) => void;
   tickets: Ticket[];
 }) {
+  if (loading) {
+    return <TicketTableSkeleton />;
+  }
+
   if (!tickets.length) {
     return <EmptyPanel detail="No tickets match the current queue." title="No tickets" />;
   }
@@ -178,7 +189,29 @@ export function EmptyPanel({ detail, title }: { detail: string; title: string })
   );
 }
 
-export function PriorityBars({ tickets }: { tickets: Ticket[] }) {
+export function PriorityBars({ loading = false, tickets }: { loading?: boolean; tickets: Ticket[] }) {
+  if (loading) {
+    return (
+      <Card>
+        <CardHeader>
+          <Skeleton className="h-5 w-28" />
+          <Skeleton className="h-4 w-44" />
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div className="flex flex-col gap-2" key={index}>
+              <div className="flex items-center justify-between">
+                <Skeleton className="h-4 w-20" />
+                <Skeleton className="h-4 w-5" />
+              </div>
+              <Skeleton className="h-1 w-full rounded-full" />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    );
+  }
+
   const total = Math.max(tickets.length, 1);
   const priorities: Priority[] = ["Critical", "High", "Medium", "Low"];
 
@@ -257,5 +290,77 @@ function MiniSignal({ tone }: { tone: NonNullable<DashboardStat["tone"]> }) {
         />
       ))}
     </div>
+  );
+}
+
+function StatsGridSkeleton() {
+  return (
+    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <Card key={index} size="sm">
+          <CardHeader>
+            <Skeleton className="h-4 w-28" />
+            <Skeleton className="h-8 w-14" />
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex h-8 items-end gap-1">
+              {[38, 54, 44, 72, 58, 80, 68].map((height, barIndex) => (
+                <Skeleton
+                  className="flex-1 rounded-sm"
+                  key={`${index}-${barIndex}`}
+                  style={{ height: `${height}%` }}
+                />
+              ))}
+            </div>
+            <Skeleton className="h-1 w-full rounded-full" />
+            <Skeleton className="h-3 w-4/5" />
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function TicketTableSkeleton() {
+  return (
+    <Card>
+      <CardContent className="px-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Ticket</TableHead>
+              <TableHead>Customer</TableHead>
+              <TableHead>Priority</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Updated</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {Array.from({ length: 5 }).map((_, index) => (
+              <TableRow key={index}>
+                <TableCell className="max-w-[340px]">
+                  <div className="flex flex-col gap-2">
+                    <Skeleton className="h-4 w-56" />
+                    <Skeleton className="h-3 w-14" />
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <Skeleton className="h-4 w-44" />
+                </TableCell>
+                <TableCell>
+                  <Skeleton className="h-5 w-16" />
+                </TableCell>
+                <TableCell>
+                  <Skeleton className="h-5 w-16" />
+                </TableCell>
+                <TableCell>
+                  <Skeleton className="h-4 w-28" />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 }

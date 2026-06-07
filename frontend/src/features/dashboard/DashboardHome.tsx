@@ -16,6 +16,7 @@ import type { Priority, Ticket, TicketStatus } from "@/types";
 
 export function DashboardHome({
   filteredTickets,
+  loading,
   onSelectTicket,
   priorityFilter,
   setPriorityFilter,
@@ -26,6 +27,7 @@ export function DashboardHome({
   statusFilter,
 }: {
   filteredTickets: Ticket[];
+  loading?: boolean;
   onSelectTicket: (ticketId: number) => void;
   priorityFilter: "all" | Priority;
   setPriorityFilter: (filter: "all" | Priority) => void;
@@ -37,7 +39,7 @@ export function DashboardHome({
 }) {
   return (
     <div className="flex flex-col gap-5">
-      <StatsGrid stats={stats} />
+      <StatsGrid loading={loading} stats={stats} />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
         <section className="flex min-w-0 flex-col gap-3">
@@ -82,9 +84,9 @@ export function DashboardHome({
               </SelectContent>
             </Select>
           </div>
-          <TicketTable tickets={filteredTickets} onSelectTicket={onSelectTicket} />
+          <TicketTable loading={loading} tickets={filteredTickets} onSelectTicket={onSelectTicket} />
         </section>
-        <PriorityBars tickets={filteredTickets} />
+        <PriorityBars loading={loading} tickets={filteredTickets} />
       </div>
     </div>
   );
