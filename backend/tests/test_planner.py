@@ -15,6 +15,16 @@ class FakeProvider:
         return self.payload
 
 
+class QueueProvider:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.messages = []
+
+    def complete_json(self, messages, timeout=30.0):
+        self.messages.append(messages)
+        return self.payloads.pop(0)
+
+
 def test_planner_parses_one_command_proposal():
     provider = FakeProvider(
         {
@@ -157,3 +167,81 @@ def test_planner_rejects_invalid_provider_payload():
 
     with pytest.raises(AgentError):
         planner.propose_next_command({}, {}, [], "policy")
+
+
+def test_diagnosis_agent_can_handoff_to_execution_agent():
+    provider = QueueProvider(
+        [
+            {"mode": "handoff_to_execution", "reason": "nginx is inactive and should be started"},
+            {
+                "intent": "Start nginx after diagnosis showed it is inactive.",
+                "command": "systemctl start nginx",
+                "expected_signal": "systemctl exits successfully and nginx can be validated next.",
+                "risk_level": "medium",
+                "command_class_hint": "mutating",
+                "phase": "fix",
+                "rollback_note": "Stop nginx again if this reveals an incorrect target service.",
+            },
+        ]
+    )
+
+    proposal = Planner(provider=provider).propose_diagnosis_command({"title": "API down"}, {}, [], "policy")
+
+    assert proposal.command == "systemctl start nginx"
+    assert "diagnosis agent" in provider.messages[0][0]["content"]
+    assert "execution agent" in provider.messages[1][0]["content"]
+    assert "nginx is inactive" in provider.messages[1][1]["content"]
+
+
+def test_execution_agent_returns_to_diagnosis_when_fix_would_be_premature():
+    provider = QueueProvider(
+        [
+            {
+                "mode": "needs_more_diagnosis",
+                "reason": "The failing service name is still unknown.",
+                "diagnostic_question": "Which systemd unit owns the failing API port?",
+            },
+            {
+                "intent": "Find the service listening near the reported API port before changing anything.",
+                "command": "ss -ltnp",
+                "expected_signal": "Output identifies the process and port ownership.",
+                "risk_level": "low",
+                "command_class_hint": "read_only",
+                "phase": "diagnose",
+            },
+        ]
+    )
+
+    proposal = Planner(provider=provider).propose_execution_command({"title": "API down"}, {}, [], "policy")
+
+    assert proposal.command == "ss -ltnp"
+    assert "execution agent" in provider.messages[0][0]["content"]
+    assert "diagnosis agent" in provider.messages[1][0]["content"]
+    assert "Which systemd unit" in provider.messages[1][1]["content"]
+
+
+def test_verification_agent_failure_always_returns_to_diagnosis():
+    provider = QueueProvider(
+        [
+            {
+                "mode": "return_to_diagnosis",
+                "reason": "Health check still returns 503 after the fix.",
+                "diagnostic_question": "Why does the service still return 503?",
+            },
+            {
+                "intent": "Inspect recent service logs because verification still fails.",
+                "command": "journalctl -u nginx -n 80 --no-pager",
+                "expected_signal": "Logs identify the remaining failure cause.",
+                "risk_level": "low",
+                "command_class_hint": "read_only",
+                "phase": "diagnose",
+            },
+        ]
+    )
+
+    proposal = Planner(provider=provider).propose_verification_command({"title": "API down"}, {}, [], "policy")
+
+    assert proposal.command == "journalctl -u nginx -n 80 --no-pager"
+    assert "verification agent" in provider.messages[0][0]["content"]
+    assert "diagnosis agent" in provider.messages[1][0]["content"]
+    assert "Health check still returns 503" in provider.messages[1][1]["content"]

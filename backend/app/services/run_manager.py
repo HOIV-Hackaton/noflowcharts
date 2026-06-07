@@ -93,13 +93,10 @@ class RunManager:
         proposal = self._ticket_validation_proposal(snapshot, observations)
         if proposal is None:
             planner = self.planner or Planner()
-            proposal = planner.propose_next_command(
-                ticket=snapshot.get("ticket", {}),
-                customer_system=snapshot.get("customer_system", {}),
-                observations=observations,
-                safety_policy=SAFETY_POLICY_SUMMARY,
-                related_ticket=snapshot.get("related_ticket"),
-            )
+            phase = self._select_agent_phase(run, observations)
+            self.audit.record("agent_phase_selected", {"phase": phase, "observation_count": len(observations)}, run.id)
+            self._event(run.id, "agent_phase_selected", {"phase": phase})
+            proposal = self._propose_for_phase(planner, phase, snapshot, observations)
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
         action = self.repo.add_action(
@@ -120,6 +117,42 @@ class RunManager:
             self.audit.record("command_proposed", {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
             self._event(run.id, "command_proposed", {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value})
         return self.state(run.id)
+
+    def _propose_for_phase(self, planner: Planner, phase: str, snapshot: dict[str, Any], observations: list[dict[str, Any]]) -> CommandProposal:
+        ticket = snapshot.get("ticket", {})
+        customer_system = snapshot.get("customer_system", {})
+        related_ticket = snapshot.get("related_ticket")
+        if phase == "verification" and hasattr(planner, "propose_verification_command"):
+            return planner.propose_verification_command(
+                ticket=ticket,
+                customer_system=customer_system,
+                observations=observations,
+                safety_policy=SAFETY_POLICY_SUMMARY,
+                related_ticket=related_ticket,
+            )
+        if phase == "execution" and hasattr(planner, "propose_execution_command"):
+            return planner.propose_execution_command(
+                ticket=ticket,
+                customer_system=customer_system,
+                observations=observations,
+                safety_policy=SAFETY_POLICY_SUMMARY,
+                related_ticket=related_ticket,
+            )
+        if hasattr(planner, "propose_diagnosis_command"):
+            return planner.propose_diagnosis_command(
+                ticket=ticket,
+                customer_system=customer_system,
+                observations=observations,
+                safety_policy=SAFETY_POLICY_SUMMARY,
+                related_ticket=related_ticket,
+            )
+        return planner.propose_next_command(
+            ticket=ticket,
+            customer_system=customer_system,
+            observations=observations,
+            safety_policy=SAFETY_POLICY_SUMMARY,
+            related_ticket=related_ticket,
+        )
 
     def start_safe_autodiagnosis(self, run_id: str) -> RunStateRead:
         run = self._run(run_id)
@@ -393,6 +426,8 @@ class RunManager:
         command_results = [self._command_result_payload(result) for result in self.repo.list_command_results(run.id)]
         validation_events = [event.payload for event in self.audit.for_run(run.id) if event.type in {"validation_evidence", "human_validation_confirmation"}]
         activity_generator = self.activity_generator or ActivityGenerator()
+        self.audit.record("agent_phase_selected", {"phase": "final_analysis", "observation_count": len(command_results)}, run.id)
+        self._event(run.id, "agent_phase_selected", {"phase": "final_analysis"})
         generated = activity_generator.generate(
             ticket=snapshot.get("ticket", {}),
             customer_system=snapshot.get("customer_system", {}),
@@ -513,6 +548,7 @@ class RunManager:
                         "source": source,
                         "command": result.command,
                         "intent": action.intent if action else None,
+                        "classification": action.command_classification if action else None,
                         "exit_code": result.exit_code,
                         "stdout": result.stdout,
                         "stderr": result.stderr,
@@ -521,6 +557,28 @@ class RunManager:
                 )
             )
         return observations
+
+    def _select_agent_phase(self, run: Run, observations: list[dict[str, Any]]) -> str:
+        results = self.repo.list_command_results(run.id)
+        if not results:
+            return "diagnosis"
+
+        latest = results[-1]
+        latest_action = self.repo.get_action(latest.action_id)
+        latest_failed = latest.timed_out or latest.exit_code != 0
+        latest_was_validation = self._result_is_validation_evidence(latest)
+        if latest_failed and latest_was_validation:
+            return "diagnosis"
+
+        if latest_action and latest_action.command_classification in {CommandClassification.MUTATING.value, CommandClassification.RISKY_MUTATING.value}:
+            if not latest_failed:
+                return "verification"
+            return "diagnosis"
+
+        if latest_was_validation:
+            return "verification" if not latest_failed else "diagnosis"
+
+        return "diagnosis"
 
     def _auto_diagnostic_count(self, run_id: str) -> int:
         return sum(1 for observation in self._observations(run_id) if observation.get("source") == "auto_diagnostic")

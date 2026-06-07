@@ -141,6 +141,23 @@ class FakeValidationPlanner(FakePlanner):
         return CommandProposal(intent="Validate customer service restoration", command=self.command, expected_signal="HTTP endpoint responds successfully")
 
 
+class FakePhasedPlanner:
+    def __init__(self):
+        self.calls = []
+
+    def propose_diagnosis_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
+        self.calls.append(("diagnosis", observations))
+        return CommandProposal(intent="Apply targeted fix after diagnosis evidence.", command="systemctl restart nginx", expected_signal="Service restart succeeds", phase="fix")
+
+    def propose_execution_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
+        self.calls.append(("execution", observations))
+        return CommandProposal(intent="Execute targeted fix.", command="systemctl restart nginx", expected_signal="Service restart succeeds", phase="fix")
+
+    def propose_verification_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None):
+        self.calls.append(("verification", observations))
+        return CommandProposal(intent="Validate customer service restoration", command="curl --max-time 5 -fsS http://localhost/health", expected_signal="HTTP endpoint responds successfully", phase="validate")
+
+
 class FakeSshRunner:
     def __init__(self):
         self.commands = []
@@ -232,6 +249,26 @@ def test_run_manager_requires_approval_before_command_execution():
 
         assert ssh_runner.commands == [("10.0.0.5", "systemctl status nginx")]
         assert state.command_results[0].stdout == "active"
+
+
+def test_run_manager_routes_successful_fix_to_verification_agent():
+    with make_session() as session:
+        planner = FakePhasedPlanner()
+        manager = make_manager(session, planner=planner, ssh_runner=FakeSshRunner())
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+
+        state = manager.propose_next(run_id)
+        assert planner.calls[-1][0] == "diagnosis"
+        assert state.current_action.command == "systemctl restart nginx"
+
+        _, action_id = manager.approve(run_id, state.current_action.id)
+        manager.execute_action(run_id, action_id)
+
+        state = manager.propose_next(run_id)
+
+        assert planner.calls[-1][0] == "verification"
+        assert state.current_action.command == "curl --max-time 5 -fsS http://localhost/health"
 
 def test_run_manager_prefers_ticket_health_and_public_validation_before_generic_planner():
     with make_session() as session:
