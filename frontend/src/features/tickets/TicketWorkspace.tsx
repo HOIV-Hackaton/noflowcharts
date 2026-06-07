@@ -17,6 +17,7 @@ import {
   EventTable,
   LogFilter,
   StatusLabel,
+  TruncatedText,
 } from "@/components/ui/primitives";
 import {
   PageHeading,
@@ -97,6 +98,8 @@ export function TicketWorkspace(props: {
   onDraftChange: (draft: ActivityDraft) => void;
   onGenerateDraft: () => void;
   onLoadSystem: () => Promise<void> | void;
+  onAgentPhaseChange: (phase: AgentPhase) => void;
+  onTerminalConnectionError: (message: string) => void;
   onRejectAction: (actionId: string) => void;
   onReviewDraft: () => void;
   onRetryAction: (actionId: string) => void;
@@ -227,7 +230,7 @@ export function TicketWorkspace(props: {
               <TabsTrigger key={tab.id} value={tab.id}>
                 {tab.label}
                 {tab.id === "actions" && props.pendingActions.length ? (
-                  <span className="rounded-full bg-destructive/20 px-1.5 py-0.5 text-[10px] text-destructive">
+                  <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive/20 px-1.5 text-[10px] font-medium leading-none text-destructive">
                     {props.pendingActions.length}
                   </span>
                 ) : null}
@@ -283,11 +286,16 @@ export function TicketWorkspace(props: {
             canStartAutodiagnosis={props.canStartAutodiagnosis}
           />
         </TabsContent>
-        <TabsContent className="min-h-[560px]" value="actions">
+        <TabsContent className="h-[clamp(340px,calc(100svh-21rem),620px)] min-h-0" value="actions">
           <ActionsTab
+            autodiagnosisRunning={props.autodiagnosisRunning}
+            canStartAutodiagnosis={props.canStartAutodiagnosis}
             connectionStatus={props.connectionStatus}
             onLoadSystem={props.onLoadSystem}
+            onAgentPhaseChange={props.onAgentPhaseChange}
             onRequestConnectionApproval={requestConnectionApproval}
+            onStartAutodiagnosis={props.onStartAutodiagnosis}
+            onTerminalConnectionError={props.onTerminalConnectionError}
             runId={props.backendRunId}
             systemLoaded={props.systemLoaded}
             systemLoading={props.systemLoading}
@@ -309,9 +317,11 @@ export function TicketWorkspace(props: {
             notice={props.notice}
             onDraftChange={props.onDraftChange}
             onGenerateDraft={props.onGenerateDraft}
+            onRunValidation={props.onRunValidation}
             onReview={props.onReviewDraft}
             onSave={props.onSaveDraft}
             onSubmit={props.onSubmitActivity}
+            runState={props.runState}
             submitStatus={props.submitStatus}
             validation={props.validation}
           />
@@ -342,6 +352,7 @@ export function TicketWorkspace(props: {
 const AGENT_PHASE_STEPS: Array<{ phase: AgentPhase; label: string }> = [
   { phase: "diagnosis", label: "Diagnosis" },
   { phase: "execution", label: "Fixing" },
+  { phase: "recovery", label: "Recovery" },
   { phase: "verification", label: "Verifying" },
   { phase: "final_analysis", label: "Final Analysis" },
 ];
@@ -355,7 +366,7 @@ function AgentPhaseProgress({
   phase: AgentPhase | null;
   runState: RunState;
 }) {
-  const effectivePhase = mostAdvancedPhase(phase, phaseFromRunState(runState));
+  const effectivePhase = phase ?? phaseFromRunState(runState);
   const activeIndex =
     effectivePhase === "waiting"
       ? -1
@@ -370,7 +381,7 @@ function AgentPhaseProgress({
           <StatusLabel label={currentLabel} />
           {autodiagnosisRunning ? <StatusLabel label="autonomous diagnosis running" /> : null}
         </div>
-        <ol className="relative flex w-full min-w-0 overflow-x-auto py-1 sm:w-auto sm:min-w-[520px]">
+        <ol className="relative flex w-full min-w-0 overflow-x-auto py-1 sm:w-auto sm:min-w-[650px]">
           {AGENT_PHASE_STEPS.map((step, index) => {
             const active = index === activeIndex;
             const completed = activeIndex > index;
@@ -415,22 +426,6 @@ function AgentPhaseProgress({
       </div>
     </div>
   );
-}
-
-function mostAdvancedPhase(eventPhase: AgentPhase | null, statePhase: AgentPhase | "waiting") {
-  if (!eventPhase) {
-    return statePhase;
-  }
-
-  if (statePhase === "waiting") {
-    return eventPhase;
-  }
-
-  return phaseRank(statePhase) > phaseRank(eventPhase) ? statePhase : eventPhase;
-}
-
-function phaseRank(phase: AgentPhase) {
-  return AGENT_PHASE_STEPS.findIndex((step) => step.phase === phase);
 }
 
 function phaseFromRunState(runState: RunState): AgentPhase | "waiting" {
@@ -530,7 +525,7 @@ function OverviewTab({
         systemLoaded={systemLoaded}
         validation={validation}
       />
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <Card>
           <CardHeader>
             <CardTitle>Customer report</CardTitle>
@@ -541,7 +536,7 @@ function OverviewTab({
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="h-fit">
           <CardHeader>
             <CardTitle>Ticket facts</CardTitle>
             <CardDescription>ERP ticket context.</CardDescription>
@@ -603,6 +598,8 @@ function IncidentPath({
   validation: ValidationResult;
 }) {
   const connected = connectionStatus === "connected";
+  const validationPassed = validation.status === "passed";
+  const hasRun = runState !== "idle" && runState !== "awaiting_connection_approval";
   const commandReviewComplete =
     pendingApprovals === 0 &&
     (executedActionCount > 0 ||
@@ -614,42 +611,64 @@ function IncidentPath({
   const steps = [
     {
       complete: systemLoaded,
-      detail: systemLoaded ? "Customer system context loaded." : "Load redacted system context.",
-      label: "Load system",
+      detail: systemLoaded
+        ? "Phoenix customer-system info is loaded. SSH is still gated separately."
+        : "Fetch the redacted SSH target from Phoenix. No machine access yet.",
+      label: "Load ERP system info",
     },
     {
       complete: connected,
-      detail: connected ? "Backend SSH access approved." : "Approve backend SSH access.",
-      label: "Approve connection",
+      detail: connected
+        ? "Backend SSH access is approved for this run."
+        : systemLoaded
+          ? "Approve the backend SSH connection before terminal or diagnostics."
+          : "Locked until customer-system info is loaded.",
+      label: "Approve SSH access",
     },
     {
       complete: analysisReady,
-      detail: analysisReady ? "Diagnostic context is available." : "Run safe read-only diagnostics.",
-      label: "Diagnose",
+      detail: analysisReady
+        ? "Diagnostic context is available."
+        : connected
+          ? "Run safe read-only diagnostics first."
+          : "Locked until SSH access is approved.",
+      label: "Diagnose safely",
     },
     {
       complete: commandReviewComplete,
-      detail: pendingApprovals ? `${pendingApprovals} command needs review.` : "No command waiting for review.",
-      label: "Review command",
+      detail: pendingApprovals
+        ? `${pendingApprovals} command ${pendingApprovals === 1 ? "needs" : "need"} review.`
+        : commandReviewComplete
+          ? "Commands have been reviewed or executed."
+          : "Review each proposed command before it runs.",
+      label: "Review commands",
     },
     {
-      complete: validation.status === "passed",
-      detail: validation.status === "passed" ? validation.evidence : "Confirm customer benefit is restored.",
-      label: "Validate",
+      complete: validationPassed,
+      detail: validationPassed
+        ? validation.evidence
+        : hasRun
+          ? "Confirm concrete evidence that the customer benefit is restored."
+          : "Locked until approved work produces evidence.",
+      label: "Confirm validation",
     },
     {
       complete: activityComplete,
-      detail: activityComplete ? "Activity submitted to Phoenix." : "Review complete activity fields.",
+      detail: activityComplete
+        ? "Activity submitted to Phoenix."
+        : validationPassed
+          ? "Generate from audit, review fields, then submit."
+          : "Locked until validation is confirmed.",
       label: "Submit activity",
     },
   ];
 
   const nextAction = (() => {
     if (!systemLoaded) {
-      return { label: "Load system info", onClick: onLoadSystem };
+      return { label: "Load ERP system info", onClick: onLoadSystem };
     }
     if (!connected) {
-      return { label: "Approve connection", onClick: () => onRequestConnectionApproval("terminal") };
+      return { label: "Approve SSH access", onClick: () => onRequestConnectionApproval("terminal") };
     }
     if (pendingApprovals) {
       return { label: "Review command", onClick: onOpenTerminal };
@@ -661,7 +680,7 @@ function IncidentPath({
         disabled: autodiagnosisRunning,
       };
     }
-    if (validation.status !== "passed") {
+    if (!validationPassed) {
       return { label: "Confirm validation", onClick: onRunValidation };
     }
     if (!activityComplete) {
@@ -677,7 +696,7 @@ function IncidentPath({
           <div>
             <CardTitle>Incident path</CardTitle>
             <CardDescription>
-              One safe action at a time. Terminal shortcuts remain available for experienced technicians.
+              ERP context loads first. SSH approval is a separate gate before diagnostics or terminal access.
             </CardDescription>
           </div>
           <Button disabled={nextAction.disabled} onClick={nextAction.onClick} type="button">
@@ -716,7 +735,7 @@ function IncidentPath({
             <TerminalIcon data-icon="inline-start" />
             Open terminal
           </Button>
-          <Button disabled={validation.status !== "passed"} onClick={onGenerateDraft} type="button" variant="outline">
+          <Button disabled={!validationPassed} onClick={onGenerateDraft} type="button" variant="outline">
             <ClipboardCheckIcon data-icon="inline-start" />
             Draft activity
           </Button>
@@ -869,7 +888,12 @@ function AnalysisTab({
             )}
           </div>
           {analysisReady && evidenceRows.length ? (
-            <Table>
+            <Table className="table-fixed">
+              <colgroup>
+                <col className="w-40" />
+                <col />
+                <col className="w-28" />
+              </colgroup>
               <TableHeader>
                 <TableRow>
                   <TableHead>Source</TableHead>
@@ -880,8 +904,12 @@ function AnalysisTab({
               <TableBody>
                 {evidenceRows.map((row) => (
                   <TableRow key={row.id}>
-                    <TableCell className="font-medium">{row.source}</TableCell>
-                    <TableCell className="whitespace-normal text-muted-foreground">{row.evidence}</TableCell>
+                    <TableCell className="whitespace-normal break-words font-medium">
+                      <TruncatedText maxLength={80} text={row.source} />
+                    </TableCell>
+                    <TableCell className="whitespace-normal break-words text-muted-foreground">
+                      <TruncatedText maxLength={220} text={row.evidence} />
+                    </TableCell>
                     <TableCell>
                       <StatusLabel label={row.status} />
                     </TableCell>
@@ -944,22 +972,32 @@ function analysisEvidenceRows(
 }
 
 function ActionsTab({
+  autodiagnosisRunning,
+  canStartAutodiagnosis,
   connectionStatus,
   onLoadSystem,
+  onAgentPhaseChange,
   onRequestConnectionApproval,
+  onStartAutodiagnosis,
+  onTerminalConnectionError,
   runId,
   systemLoaded,
   systemLoading,
 }: {
+  autodiagnosisRunning: boolean;
+  canStartAutodiagnosis: boolean;
   connectionStatus: ConnectionStatus;
   onLoadSystem: () => Promise<void> | void;
+  onAgentPhaseChange: (phase: AgentPhase) => void;
   onRequestConnectionApproval: (intent: ConnectionIntent) => void;
+  onStartAutodiagnosis: () => void;
+  onTerminalConnectionError: (message: string) => void;
   runId: string | null;
   systemLoaded: boolean;
   systemLoading: boolean;
 }) {
   return (
-    <div className="flex h-full min-h-[560px] min-w-0 flex-col gap-3">
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-3">
       {!runId ? (
         <Card className="border-dashed" size="sm">
           <CardContent className="flex flex-col gap-3 pb-4">
@@ -981,7 +1019,14 @@ function ActionsTab({
         </Card>
       ) : null}
       <Suspense fallback={<EmptyState title="Loading terminal" detail="Preparing the remote terminal surface." />}>
-        <TicketTerminal runId={runId} />
+        <TicketTerminal
+          autodiagnosisRunning={autodiagnosisRunning}
+          canStartAutodiagnosis={canStartAutodiagnosis}
+          onAgentPhaseChange={onAgentPhaseChange}
+          onStartAutodiagnosis={onStartAutodiagnosis}
+          onTerminalConnectionError={onTerminalConnectionError}
+          runId={runId}
+        />
       </Suspense>
     </div>
   );
@@ -1046,10 +1091,17 @@ function LogsTab({
 
 function TerminalCommandTable({ commands }: { commands: TerminalCommandLog[] }) {
   return (
-    <Table>
+    <Table className="table-fixed">
+      <colgroup>
+        <col className="w-36" />
+        <col className="w-24" />
+        <col className="w-32" />
+        <col />
+        <col className="w-20" />
+      </colgroup>
       <TableHeader>
         <TableRow>
-          <TableHead>Time</TableHead>
+          <TableHead>Timing</TableHead>
           <TableHead>Source</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Command</TableHead>
@@ -1059,27 +1111,31 @@ function TerminalCommandTable({ commands }: { commands: TerminalCommandLog[] }) 
       <TableBody>
         {commands.map((command) => (
           <TableRow className={command.status === "blocked" ? "bg-destructive/10" : undefined} key={command.id}>
-            <TableCell>{new Date(command.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</TableCell>
-            <TableCell>
+            <TableCell className="align-top">
+              <CommandTiming command={command} />
+            </TableCell>
+            <TableCell className="align-top">
               <StatusLabel label={command.source} />
             </TableCell>
-            <TableCell>
+            <TableCell className="align-top">
               <StatusLabel label={formatTerminalCommandStatus(command.status)} />
             </TableCell>
-            <TableCell className="max-w-[520px] whitespace-normal">
+            <TableCell className="whitespace-normal break-words align-top">
               <div className="flex flex-col gap-1.5">
-                <CommandLine label="Original command" value={command.originalCommand} />
-                <CommandLine label="Final command" value={command.finalCommand ?? command.command} strong />
+                <CommandSummary command={command} />
+                <WritePreviewSummary preview={command.writePreview} />
                 {command.status === "blocked" && command.riskReason ? (
                   <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs font-medium text-destructive">
-                    Blocked before execution: {command.riskReason}
+                    <TruncatedText maxLength={180} text={`Blocked before execution: ${command.riskReason}`} />
                   </p>
                 ) : command.riskReason ? (
-                  <p className="text-xs text-muted-foreground">Safety note: {command.riskReason}</p>
+                  <p className="text-xs text-muted-foreground">
+                    <TruncatedText maxLength={180} text={`Safety note: ${command.riskReason}`} />
+                  </p>
                 ) : null}
               </div>
             </TableCell>
-            <TableCell>{command.status === "blocked" ? "Not run" : command.exitCode === null ? "Pending" : command.exitCode}</TableCell>
+            <TableCell className="align-top">{command.status === "blocked" ? "Not run" : command.exitCode === null ? "Pending" : command.exitCode}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -1087,11 +1143,69 @@ function TerminalCommandTable({ commands }: { commands: TerminalCommandLog[] }) 
   );
 }
 
+function CommandTiming({ command }: { command: TerminalCommandLog }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5 text-xs text-muted-foreground">
+      <span>
+        {formatCommandTimestamp(command.startedAt ?? command.createdAt)}
+        {" -> "}
+        {command.endedAt ? formatCommandTimestamp(command.endedAt) : "running"}
+      </span>
+      <span>{formatCommandRuntime(command.startedAt, command.endedAt)}</span>
+    </div>
+  );
+}
+
+function CommandSummary({ command }: { command: TerminalCommandLog }) {
+  const finalCommand = command.finalCommand ?? command.command;
+  const originalCommand = command.originalCommand || command.command;
+
+  if (finalCommand === originalCommand) {
+    return <CommandLine label="Command" value={finalCommand} strong />;
+  }
+
+  return (
+    <>
+      <CommandLine label="Final command" value={finalCommand} strong />
+      <CommandLine label="Original command" value={originalCommand} />
+    </>
+  );
+}
+
 function CommandLine({ label, strong = false, value }: { label: string; strong?: boolean; value: string }) {
   return (
     <div className="flex flex-col gap-0.5">
       <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
-      <code className={strong ? "font-semibold" : undefined}>{value}</code>
+      <code className={strong ? "font-semibold" : undefined}>
+        <TruncatedText maxLength={180} text={value} />
+      </code>
+    </div>
+  );
+}
+
+function WritePreviewSummary({ preview }: { preview: TerminalCommandLog["writePreview"] }) {
+  if (!preview) {
+    return null;
+  }
+
+  const status = readPreviewString(preview, "status") ?? "available";
+  const targetPath = readPreviewString(preview, "target_path");
+  const commandKind = readPreviewString(preview, "command_kind");
+  const diff = readPreviewString(preview, "diff");
+
+  return (
+    <div className="rounded-md border bg-muted/30 p-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-foreground">Write preview</span>
+        <StatusLabel label={status.split("_").join(" ")} />
+        {commandKind ? <span className="text-muted-foreground">{commandKind.split("_").join(" ")}</span> : null}
+      </div>
+      {targetPath ? <p className="mt-1 text-muted-foreground">Target: {targetPath}</p> : null}
+      {diff ? (
+        <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-background p-2 font-mono text-[11px] leading-4 text-foreground">
+          {diff}
+        </pre>
+      ) : null}
     </div>
   );
 }
@@ -1117,6 +1231,39 @@ function formatTerminalCommandStatus(status: TerminalCommandLog["status"]) {
   }
 }
 
+function formatCommandTimestamp(value: string) {
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function formatCommandRuntime(startedAt: string | null, endedAt: string | null) {
+  if (!startedAt) {
+    return "Not started";
+  }
+
+  if (!endedAt) {
+    return "Running or awaiting completion";
+  }
+
+  const durationMs = Math.max(0, new Date(endedAt).getTime() - new Date(startedAt).getTime());
+  if (durationMs < 1000) {
+    return "<1s";
+  }
+
+  const seconds = Math.round(durationMs / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
+function readPreviewString(preview: Record<string, unknown>, key: string) {
+  const value = preview[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
 function getConnectionApprovalDescription(intent: ConnectionIntent | null) {
   if (intent === "analysis") {
     return "This approves backend SSH access for the selected customer system, then starts the analysis flow.";
@@ -1138,9 +1285,11 @@ function ActivityTab({
   notice,
   onDraftChange,
   onGenerateDraft,
+  onRunValidation,
   onReview,
   onSave,
   onSubmit,
+  runState,
   submitStatus,
   validation,
 }: {
@@ -1148,13 +1297,23 @@ function ActivityTab({
   notice: string;
   onDraftChange: (draft: ActivityDraft) => void;
   onGenerateDraft: () => void;
+  onRunValidation: () => void;
   onReview: () => void;
   onSave: () => void;
   onSubmit: () => void;
+  runState: RunState;
   submitStatus: "idle" | "submitted";
   validation: ValidationResult;
 }) {
   const complete = isDraftComplete(draft);
+  const validationPassed = validation.status === "passed";
+  const canConfirmValidation =
+    runState === "validating" || runState === "ready_to_submit" || runState === "submitted";
+  const generationStatus = validationPassed
+    ? "Ready: validation is confirmed."
+    : canConfirmValidation
+      ? "Required first: approve the collected validation evidence."
+      : "Required first: run a validation command and collect successful evidence.";
 
   return (
     <Card>
@@ -1166,10 +1325,23 @@ function ActivityTab({
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">Generate from audit requirement</p>
+            <p className="text-sm text-muted-foreground">{generationStatus}</p>
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <Button disabled={!canConfirmValidation || validationPassed} onClick={onRunValidation} type="button" variant="outline">
+              <CheckIcon data-icon="inline-start" />
+              Confirm validation
+            </Button>
+            <Button disabled={!validationPassed} onClick={onGenerateDraft} type="button" variant="outline">
+              <ClipboardCheckIcon data-icon="inline-start" />
+              Generate from audit
+            </Button>
+          </div>
+        </div>
         <div className="flex flex-wrap gap-2">
-          <Button onClick={onGenerateDraft} type="button" variant="outline">
-            Generate from audit
-          </Button>
           <Button onClick={onSave} type="button" variant="outline">
             Save draft
           </Button>

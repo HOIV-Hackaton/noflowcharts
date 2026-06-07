@@ -1,5 +1,6 @@
 import type {
   ActivityDraft,
+  AgentPhase,
   EventType,
   RunEvent,
   RunState,
@@ -53,4 +54,52 @@ export function formatRunState(state: RunState) {
 
 export function formatConnection(status: string) {
   return status.split("_").join(" ");
+}
+
+export function readAgentPhase(value: unknown): AgentPhase | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[-\s]+/g, "_").replace(/_+/g, "_");
+
+  switch (normalized) {
+    case "diagnose":
+    case "diagnosis":
+      return "diagnosis";
+    case "execute":
+    case "execution":
+    case "fix":
+    case "fixing":
+      return "execution";
+    case "recover":
+    case "recovery":
+      return "recovery";
+    case "validate":
+    case "validation":
+    case "verification":
+    case "verify":
+      return "verification";
+    case "analysis_final":
+    case "final":
+    case "final_analysis":
+      return "final_analysis";
+    default:
+      return null;
+  }
+}
+
+export function formatAgentPhaseLabel(phase: AgentPhase) {
+  switch (phase) {
+    case "diagnosis":
+      return "Diagnosis";
+    case "execution":
+      return "Fixing";
+    case "recovery":
+      return "Recovery";
+    case "verification":
+      return "Verifying";
+    case "final_analysis":
+      return "Final Analysis";
+  }
 }

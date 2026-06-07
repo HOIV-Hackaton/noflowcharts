@@ -83,6 +83,7 @@ export function mapBackendAction(action: BackendActionRead, results: BackendComm
     status: mapActionStatus(action.status),
     title: action.intent ?? action.command,
     type: action.command_classification === "read_only" ? "diagnostic" : "fix",
+    writePreview: action.write_preview,
   };
 }
 
@@ -99,6 +100,7 @@ export function mapBackendCommandResultAction(result: BackendCommandResultRead):
     status: failed ? "failed" : "executed",
     title: `Safe diagnostic #${result.action_id}`,
     type: "diagnostic",
+    writePreview: null,
   };
 }
 
@@ -204,6 +206,7 @@ export function mapTerminalCommand(command: BackendTerminalCommandRead): Termina
     startedAt: command.started_at,
     status: command.status,
     updatedAt: command.updated_at,
+    writePreview: command.write_preview,
   };
 }
 

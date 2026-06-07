@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { EmptyPanel, PageHeading, StatusLabel as ServiceStatusLabel } from "@/components/service-desk-ui";
 import {
@@ -61,7 +61,13 @@ export function EventTable({ events }: { events: RunEvent[] }) {
   }
 
   return (
-    <Table>
+    <Table className="table-fixed">
+      <colgroup>
+        <col className="w-24" />
+        <col className="w-28" />
+        <col className="w-48" />
+        <col />
+      </colgroup>
       <TableHeader>
         <TableRow>
           <TableHead>Time</TableHead>
@@ -73,16 +79,44 @@ export function EventTable({ events }: { events: RunEvent[] }) {
       <TableBody>
         {events.map((event) => (
           <TableRow key={event.id}>
-            <TableCell>{event.time}</TableCell>
+            <TableCell className="text-xs text-muted-foreground">{event.time}</TableCell>
             <TableCell>
               <StatusLabel label={event.type} />
             </TableCell>
-            <TableCell className="font-medium">{event.title}</TableCell>
-            <TableCell className="whitespace-normal text-muted-foreground">{event.detail}</TableCell>
+            <TableCell className="whitespace-normal break-words font-medium">
+              <TruncatedText text={event.title} maxLength={90} />
+            </TableCell>
+            <TableCell className="whitespace-normal break-words text-muted-foreground">
+              <TruncatedText text={event.detail} maxLength={280} />
+            </TableCell>
           </TableRow>
         ))}
       </TableBody>
     </Table>
+  );
+}
+
+export function TruncatedText({ maxLength = 220, text }: { maxLength?: number; text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const shouldTruncate = text.length > maxLength;
+  const visibleText = !shouldTruncate || expanded ? text : `${text.slice(0, maxLength).trimEnd()}...`;
+
+  return (
+    <span className="break-words">
+      {visibleText}
+      {shouldTruncate ? (
+        <>
+          {" "}
+          <button
+            className="font-medium text-foreground underline-offset-2 hover:underline"
+            onClick={() => setExpanded((current) => !current)}
+            type="button"
+          >
+            {expanded ? "see less" : "see more"}
+          </button>
+        </>
+      ) : null}
+    </span>
   );
 }
 

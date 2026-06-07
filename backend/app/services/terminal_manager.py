@@ -142,7 +142,11 @@ class TerminalManager:
     async def _runtime(self, run_id: str, cols: int, rows: int) -> TerminalRuntime:
         runtime = self._runtimes.get(run_id)
         if runtime is not None and not runtime.closing:
-            return runtime
+            if await asyncio.to_thread(runtime.pty.is_closed):
+                await self._close_runtime(runtime, "ssh_closed")
+            else:
+                await asyncio.to_thread(runtime.pty.resize, cols, rows)
+                return runtime
 
         with Session(engine) as session:
             repo = RunRepository(session)
@@ -153,16 +157,21 @@ class TerminalManager:
                 raise ValidationError("Technician must confirm SSH connection before opening terminal")
             if run.status in {RunStatus.SUBMITTED.value, RunStatus.ABORTED.value, RunStatus.FAILED.value}:
                 raise ValidationError("Terminal cannot be opened for a closed run")
-            db_terminal_session = repo.get_open_terminal_session(run_id) or repo.create_terminal_session(run_id)
             customer_system = CustomerSystem.model_validate((run.customer_system_snapshot or {}).get("customer_system"))
 
         pty = self.pty_factory(customer_system.system, cols=cols, rows=rows)
         await asyncio.to_thread(pty.open)
-        runtime = TerminalRuntime(run_id=run_id, db_session_id=db_terminal_session.id, pty=pty)
+
+        with Session(engine) as session:
+            repo = RunRepository(session)
+            db_terminal_session = repo.get_open_terminal_session(run_id) or repo.create_terminal_session(run_id)
+            db_terminal_session_id = db_terminal_session.id
+
+        runtime = TerminalRuntime(run_id=run_id, db_session_id=db_terminal_session_id, pty=pty)
         runtime.reader_task = asyncio.create_task(self._reader(runtime))
         self._runtimes[run_id] = runtime
-        self._audit(run_id, "terminal_opened", {"terminal_session_id": db_terminal_session.id})
-        persist_and_publish_ws_event_sync(run_id, "terminal_opened", {"terminal_session_id": db_terminal_session.id})
+        self._audit(run_id, "terminal_opened", {"terminal_session_id": db_terminal_session_id})
+        persist_and_publish_ws_event_sync(run_id, "terminal_opened", {"terminal_session_id": db_terminal_session_id})
         return runtime
 
     async def _handle_input(self, runtime: TerminalRuntime, data: str) -> None:
@@ -442,9 +451,6 @@ class TerminalManager:
                 if monotonic_seconds() - runtime.last_activity > IDLE_TIMEOUT_SECONDS:
                     await self._close_runtime(runtime, "idle_timeout")
                     return
-                if runtime.pty.is_closed():
-                    await self._close_runtime(runtime, "ssh_closed")
-                    return
                 data = await asyncio.to_thread(runtime.pty.read_available)
                 if data:
                     runtime.last_activity = monotonic_seconds()
@@ -456,6 +462,9 @@ class TerminalManager:
                     await self._broadcast(runtime, {"type": "terminal_output", "data": data})
                     await self._capture_output(runtime, data)
                 else:
+                    if runtime.pty.is_closed():
+                        await self._close_runtime(runtime, "ssh_closed")
+                        return
                     await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             return
@@ -492,6 +501,7 @@ class TerminalManager:
         runtime.closing = True
         if runtime.reader_task is not None and runtime.reader_task is not asyncio.current_task():
             runtime.reader_task.cancel()
+        await self._fail_pending_commands(runtime, reason)
         await asyncio.to_thread(runtime.pty.close)
         with Session(engine) as session:
             repo = RunRepository(session)
@@ -501,6 +511,26 @@ class TerminalManager:
         self._audit(runtime.run_id, "terminal_closed", {"terminal_session_id": runtime.db_session_id, "reason": reason})
         await self._broadcast(runtime, {"type": "terminal_closed", "reason": reason})
         self._runtimes.pop(runtime.run_id, None)
+
+    async def _fail_pending_commands(self, runtime: TerminalRuntime, reason: str) -> None:
+        for command_id, pending in list(runtime.pending_commands.items()):
+            cleaned_output = EXIT_MARKER_RE.sub("", pending.output)
+            close_message = f"\nTerminal closed before the command exit marker was received: {reason}."
+            with Session(engine) as session:
+                repo = RunRepository(session)
+                terminal_command = repo.get_terminal_command(command_id)
+                if terminal_command is None:
+                    runtime.pending_commands.pop(command_id, None)
+                    continue
+                repo.update_terminal_command(
+                    terminal_command,
+                    TerminalCommandStatus.FAILED,
+                    output=f"{cleaned_output}{close_message}",
+                    ended=True,
+                )
+            runtime.pending_commands.pop(command_id, None)
+            self._audit(runtime.run_id, "terminal_command_failed_on_close", {"command_id": command_id, "reason": reason})
+            await self._broadcast(runtime, {"type": "command_completed", "command_id": command_id})
 
     async def _broadcast(self, runtime: TerminalRuntime, event: dict[str, Any]) -> None:
         safe_event = redact_payload(event, get_settings().configured_secrets())
@@ -519,6 +549,7 @@ class TerminalManager:
                     "source": command.source,
                     "status": command.status,
                     "command": command.final_command or command.original_command,
+                    "classification": command.classification,
                     "exit_code": command.exit_code,
                     "output": command.output,
                     "reason": command.risk_reason,

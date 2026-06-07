@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate } from "@/lib/serviceDesk";
+import { cn } from "@/lib/utils";
 import type { Priority, Ticket } from "@/types";
 
 export type SidebarView = "overview" | "all" | "assigned" | "high" | "pending";
@@ -89,22 +90,33 @@ export function StatsGrid({
   children,
   loading = false,
   stats,
+  valueEmphasis = "large",
 }: {
   children?: ReactNode;
   loading?: boolean;
   stats: DashboardStat[];
+  valueEmphasis?: "default" | "large";
 }) {
   if (loading) {
-    return <StatsGridSkeleton count={stats.length + (children ? 1 : 0)} />;
+    return <StatsGridSkeleton count={stats.length + (children ? 1 : 0)} valueEmphasis={valueEmphasis} />;
   }
 
   return (
     <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
       {stats.map((stat) => (
         <Card key={stat.label} size="sm">
-          <CardHeader>
+          <CardHeader className={valueEmphasis === "large" ? "gap-3" : undefined}>
             <CardDescription>{stat.label}</CardDescription>
-            <CardTitle className="text-2xl">{stat.value}</CardTitle>
+            <CardTitle
+              className={cn(
+                "tabular-nums",
+                valueEmphasis === "large" && typeof stat.value === "number"
+                  ? "text-5xl leading-none font-semibold group-data-[size=sm]/card:text-5xl"
+                  : "text-2xl group-data-[size=sm]/card:text-2xl",
+              )}
+            >
+              {stat.value}
+            </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             {typeof stat.progress === "number" ? <Progress value={stat.progress} /> : null}
@@ -295,14 +307,20 @@ export function WorkflowCards({
   );
 }
 
-function StatsGridSkeleton({ count = 4 }: { count?: number }) {
+function StatsGridSkeleton({
+  count = 4,
+  valueEmphasis = "large",
+}: {
+  count?: number;
+  valueEmphasis?: "default" | "large";
+}) {
   return (
     <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
       {Array.from({ length: count }).map((_, index) => (
         <Card key={index} size="sm">
           <CardHeader>
             <Skeleton className="h-4 w-28" />
-            <Skeleton className="h-8 w-14" />
+            <Skeleton className={valueEmphasis === "large" ? "h-12 w-20" : "h-8 w-14"} />
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <Skeleton className="h-1 w-full rounded-full" />

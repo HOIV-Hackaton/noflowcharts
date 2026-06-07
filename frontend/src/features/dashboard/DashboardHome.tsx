@@ -39,7 +39,7 @@ export function DashboardHome({
 }) {
   return (
     <div className="flex flex-col gap-5">
-      <StatsGrid loading={loading} stats={stats}>
+      <StatsGrid loading={loading} stats={stats} valueEmphasis="large">
         <PriorityBars compact loading={loading} tickets={filteredTickets} />
       </StatsGrid>
 

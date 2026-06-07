@@ -73,6 +73,7 @@ export type BackendActionRead = {
   intent: string | null;
   risk_reason: string | null;
   expected_signal: string | null;
+  write_preview: Record<string, unknown> | null;
   typed_confirmation_status: "not_required" | "pending" | "confirmed";
   edited_command: string | null;
   created_at: string;
@@ -275,6 +276,7 @@ export type BackendTerminalCommandRead = {
   edited_to: string | null;
   classification: BackendActionRead["command_classification"] | null;
   risk_reason: string | null;
+  write_preview: Record<string, unknown> | null;
   exit_code: number | null;
   output: string;
   started_at: string | null;

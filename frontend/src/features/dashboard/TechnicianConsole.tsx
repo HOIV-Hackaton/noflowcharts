@@ -20,9 +20,11 @@ import { useAuth } from "../auth/AuthProvider";
 import {
   createEvent,
   emptyDraft,
+  formatAgentPhaseLabel,
   formatDate,
   initialValidation,
   isDraftComplete,
+  readAgentPhase,
 } from "../../lib/serviceDesk";
 import {
   backendApi,
@@ -70,7 +72,8 @@ import { DashboardHome } from "./DashboardHome";
 import { DashboardOverview } from "./DashboardOverview";
 import { TicketWorkspace } from "../tickets/TicketWorkspace";
 
-const RESET_CONFIRMATION_TEXT = "reset assigned VMs";
+const RESET_CONFIRMATION_TEXT = "RESET";
+const STORED_RUNS_KEY = "noflowcharts.ticketRuns.v1";
 
 type AppRouteState = {
   tab: TabId;
@@ -260,38 +263,15 @@ export function TechnicianConsole() {
     [assignedTechnicianName, backendReady, ticketList],
   );
 
-  const stats = useMemo<DashboardStat[]>(() => {
-    const total = Math.max(ticketList.length, 1);
-    const openTickets = ticketList.filter((ticket) => ticket.status === "OPEN").length;
-    const highTickets = ticketList.filter((ticket) => ticket.priority === "High").length;
-    const runTotal = Math.max(metricsSummary?.run_count ?? 0, 1);
+  const overviewStats = useMemo(
+    () => buildDashboardStats(ticketList, metricsSummary),
+    [metricsSummary, ticketList],
+  );
 
-    return [
-      {
-        detail: `${openTickets} tickets still need diagnosis or documentation.`,
-        label: "Open tickets",
-        progress: (openTickets / total) * 100,
-        tone: "default",
-        value: openTickets,
-      },
-      {
-        detail: "High priority work.",
-        label: "High priority",
-        progress: (highTickets / total) * 100,
-        tone: highTickets ? "danger" : "success",
-        value: highTickets,
-      },
-      {
-        detail: metricsSummary
-          ? `${metricsSummary.submitted_run_count} submitted, ${metricsSummary.failed_run_count} failed, ${metricsSummary.audit_event_count} audit events.`
-          : "Backend metrics summary did not load.",
-        label: "Active runs",
-        progress: metricsSummary ? (metricsSummary.active_run_count / runTotal) * 100 : undefined,
-        tone: metricsSummary?.failed_run_count ? "warning" : "default",
-        value: metricsSummary ? metricsSummary.active_run_count : "unavailable",
-      },
-    ];
-  }, [metricsSummary, ticketList]);
+  const visibleQueueStats = useMemo(
+    () => buildDashboardStats(filteredTickets, metricsSummary),
+    [filteredTickets, metricsSummary],
+  );
 
   const ticketAnalyticsStats = useMemo<DashboardStat[]>(() => {
     if (!backendRunId) {
@@ -379,15 +359,16 @@ export function TechnicianConsole() {
   }, [assignedTechnicianName, backendReady, selectedTicketId]);
 
   const resetTicketWorkspace = useCallback((ticketId: number, tab: TabId = "overview") => {
+    const storedRunId = readStoredRunId(ticketId);
     setSelectedTicketId(ticketId);
-    setBackendRunId(null);
+    setBackendRunId(storedRunId);
     setActiveTab(tab);
     setSystemLoaded(false);
     setSystemLoading(false);
-    setConnectionStatus("not_requested");
+    setConnectionStatus(storedRunId ? "connected" : "not_requested");
     setRunState("idle");
     setAgentPhase(null);
-    setAnalysisReady(false);
+    setAnalysisReady(Boolean(storedRunId));
     setActions([]);
     setEvents([createEvent("approval", "Ticket opened", `Ticket ${ticketId} opened.`)]);
     setTerminalCommands([]);
@@ -471,6 +452,52 @@ export function TechnicianConsole() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!backendReady || !selectedTicketId || !backendRunId) {
+      return;
+    }
+
+    const ticketId = selectedTicketId;
+    const runId = backendRunId;
+    let cancelled = false;
+
+    async function restoreRun() {
+      try {
+        const state = await backendApi.getRun(runId);
+        if (cancelled) {
+          return;
+        }
+
+        if (state.run.ticket_id !== ticketId) {
+          removeStoredRunId(ticketId);
+          setBackendRunId(null);
+          setConnectionStatus("not_requested");
+          return;
+        }
+
+        setConnectionStatus(state.run.ssh_confirmed ? "connected" : "awaiting_approval");
+        setSystemLoaded(state.run.ssh_confirmed);
+        setAnalysisReady(true);
+        syncRunState(state);
+        await refreshAuditEvents(runId);
+        await refreshRunMetrics(runId);
+      } catch (error) {
+        if (!cancelled) {
+          removeStoredRunId(ticketId);
+          setBackendRunId(null);
+          setConnectionStatus("not_requested");
+          setNotice(`Stored backend run could not be restored. ${getApiErrorMessage(error)}`);
+        }
+      }
+    }
+
+    void restoreRun();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [backendReady, backendRunId, refreshAuditEvents, refreshRunMetrics, selectedTicketId, syncRunState]);
+
   const handleRunWebSocketEvent = useCallback((event: BackendRunWebSocketEvent) => {
     if (event.event_id !== null) {
       runEventCursorRef.current = event.event_id;
@@ -516,17 +543,7 @@ export function TechnicianConsole() {
 
     setEvents((currentEvents) => upsertRunEvent(currentEvents, mapRunWebSocketEvent(event)));
 
-    if (
-      event.type === "agent_diagnostic_result" ||
-      event.type === "command_result" ||
-      event.type === "command_failed" ||
-      event.type === "command_proposed" ||
-      event.type === "command_blocked" ||
-      event.type === "safe_autodiagnosis_handed_to_human" ||
-      event.type === "validation_confirmed" ||
-      event.type === "activity_draft_generated" ||
-      event.type === "activity_submitted"
-    ) {
+    if (shouldRefreshRunArtifacts(event.type)) {
       void backendApi.getRun(event.run_id).then(syncRunState).catch(() => undefined);
       void refreshAuditEvents(event.run_id).catch(() => undefined);
       void refreshRunMetrics(event.run_id).catch(() => undefined);
@@ -669,6 +686,7 @@ export function TechnicianConsole() {
       const confirmedState = await backendApi.confirmSsh(runState.run.id);
 
       setBackendRunId(confirmedState.run.id);
+      storeRunId(selectedTicket.id, confirmedState.run.id);
       setConnectionStatus("connected");
       updateTicketStatus(selectedTicket.id, "PENDING");
       syncRunState(confirmedState);
@@ -790,6 +808,15 @@ export function TechnicianConsole() {
       ),
     );
   };
+
+  const handleTerminalConnectionError = useCallback((message: string) => {
+    if (selectedTicketId) {
+      removeStoredRunId(selectedTicketId);
+    }
+    if (message.startsWith("SSH terminal failed:")) {
+      setNotice("Terminal SSH connection failed. Refresh will not reuse this run automatically.");
+    }
+  }, [selectedTicketId]);
 
   const approveAction = async (actionId: string) => {
     const action = actions.find((candidate) => candidate.id === actionId);
@@ -937,6 +964,7 @@ export function TechnicianConsole() {
     try {
       const state = await backendApi.abortRun(backendRunId);
       syncRunState(state);
+      removeStoredRunId(selectedTicket.id);
       await refreshAuditEvents(backendRunId);
       await refreshRunMetrics(backendRunId);
       setConnectionStatus((current) => (current === "connected" ? "disconnected" : current));
@@ -959,7 +987,7 @@ export function TechnicianConsole() {
       return;
     }
 
-    const evidence = "Technician confirmed service behavior after approved action execution.";
+    const evidence = "Technician validated that the customer-facing service is restored after approved action execution.";
     setAgentPhase("verification");
 
     try {
@@ -1094,6 +1122,7 @@ export function TechnicianConsole() {
       syncRunState(state);
       if (ticketId) {
         updateTicketStatus(ticketId, "DONE");
+        removeStoredRunId(ticketId);
       }
       setSubmitStatus("submitted");
       setAgentPhase("final_analysis");
@@ -1164,7 +1193,7 @@ export function TechnicianConsole() {
 
   const resetEnvironment = async () => {
     if (resetConfirmation.trim() !== RESET_CONFIRMATION_TEXT) {
-      setNotice(`Type "${RESET_CONFIRMATION_TEXT}" before resetting assigned VMs.`);
+      setNotice(`Type "${RESET_CONFIRMATION_TEXT}" before resetting the environment.`);
       return;
     }
 
@@ -1185,6 +1214,7 @@ export function TechnicianConsole() {
       setLastTicketFetchAt(new Date().toISOString());
       setSelectedTicketId(null);
       setBackendRunId(null);
+      clearStoredRunIds();
       setActiveTab("overview");
       setSystemLoaded(false);
       setSystemLoading(false);
@@ -1349,6 +1379,7 @@ export function TechnicianConsole() {
               onLoadSystem={loadSystemInfo}
               onRejectAction={rejectAction}
               onRetryAction={retryAction}
+              onAgentPhaseChange={setAgentPhase}
               onRunValidation={runValidation}
               onSaferAlternative={requestSaferAlternative}
               onReviewDraft={reviewDraft}
@@ -1356,6 +1387,7 @@ export function TechnicianConsole() {
               onStartAutodiagnosis={startAutodiagnosis}
               onStartAnalysis={startAnalysis}
               onSubmitActivity={submitActivity}
+              onTerminalConnectionError={handleTerminalConnectionError}
               onTabChange={setTicketTab}
               onUpdateCommand={updateActionCommand}
               pendingActions={pendingActions}
@@ -1383,7 +1415,7 @@ export function TechnicianConsole() {
               highPriorityTickets={highPriorityTickets}
               loading={ticketsLoading}
               onSelectTicket={selectTicket}
-              stats={stats}
+              stats={overviewStats}
               tickets={ticketList}
             />
           ) : (
@@ -1396,7 +1428,7 @@ export function TechnicianConsole() {
               setSortBy={setSortBy}
               setStatusFilter={setStatusFilter}
               sortBy={sortBy}
-              stats={stats}
+              stats={visibleQueueStats}
               statusFilter={statusFilter}
             />
           )}
@@ -1451,7 +1483,7 @@ function ResetEnvironmentDialog({
               <AlertTriangleIcon className="size-4" />
             </span>
             <div className="grid gap-2">
-              <DialogTitle>Reset assigned VMs?</DialogTitle>
+              <DialogTitle>Reset environment?</DialogTitle>
               <DialogDescription>
                 This clears generated activities and requests a reboot of the assigned customer VMs. Use it only when
                 restarting the evaluation environment is intentional.
@@ -1475,12 +1507,45 @@ function ResetEnvironmentDialog({
             Cancel
           </Button>
           <Button disabled={!canReset || inFlight} onClick={onConfirm} type="button" variant="destructive">
-            {inFlight ? "Resetting environment" : "Reset assigned VMs"}
+            {inFlight ? "Resetting environment" : "Reset environment"}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
+}
+
+function buildDashboardStats(tickets: Ticket[], metricsSummary: BackendMetricsSummaryRead | null): DashboardStat[] {
+  const total = Math.max(tickets.length, 1);
+  const openTickets = tickets.filter((ticket) => ticket.status === "OPEN").length;
+  const highTickets = tickets.filter((ticket) => ticket.priority === "High").length;
+  const runTotal = Math.max(metricsSummary?.run_count ?? 0, 1);
+
+  return [
+    {
+      detail: `${openTickets} ${openTickets === 1 ? "ticket" : "tickets"} still need diagnosis or documentation.`,
+      label: "Open tickets",
+      progress: (openTickets / total) * 100,
+      tone: "default",
+      value: openTickets,
+    },
+    {
+      detail: highTickets ? "High priority work." : "No high priority tickets in this queue.",
+      label: "High priority",
+      progress: (highTickets / total) * 100,
+      tone: highTickets ? "danger" : "success",
+      value: highTickets,
+    },
+    {
+      detail: metricsSummary
+        ? `${metricsSummary.submitted_run_count} submitted, ${metricsSummary.failed_run_count} failed, ${metricsSummary.audit_event_count} audit events.`
+        : "Backend metrics summary did not load.",
+      label: "Active runs",
+      progress: metricsSummary ? (metricsSummary.active_run_count / runTotal) * 100 : undefined,
+      tone: metricsSummary?.failed_run_count ? "warning" : "default",
+      value: metricsSummary ? metricsSummary.active_run_count : "unavailable",
+    },
+  ];
 }
 
 function getAppRouteState(): AppRouteState {
@@ -1559,32 +1624,6 @@ function getTicketTabFromQuery(): TabId {
 
 function isTicketTab(tab: string | null): tab is TabId {
   return tab === "overview" || tab === "system" || tab === "analysis" || tab === "actions" || tab === "logs" || tab === "activity";
-}
-
-function readAgentPhase(value: unknown): AgentPhase | null {
-  if (
-    value === "diagnosis" ||
-    value === "execution" ||
-    value === "verification" ||
-    value === "final_analysis"
-  ) {
-    return value;
-  }
-
-  return null;
-}
-
-function formatAgentPhaseLabel(phase: AgentPhase) {
-  switch (phase) {
-    case "diagnosis":
-      return "Diagnosis";
-    case "execution":
-      return "Fixing";
-    case "verification":
-      return "Verifying";
-    case "final_analysis":
-      return "Final Analysis";
-  }
 }
 
 function mapRunWebSocketEvent(event: BackendRunWebSocketEvent): RunEvent {
@@ -1680,6 +1719,66 @@ function runWebSocketEventType(event: BackendRunWebSocketEvent): EventType {
     return "output";
   }
   return "analysis";
+}
+
+function shouldRefreshRunArtifacts(type: string) {
+  return (
+    type === "agent_diagnostic_result" ||
+    type === "safe_autodiagnosis_handed_to_human" ||
+    type.includes("activity") ||
+    type.includes("command") ||
+    type.includes("terminal") ||
+    type.includes("validation")
+  );
+}
+
+function readStoredRunId(ticketId: number) {
+  try {
+    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const stored = JSON.parse(raw) as Record<string, unknown>;
+    const value = stored[String(ticketId)];
+    return typeof value === "string" && value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeRunId(ticketId: number, runId: string) {
+  try {
+    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
+    const stored = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    stored[String(ticketId)] = runId;
+    window.localStorage.setItem(STORED_RUNS_KEY, JSON.stringify(stored));
+  } catch {
+    return;
+  }
+}
+
+function removeStoredRunId(ticketId: number) {
+  try {
+    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
+    if (!raw) {
+      return;
+    }
+
+    const stored = JSON.parse(raw) as Record<string, unknown>;
+    delete stored[String(ticketId)];
+    window.localStorage.setItem(STORED_RUNS_KEY, JSON.stringify(stored));
+  } catch {
+    return;
+  }
+}
+
+function clearStoredRunIds() {
+  try {
+    window.localStorage.removeItem(STORED_RUNS_KEY);
+  } catch {
+    return;
+  }
 }
 
 function upsertTicket(tickets: Ticket[], ticket: Ticket) {

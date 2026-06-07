@@ -50,6 +50,18 @@ class FakePty:
         self.closed = True
 
 
+class ClosingAfterMarkerPty(FakePty):
+    def write(self, data):
+        super().write(data)
+        self.closed = True
+
+
+class ClosingWithoutMarkerPty(FakePty):
+    def write(self, data):
+        self.writes.append(data)
+        self.closed = True
+
+
 class ConfirmingReviewer:
     def review(self, command, context=None):
         deterministic = classify_command(command)
@@ -193,6 +205,74 @@ def test_manual_read_only_command_executes_and_records_exit_code():
             transcript = RunRepository(session).list_terminal_transcript(run_id)
         assert "secret-value" not in transcript[-1].data
         assert "[REDACTED]" in transcript[-1].data
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_closed_ssh_with_buffered_exit_marker_records_completion():
+    async def run_test():
+        manager = TerminalManager(pty_factory=ClosingAfterMarkerPty, safety_reviewer=ConfirmingReviewer())
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "input", "data": "uptime\r"})
+        completed = await wait_for(queue, "command_completed")
+
+        assert completed["exit_code"] == 0
+        logs = manager.logs(run_id)
+        assert logs[-1].status == TerminalCommandStatus.COMPLETED.value
+        assert logs[-1].exit_code == 0
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_closed_ssh_without_exit_marker_fails_pending_command_visibly():
+    async def run_test():
+        manager = TerminalManager(pty_factory=ClosingWithoutMarkerPty, safety_reviewer=ConfirmingReviewer())
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "input", "data": "uptime\r"})
+        completed = await wait_for(queue, "command_completed")
+        closed = await wait_for(queue, "terminal_closed")
+
+        assert "exit_code" not in completed
+        assert closed["reason"] == "ssh_closed"
+        logs = manager.logs(run_id)
+        assert logs[-1].status == TerminalCommandStatus.FAILED.value
+        assert "ssh_closed" in logs[-1].output
+
+    asyncio.run(run_test())
+
+
+def test_terminal_disconnect_keeps_ssh_runtime_for_reconnect():
+    async def run_test():
+        FakePty.instances = []
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer())
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id, cols=120, rows=32)
+        await wait_for(queue, "terminal_opened")
+        first_pty = FakePty.instances[-1]
+        runtime.current_agent_phase = "fix"
+
+        manager.disconnect(runtime, queue)
+
+        assert first_pty.closed is False
+
+        reconnected_runtime, reconnect_queue = await manager.connect(run_id, cols=96, rows=28)
+        opened = await wait_for(reconnect_queue, "terminal_opened")
+        phase = await wait_for(reconnect_queue, "agent_phase_selected")
+
+        assert reconnected_runtime is runtime
+        assert FakePty.instances[-1] is first_pty
+        assert first_pty.cols == 96
+        assert first_pty.rows == 28
+        assert opened["session_id"] == runtime.db_session_id
+        assert phase["phase"] == "fix"
         await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())

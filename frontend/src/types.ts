@@ -14,11 +14,12 @@ export type RunState =
   | "submitted"
   | "aborted";
 
-export type AgentPhase = "diagnosis" | "execution" | "verification" | "final_analysis";
+export type AgentPhase = "diagnosis" | "execution" | "recovery" | "verification" | "final_analysis";
 export type TabId = "overview" | "system" | "analysis" | "actions" | "logs" | "activity";
 export type ActionStatus = "pending" | "executed" | "rejected" | "failed";
 export type RiskLevel = "Low" | "Medium" | "High";
 export type EventType = "analysis" | "approval" | "command" | "output" | "validation" | "error";
+export type WritePreview = Record<string, unknown>;
 export type TerminalCommandStatus =
   | "submitted"
   | "confirmation_required"
@@ -78,6 +79,7 @@ export type ProposedAction = {
   flags: string[];
   status: ActionStatus;
   result?: string;
+  writePreview: WritePreview | null;
 };
 
 export type RunEvent = {
@@ -97,6 +99,7 @@ export type TerminalCommandLog = {
   finalCommand: string | null;
   classification: string | null;
   riskReason: string | null;
+  writePreview: WritePreview | null;
   exitCode: number | null;
   output: string;
   startedAt: string | null;

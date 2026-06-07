@@ -4,15 +4,15 @@ import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { formatAgentPhaseLabel, readAgentPhase } from "@/lib/serviceDesk";
+import type { AgentPhase, WritePreview } from "@/types";
 import { runTerminalWebSocketUrl } from "../../services/backendApi";
 
 type TerminalMessage =
   | { type: "agent_cancelled" }
   | { type: "agent_guidance_recorded" }
   | { type: "agent_phase_selected"; phase: string }
-  | { type: "agent_proposal"; command_id: number; command: string; classification?: string; intent?: string; phase?: string | null; reason?: string }
-  | { type: "agent_phase_selected"; phase: string }
-  | { type: "agent_proposal"; command_id: number; command: string; classification?: string; intent?: string; phase?: string | null; reason?: string }
+  | { type: "agent_proposal"; command_id: number; command: string; classification?: string; intent?: string; phase?: string | null; reason?: string; write_preview?: WritePreview | null }
   | { type: "agent_waiting_for_guidance"; command_id?: number }
   | { type: "command_blocked"; command_id?: number; reason?: string }
   | { type: "command_cancelled"; command_id?: number }
@@ -41,9 +41,19 @@ type PendingConfirmation = {
 type SetPendingCommand = (pending: PendingConfirmation | null) => void;
 
 export function TicketTerminal({
+  autodiagnosisRunning = false,
+  canStartAutodiagnosis = false,
+  onAgentPhaseChange,
+  onTerminalConnectionError,
+  onStartAutodiagnosis,
   runId,
   variant = "default",
 }: {
+  autodiagnosisRunning?: boolean;
+  canStartAutodiagnosis?: boolean;
+  onAgentPhaseChange?: (phase: AgentPhase) => void;
+  onStartAutodiagnosis?: () => void;
+  onTerminalConnectionError?: (message: string) => void;
   runId: string | null;
   variant?: "compact" | "default";
 }) {
@@ -376,14 +386,13 @@ export function TicketTerminal({
     setPendingCommand(null);
     setConnectionState("connecting");
     setTerminalHasContent(true);
+    terminal.clear();
     terminal.writeln("\r\nOpening backend terminal bridge...");
     const socket = new WebSocket(runTerminalWebSocketUrl(runId, terminal.cols, terminal.rows));
     socketRef.current = socket;
 
     socket.onopen = () => {
-      terminal.options.disableStdin = false;
-      setConnectionState("connected");
-      sendResize();
+      terminal.options.disableStdin = true;
     };
 
     socket.onmessage = (event) => {
@@ -402,11 +411,25 @@ export function TicketTerminal({
         terminalHadErrorRef.current = true;
         setTerminalHasContent(true);
         terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
+        if (isTerminalOpenError(message.message)) {
+          onTerminalConnectionError?.(message.message);
+        }
         return;
+      }
+
+      if (message.type === "terminal_opened") {
+        terminal.options.disableStdin = false;
+        setConnectionState("connected");
+        window.setTimeout(sendResize, 0);
       }
 
       if (message.type === "agent_proposal" || message.type === "agent_phase_selected") {
         setAgentStarted(true);
+      }
+
+      const agentPhase = readTerminalMessageAgentPhase(message);
+      if (agentPhase) {
+        onAgentPhaseChange?.(agentPhase);
       }
 
       if (message.type === "agent_cancelled") {
@@ -427,9 +450,7 @@ export function TicketTerminal({
       setPendingCommand(null);
       setAgentStarted(false);
       setConnectionState("disconnected");
-      if (terminalHadErrorRef.current && event.reason) {
-        setTerminalHasContent(true);
-        terminal.writeln(`\r\n\x1b[31m${event.reason}\x1b[0m`);
+      if (terminalHadErrorRef.current) {
         return;
       }
       if (!terminalHadErrorRef.current) {
@@ -523,38 +544,40 @@ export function TicketTerminal({
   return (
     <section className={["terminal-panel", variant === "compact" ? "terminal-panel-compact" : ""].join(" ")}>
       <div className="terminal-controls">
-        <Button
-          disabled={!runId || connectionState !== "disconnected"}
-          onClick={connect}
-          title={!runId ? "Approve the backend connection to create a run before connecting." : undefined}
-          type="button"
-        >
-          {runId ? "Connect" : "Waiting for run"}
-        </Button>
-        <Button
-          disabled={connectionState !== "connected"}
-          onClick={requestAgentAction}
-          type="button"
-          variant="outline"
-        >
-          {agentStarted ? "Next action" : "Start agent"}
-        </Button>
-        <Button
-          disabled={connectionState !== "connected" || !agentStarted}
-          onClick={cancelAgent}
-          type="button"
-          variant="outline"
-        >
-          Stop agent
-        </Button>
-        <Button
-          disabled={connectionState === "disconnected"}
-          onClick={disconnect}
-          type="button"
-          variant="destructive"
-        >
-          Disconnect
-        </Button>
+        {runId || connectionState !== "disconnected" ? (
+          <Button
+            disabled={!runId || connectionState !== "disconnected"}
+            onClick={connect}
+            title={!runId ? "Approve the backend connection to create a run before connecting." : undefined}
+            type="button"
+          >
+            {connectionState === "connecting" ? "Connecting" : runId ? "Connect" : "Waiting for run"}
+          </Button>
+        ) : (
+          <Button disabled title="Approve the backend connection to create a run before connecting." type="button">
+            Waiting for run
+          </Button>
+        )}
+        {connectionState === "connected" ? (
+          <Button onClick={requestAgentAction} type="button" variant="outline">
+            {agentStarted ? "Next agent action" : "Start agent"}
+          </Button>
+        ) : null}
+        {onStartAutodiagnosis && (canStartAutodiagnosis || autodiagnosisRunning) ? (
+          <Button disabled={autodiagnosisRunning} onClick={onStartAutodiagnosis} type="button" variant="outline">
+            {autodiagnosisRunning ? "Automation running" : "Start automation"}
+          </Button>
+        ) : null}
+        {connectionState === "connected" && agentStarted ? (
+          <Button onClick={cancelAgent} type="button" variant="outline">
+            Stop agent
+          </Button>
+        ) : null}
+        {connectionState !== "disconnected" ? (
+          <Button onClick={disconnect} type="button" variant="destructive">
+            Disconnect
+          </Button>
+        ) : null}
         <p className="terminal-safety-note">
           Commands that can open pagers or hang the terminal are automatically converted to non-interactive form or blocked.
         </p>
@@ -606,6 +629,11 @@ function parseTerminalMessage(value: string): TerminalMessage | null {
 }
 
 function formatAgentTerminalPhase(value: string) {
+  const phase = readAgentPhase(value);
+  if (phase) {
+    return formatAgentPhaseLabel(phase);
+  }
+
   const normalized = value.trim().replace(/[-_]+/g, " ").toLowerCase();
   if (!normalized) {
     return "Unknown";
@@ -615,6 +643,23 @@ function formatAgentTerminalPhase(value: string) {
     .split(/\s+/)
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(" ");
+}
+
+function readTerminalMessageAgentPhase(message: TerminalMessage): AgentPhase | null {
+  if (message.type === "agent_phase_selected" || message.type === "agent_proposal") {
+    return readAgentPhase(message.phase);
+  }
+
+  return null;
+}
+
+function isTerminalOpenError(message: string) {
+  return (
+    message.startsWith("SSH terminal failed:") ||
+    message === "Run was not found" ||
+    message === "Technician must confirm SSH connection before opening terminal" ||
+    message === "Terminal cannot be opened for a closed run"
+  );
 }
 
 function handleTerminalStatusMessage(
@@ -653,6 +698,10 @@ function handleTerminalStatusMessage(
       if (message.reason) {
         terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mReason\x1b[0m ${message.reason}`);
       }
+      const writePreview = formatTerminalWritePreview(message.write_preview);
+      if (writePreview) {
+        terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mWrite preview\x1b[0m ${writePreview}`);
+      }
       terminal.writeln(`\x1b[36m│\x1b[0m \x1b[1m${message.command}\x1b[0m`);
       terminal.writeln(
         "\x1b[36m╰─\x1b[0m \x1b[32m[a] accept\x1b[0m  \x1b[31m[r] reject\x1b[0m  \x1b[33m[e] edit\x1b[0m  \x1b[36m[t] retry\x1b[0m  \x1b[90m[c] comment\x1b[0m",
@@ -671,11 +720,13 @@ function handleTerminalStatusMessage(
       terminal.writeln("\r\n\x1b[90mCommand cancelled.\x1b[0m");
       break;
     case "command_completed":
-      terminal.writeln(
-        message.exit_code === 0
-          ? "\r\n\x1b[32mCommand completed successfully.\x1b[0m"
-          : `\r\n\x1b[31mCommand completed with exit ${message.exit_code ?? "unknown"}.\x1b[0m`,
-      );
+      if (message.exit_code === 0) {
+        terminal.writeln("\r\n\x1b[32mCommand completed successfully.\x1b[0m");
+      } else if (typeof message.exit_code === "number") {
+        terminal.writeln(`\r\n\x1b[31mCommand completed with exit ${message.exit_code}.\x1b[0m`);
+      } else {
+        terminal.writeln("\r\n\x1b[31mCommand ended before an exit code was captured.\x1b[0m");
+      }
       break;
     case "command_running":
       terminal.writeln("\r\n\x1b[36mCommand running...\x1b[0m");
@@ -713,7 +764,20 @@ function handleTerminalStatusMessage(
   }
 }
 
-function formatAgentPhase(phase: string) {
-  const normalized = phase.replace(/[_-]+/g, " ").trim();
-  return normalized ? normalized[0].toUpperCase() + normalized.slice(1) : "Unknown";
+function formatTerminalWritePreview(preview: WritePreview | null | undefined) {
+  if (!preview) {
+    return null;
+  }
+
+  const status = readPreviewString(preview, "status") ?? "available";
+  const commandKind = readPreviewString(preview, "command_kind");
+  const targetPath = readPreviewString(preview, "target_path");
+  return [status.split("_").join(" "), commandKind?.split("_").join(" "), targetPath ? `target ${targetPath}` : null]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function readPreviewString(preview: WritePreview, key: string) {
+  const value = preview[key];
+  return typeof value === "string" && value.trim() ? value : null;
 }
