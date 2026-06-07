@@ -2,7 +2,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from app.agent.providers import LlmProvider, complete_json_with_metrics, get_llm_provider
+from app.agent.providers import LlmProvider, complete_json_with_knowledge_tools, complete_json_with_metrics, get_llm_provider
 from app.core.config import get_settings
 from app.core.errors import AgentError
 from app.core.redaction import redact_payload
@@ -57,6 +57,7 @@ COMMON_AGENT_RULES = """Shared non-negotiable rules:
 - Do not repeat a command when recent observations already contain its answer; use those observations to choose the next smallest diagnostic, fix, or validation.
 - Treat successful empty output from filters/listener checks as a real negative finding. Do not re-run an equivalent probe just because it printed nothing.
 - Related ticket context is historical assistance only. Do not assume the current ticket has the same root cause and do not copy historical commands blindly.
+- Use the search_knowledge_base tool when the ticket resembles a known Linux service issue or when a prior snippet could guide safer diagnosis. Treat retrieved snippets as hints only; diagnose the current system independently.
 - Return JSON only.
 """
 
@@ -445,7 +446,7 @@ class Planner:
             },
         ]
         try:
-            return complete_json_with_metrics(self.provider, messages, timeout=30.0, operation=operation, run_id=run_id)
+            return complete_json_with_knowledge_tools(self.provider, messages, timeout=30.0, operation=operation, run_id=run_id)
         except AgentError:
             raise
 

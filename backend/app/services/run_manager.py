@@ -32,6 +32,7 @@ from app.services.activity_generator import ActivityGenerator
 from app.services.diagnostic_policy import MAX_AUTO_DIAGNOSTIC_STEPS
 from app.services.diagnostic_tools import DiagnosticToolbox
 from app.services.events import persist_and_publish_ws_event_sync
+from app.services.knowledge import KnowledgeService
 from app.services.safety import classify_command
 from app.services.ssh_runner import SshRunner
 from app.services.ticket_memory import RelatedTicketContext, TicketMemoryService
@@ -574,6 +575,7 @@ class RunManager:
         self._event(run.id, "activity_submitted", completion_payload)
         terminal_manager.announce_completion_sync(run.id, ACTIVITY_SUBMITTED_MESSAGE, TICKET_COMPLETED_ASCII)
         self._create_completed_ticket_memory(run, draft)
+        self._ingest_completed_knowledge(run, draft)
         return created
 
     def audit_events(self, run_id: str):
@@ -857,6 +859,15 @@ class RunManager:
             self.audit.record("ticket_memory_created", {"ticket_id": run.ticket_id, "command_count": len(commands)}, run.id)
         except Exception as exc:
             self.audit.record("ticket_memory_create_failed", {"ticket_id": run.ticket_id, "error": redact_text(str(exc))}, run.id)
+
+    def _ingest_completed_knowledge(self, run: Run, draft: ActivityDraft) -> None:
+        try:
+            response = KnowledgeService(self.session).ingest_resolved_run(run, draft)
+            inserted_count = response.inserted_count if response is not None else 0
+            self.audit.record("knowledge_ingested", {"ticket_id": run.ticket_id, "inserted_count": inserted_count}, run.id)
+            self._event(run.id, "knowledge_ingested", {"ticket_id": run.ticket_id, "inserted_count": inserted_count})
+        except Exception as exc:
+            self.audit.record("knowledge_ingest_failed", {"ticket_id": run.ticket_id, "error": redact_text(str(exc))}, run.id)
 
     def _completed_memory_commands(self, run_id: str) -> list[str]:
         commands: list[str] = []

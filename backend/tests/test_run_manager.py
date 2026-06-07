@@ -734,6 +734,30 @@ def test_activity_submission_creates_completed_memory_after_done_status():
         assert "curl -fsS http://localhost/health" in commands
 
 
+def test_activity_submission_ingests_completed_knowledge_after_done_status(monkeypatch):
+    class FakeKnowledgeService:
+        calls = []
+
+        def __init__(self, session):
+            self.session = session
+
+        def ingest_resolved_run(self, run, draft):
+            self.calls.append((run.ticket_id, draft.root_cause))
+            return type("Response", (), {"inserted_count": 5})()
+
+    monkeypatch.setattr("app.services.run_manager.KnowledgeService", FakeKnowledgeService)
+    with make_session() as session:
+        manager = make_manager(session, activity_generator=FakeActivityGenerator())
+        run_id = ready_run(manager)
+
+        manager.generate_activity_draft(run_id)
+        manager.review_activity_draft(run_id)
+        manager.submit_activity(run_id, ActivitySubmitRequest())
+
+        assert FakeKnowledgeService.calls == [(7001, "nginx was inactive, so the API proxy was unavailable.")]
+        assert any(event[1] == "knowledge_ingested" for event in manager.events)
+
+
 def test_activity_submission_does_not_create_memory_when_done_status_fails():
     with make_session() as session:
         memory = FakeTicketMemoryService()

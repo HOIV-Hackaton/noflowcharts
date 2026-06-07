@@ -1,0 +1,57 @@
+[
+  {
+    "ticket_id": 7004,
+    "chunk_type": "problem",
+    "content": "Customer reports the web application intermittently returns 502 Bad Gateway through nginx while the Linux VM is reachable over SSH."
+  },
+  {
+    "ticket_id": 7004,
+    "chunk_type": "diagnosis",
+    "content": "Nginx was active, but its configured upstream application service was not listening on the expected localhost port, so proxy_pass requests failed with connection refused and produced 502 responses."
+  },
+  {
+    "ticket_id": 7004,
+    "chunk_type": "commands",
+    "content": "Useful checks were systemctl status nginx, nginx -t, inspecting the enabled site for proxy_pass, ss -ltn to confirm the upstream port, systemctl status for the upstream app service, journalctl for recent service errors, and curl --max-time 5 -fsS against the local health endpoint."
+  },
+  {
+    "ticket_id": 7004,
+    "chunk_type": "fix",
+    "content": "After confirming the upstream app service was stopped, the targeted persistent fix was to start and enable that specific service, then restart nginx only if its configuration or upstream availability required it."
+  },
+  {
+    "ticket_id": 7004,
+    "chunk_type": "validation",
+    "content": "Validation was successful when curl to the local health endpoint returned HTTP 200/ok and nginx no longer returned 502 for the customer-facing route."
+  },
+  {
+    "ticket_id": null,
+    "chunk_type": "diagnosis",
+    "content": "For disk-full incidents, df -h identifies the full filesystem, du on narrow application log/cache directories identifies growth, and journal logs often show write failures such as no space left on device."
+  },
+  {
+    "ticket_id": null,
+    "chunk_type": "fix",
+    "content": "For a full disk caused by oversized application logs, prefer targeted log rotation or truncating a confirmed disposable log file over deleting data directories or broad rm -rf cleanup."
+  },
+  {
+    "ticket_id": null,
+    "chunk_type": "commands",
+    "content": "For failed systemd services, useful commands include systemctl --no-pager status SERVICE, systemctl cat SERVICE, systemctl is-enabled SERVICE, journalctl -u SERVICE -n 80 --no-pager, and a targeted systemctl restart SERVICE after the cause is understood."
+  },
+  {
+    "ticket_id": null,
+    "chunk_type": "fix",
+    "content": "For web root permission errors, fix ownership or mode only on the exact affected directory or file needed by the web server user; avoid chmod -R 777 or broad recursive permission changes across /var, /srv, /home, or /etc."
+  },
+  {
+    "ticket_id": null,
+    "chunk_type": "diagnosis",
+    "content": "When MySQL or MariaDB does not start, check systemctl status mysql or mariadb, recent journal entries, available disk space, ownership of the data directory, and whether another process is already bound to port 3306 before attempting a restart."
+  },
+  {
+    "ticket_id": null,
+    "chunk_type": "validation",
+    "content": "For MySQL recovery, validation should show the service active, port 3306 listening locally when expected, and the dependent application or health check succeeding without reinitializing or deleting database files."
+  }
+]
