@@ -269,15 +269,15 @@ def test_agent_guidance_after_rejection_is_not_submitted_as_shell_command():
 
         await manager.handle_message(runtime, {"type": "input", "data": "sorry try again\r"})
         await wait_for(queue, "agent_guidance_recorded")
+        await wait_for(queue, "agent_proposal")
 
         assert FakePty.instances[-1].writes == []
         logs = manager.logs(run_id)
-        assert len(logs) == 1
+        assert len(logs) == 2
+        assert logs[0].status == TerminalCommandStatus.REJECTED.value
+        assert logs[1].status == TerminalCommandStatus.SUBMITTED.value
         context = manager._context(run_id)
         assert {"source": "technician", "status": "guidance", "guidance": "sorry try again"} in context["observations"]
-
-        await manager.handle_message(runtime, {"type": "agent_next"})
-        await wait_for(queue, "agent_proposal")
         assert any(observation.get("guidance") == "sorry try again" for observation in planner.observations)
         await manager.close_run(run_id, "test_done")
 

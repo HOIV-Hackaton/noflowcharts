@@ -289,6 +289,7 @@ class TerminalManager:
         runtime.waiting_after_rejection = False
         self._audit(runtime.run_id, "agent_guidance_received", {"message": guidance})
         await self._broadcast(runtime, {"type": "agent_guidance_recorded"})
+        await self._propose_agent(runtime)
 
     async def _accept_agent(self, runtime: TerminalRuntime, command_id: int) -> None:
         with Session(engine) as session:
