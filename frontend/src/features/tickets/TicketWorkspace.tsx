@@ -286,7 +286,11 @@ export function TicketWorkspace(props: {
             canStartAutodiagnosis={props.canStartAutodiagnosis}
           />
         </TabsContent>
-        <TabsContent className="h-[clamp(340px,calc(100svh-21rem),620px)] min-h-0" value="actions">
+        <TabsContent
+          className="h-[clamp(340px,calc(100svh-21rem),620px)] min-h-0 data-[state=inactive]:hidden"
+          forceMount
+          value="actions"
+        >
           <ActionsTab
             autodiagnosisRunning={props.autodiagnosisRunning}
             canStartAutodiagnosis={props.canStartAutodiagnosis}
@@ -375,55 +379,63 @@ function AgentPhaseProgress({
 
   return (
     <div className="rounded-lg border bg-muted/20 px-4 py-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-center">
+        <div className="flex shrink-0 items-center gap-2">
           <span className="text-sm font-medium text-foreground">Agent phase</span>
           <StatusLabel label={currentLabel} />
-          {autodiagnosisRunning ? <StatusLabel label="autonomous diagnosis running" /> : null}
         </div>
-        <ol className="relative flex w-full min-w-0 overflow-x-auto py-1 sm:w-auto sm:min-w-[650px]">
-          {AGENT_PHASE_STEPS.map((step, index) => {
-            const active = index === activeIndex;
-            const completed = activeIndex > index;
-            const reached = active || completed;
+        <div className="min-w-0 flex-1 overflow-x-auto">
+          <ol className="relative flex min-w-[620px] py-1">
+            {AGENT_PHASE_STEPS.map((step, index) => {
+              const active = index === activeIndex;
+              const completed = activeIndex > index;
+              const reached = active || completed;
 
-            return (
-              <li
-                aria-current={active ? "step" : undefined}
-                className="relative min-w-28 flex-1"
-                key={step.phase}
-              >
-                {index < AGENT_PHASE_STEPS.length - 1 ? (
-                  <span
-                    className={cn(
-                      "absolute left-1/2 right-[-50%] top-2 h-px",
-                      reached ? "bg-primary/70" : "bg-border",
-                    )}
-                    aria-hidden="true"
-                  />
-                ) : null}
-                <div className="relative z-10 flex justify-center">
-                  <span
-                    className={cn(
-                      "flex size-4 shrink-0 rounded-full border-2 bg-background",
-                      active
-                        ? "border-primary ring-4 ring-primary/20"
-                        : completed
-                          ? "border-primary bg-primary"
-                          : "border-muted-foreground/40",
-                    )}
-                  />
-                </div>
-                <div className="mt-2 px-2 text-center">
-                  <p className={cn("text-sm font-medium", reached ? "text-foreground" : "text-muted-foreground")}>
-                    {step.label}
-                  </p>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
+              return (
+                <li
+                  aria-current={active ? "step" : undefined}
+                  className="relative min-w-28 flex-1"
+                  key={step.phase}
+                >
+                  {index < AGENT_PHASE_STEPS.length - 1 ? (
+                    <span
+                      className={cn(
+                        "absolute left-1/2 right-[-50%] top-2 h-px",
+                        reached ? "bg-primary/70" : "bg-border",
+                      )}
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                  <div className="relative z-10 flex justify-center">
+                    <span
+                      className={cn(
+                        "flex size-4 shrink-0 rounded-full border-2 bg-background",
+                        active
+                          ? "border-primary ring-4 ring-primary/20"
+                          : completed
+                            ? "border-primary bg-primary"
+                            : "border-muted-foreground/40",
+                      )}
+                    />
+                  </div>
+                  <div className="mt-2 px-2 text-center">
+                    <p className={cn("text-sm font-medium", reached ? "text-foreground" : "text-muted-foreground")}>
+                      {step.label}
+                    </p>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
       </div>
+      {autodiagnosisRunning ? (
+        <div className="mt-3 flex justify-end">
+          <span className="rounded-full border border-border bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">
+            Autonomous diagnosis running
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }

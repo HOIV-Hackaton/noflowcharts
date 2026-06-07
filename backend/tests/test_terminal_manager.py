@@ -226,6 +226,28 @@ def test_completion_announcement_writes_ticket_complete_banner_to_terminal():
     asyncio.run(run_test())
 
 
+def test_terminal_disconnect_closes_ssh_runtime():
+    async def run_test():
+        FakePty.instances = []
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer())
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+        pty = FakePty.instances[-1]
+
+        manager.disconnect(runtime, queue)
+
+        for _ in range(50):
+            if pty.closed and run_id not in manager._runtimes:
+                break
+            await asyncio.sleep(0.01)
+
+        assert pty.closed is True
+        assert run_id not in manager._runtimes
+
+    asyncio.run(run_test())
+
+
 def test_manual_systemctl_command_is_made_non_interactive_before_execution():
     async def run_test():
         manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer())

@@ -82,6 +82,8 @@ class TerminalManager:
         runtime.subscribers.discard(queue)
         runtime.last_activity = monotonic_seconds()
         self._audit(runtime.run_id, "terminal_disconnected", {"terminal_session_id": runtime.db_session_id})
+        if not runtime.subscribers:
+            self.close_run_sync(runtime.run_id, "terminal_disconnected")
 
     async def handle_message(self, runtime: TerminalRuntime, message: dict[str, Any]) -> None:
         runtime.last_activity = monotonic_seconds()

@@ -73,7 +73,7 @@ import { DashboardOverview } from "./DashboardOverview";
 import { TicketWorkspace } from "../tickets/TicketWorkspace";
 
 const RESET_CONFIRMATION_TEXT = "RESET";
-const STORED_RUNS_KEY = "noflowcharts.ticketRuns.v1";
+const DEPRECATED_STORED_RUNS_KEY = "noflowcharts.ticketRuns.v1";
 
 type AppRouteState = {
   tab: TabId;
@@ -129,6 +129,14 @@ export function TechnicianConsole() {
   const [resetConfirmation, setResetConfirmation] = useState("");
   const [resetInFlight, setResetInFlight] = useState(false);
   const runEventCursorRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.removeItem(DEPRECATED_STORED_RUNS_KEY);
+    } catch {
+      return;
+    }
+  }, []);
 
   const selectedTicket = ticketList.find((ticket) => ticket.id === selectedTicketId) ?? null;
   const selectedSystem = selectedTicketId ? systemsByTicket[selectedTicketId] ?? null : null;
@@ -359,16 +367,15 @@ export function TechnicianConsole() {
   }, [assignedTechnicianName, backendReady, selectedTicketId]);
 
   const resetTicketWorkspace = useCallback((ticketId: number, tab: TabId = "overview") => {
-    const storedRunId = readStoredRunId(ticketId);
     setSelectedTicketId(ticketId);
-    setBackendRunId(storedRunId);
+    setBackendRunId(null);
     setActiveTab(tab);
     setSystemLoaded(false);
     setSystemLoading(false);
-    setConnectionStatus(storedRunId ? "connected" : "not_requested");
+    setConnectionStatus("not_requested");
     setRunState("idle");
     setAgentPhase(null);
-    setAnalysisReady(Boolean(storedRunId));
+    setAnalysisReady(false);
     setActions([]);
     setEvents([createEvent("approval", "Ticket opened", `Ticket ${ticketId} opened.`)]);
     setTerminalCommands([]);
@@ -451,52 +458,6 @@ export function TechnicianConsole() {
       setNotice(`Run metrics failed to load. ${getApiErrorMessage(error)}`);
     }
   }, []);
-
-  useEffect(() => {
-    if (!backendReady || !selectedTicketId || !backendRunId) {
-      return;
-    }
-
-    const ticketId = selectedTicketId;
-    const runId = backendRunId;
-    let cancelled = false;
-
-    async function restoreRun() {
-      try {
-        const state = await backendApi.getRun(runId);
-        if (cancelled) {
-          return;
-        }
-
-        if (state.run.ticket_id !== ticketId) {
-          removeStoredRunId(ticketId);
-          setBackendRunId(null);
-          setConnectionStatus("not_requested");
-          return;
-        }
-
-        setConnectionStatus(state.run.ssh_confirmed ? "connected" : "awaiting_approval");
-        setSystemLoaded(state.run.ssh_confirmed);
-        setAnalysisReady(true);
-        syncRunState(state);
-        await refreshAuditEvents(runId);
-        await refreshRunMetrics(runId);
-      } catch (error) {
-        if (!cancelled) {
-          removeStoredRunId(ticketId);
-          setBackendRunId(null);
-          setConnectionStatus("not_requested");
-          setNotice(`Stored backend run could not be restored. ${getApiErrorMessage(error)}`);
-        }
-      }
-    }
-
-    void restoreRun();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [backendReady, backendRunId, refreshAuditEvents, refreshRunMetrics, selectedTicketId, syncRunState]);
 
   const handleRunWebSocketEvent = useCallback((event: BackendRunWebSocketEvent) => {
     if (event.event_id !== null) {
@@ -686,7 +647,6 @@ export function TechnicianConsole() {
       const confirmedState = await backendApi.confirmSsh(runState.run.id);
 
       setBackendRunId(confirmedState.run.id);
-      storeRunId(selectedTicket.id, confirmedState.run.id);
       setConnectionStatus("connected");
       updateTicketStatus(selectedTicket.id, "PENDING");
       syncRunState(confirmedState);
@@ -810,13 +770,10 @@ export function TechnicianConsole() {
   };
 
   const handleTerminalConnectionError = useCallback((message: string) => {
-    if (selectedTicketId) {
-      removeStoredRunId(selectedTicketId);
-    }
     if (message.startsWith("SSH terminal failed:")) {
-      setNotice("Terminal SSH connection failed. Refresh will not reuse this run automatically.");
+      setNotice("Terminal SSH connection failed.");
     }
-  }, [selectedTicketId]);
+  }, []);
 
   const approveAction = async (actionId: string) => {
     const action = actions.find((candidate) => candidate.id === actionId);
@@ -964,7 +921,6 @@ export function TechnicianConsole() {
     try {
       const state = await backendApi.abortRun(backendRunId);
       syncRunState(state);
-      removeStoredRunId(selectedTicket.id);
       await refreshAuditEvents(backendRunId);
       await refreshRunMetrics(backendRunId);
       setConnectionStatus((current) => (current === "connected" ? "disconnected" : current));
@@ -1115,14 +1071,10 @@ export function TechnicianConsole() {
       });
       await backendApi.reviewActivityDraft(backendRunId, true);
       await backendApi.submitActivity(backendRunId);
-      if (ticketId) {
-        await backendApi.setTicketStatus(ticketId, "DONE");
-      }
       const state = await backendApi.getRun(backendRunId);
       syncRunState(state);
       if (ticketId) {
         updateTicketStatus(ticketId, "DONE");
-        removeStoredRunId(ticketId);
       }
       setSubmitStatus("submitted");
       setAgentPhase("final_analysis");
@@ -1214,7 +1166,6 @@ export function TechnicianConsole() {
       setLastTicketFetchAt(new Date().toISOString());
       setSelectedTicketId(null);
       setBackendRunId(null);
-      clearStoredRunIds();
       setActiveTab("overview");
       setSystemLoaded(false);
       setSystemLoading(false);
@@ -1692,6 +1643,16 @@ function runWebSocketEventDetail(event: BackendRunWebSocketEvent, phase: AgentPh
     return `Reason: ${reason}.`;
   }
 
+  if (event.type === "activity_submitted") {
+    return typeof event.payload.message === "string"
+      ? event.payload.message
+      : "Activity submitted to Phoenix and ticket status set to DONE.";
+  }
+
+  if (event.type === "ticket_done") {
+    return "Ticket status set to DONE.";
+  }
+
   return JSON.stringify(event.payload);
 }
 
@@ -1730,55 +1691,6 @@ function shouldRefreshRunArtifacts(type: string) {
     type.includes("terminal") ||
     type.includes("validation")
   );
-}
-
-function readStoredRunId(ticketId: number) {
-  try {
-    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
-    if (!raw) {
-      return null;
-    }
-
-    const stored = JSON.parse(raw) as Record<string, unknown>;
-    const value = stored[String(ticketId)];
-    return typeof value === "string" && value ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function storeRunId(ticketId: number, runId: string) {
-  try {
-    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
-    const stored = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    stored[String(ticketId)] = runId;
-    window.localStorage.setItem(STORED_RUNS_KEY, JSON.stringify(stored));
-  } catch {
-    return;
-  }
-}
-
-function removeStoredRunId(ticketId: number) {
-  try {
-    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
-    if (!raw) {
-      return;
-    }
-
-    const stored = JSON.parse(raw) as Record<string, unknown>;
-    delete stored[String(ticketId)];
-    window.localStorage.setItem(STORED_RUNS_KEY, JSON.stringify(stored));
-  } catch {
-    return;
-  }
-}
-
-function clearStoredRunIds() {
-  try {
-    window.localStorage.removeItem(STORED_RUNS_KEY);
-  } catch {
-    return;
-  }
 }
 
 function upsertTicket(tickets: Ticket[], ticket: Ticket) {

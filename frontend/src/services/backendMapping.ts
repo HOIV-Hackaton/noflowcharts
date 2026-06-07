@@ -178,7 +178,7 @@ export function mapRelatedTicket(ticket: BackendRelatedTicketRead | null): Relat
 
 export function mapAuditEvent(event: BackendAuditEventRead): RunEvent {
   return {
-    detail: JSON.stringify(event.payload),
+    detail: auditEventDetail(event),
     id: String(event.id),
     time: new Date(event.timestamp).toLocaleTimeString([], {
       hour: "2-digit",
@@ -188,6 +188,22 @@ export function mapAuditEvent(event: BackendAuditEventRead): RunEvent {
     title: event.type.split("_").join(" "),
     type: mapEventType(event.type),
   };
+}
+
+function auditEventDetail(event: BackendAuditEventRead) {
+  if (event.type === "activity_submitted") {
+    return typeof event.payload.message === "string"
+      ? event.payload.message
+      : "Activity submitted to Phoenix and ticket status set to DONE.";
+  }
+
+  if (event.type === "ticket_done") {
+    return "Ticket status set to DONE.";
+  }
+
+  const payload = { ...event.payload };
+  delete payload.ascii_art;
+  return JSON.stringify(payload);
 }
 
 export function mapTerminalCommand(command: BackendTerminalCommandRead): TerminalCommandLog {

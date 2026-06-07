@@ -565,7 +565,7 @@ export function TicketTerminal({
         ) : null}
         {onStartAutodiagnosis && (canStartAutodiagnosis || autodiagnosisRunning) ? (
           <Button disabled={autodiagnosisRunning} onClick={onStartAutodiagnosis} type="button" variant="outline">
-            {autodiagnosisRunning ? "Automation running" : "Start automation"}
+            {autodiagnosisRunning ? "Automated diagnosis running" : "Start automated diagnosis"}
           </Button>
         ) : null}
         {connectionState === "connected" && agentStarted ? (
