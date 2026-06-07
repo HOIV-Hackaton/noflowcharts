@@ -99,6 +99,21 @@ def test_create_activity_excludes_none_fields():
     assert "summary" not in captured["request"].content.decode()
 
 
+def test_reset_me_posts_to_v1_reset_endpoint():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, json={"message": "reset requested"})
+
+    PhoenixClient(settings(), transport=transport(handler)).reset_me()
+
+    request = captured["request"]
+    assert request.method == "POST"
+    assert request.url.path == "/api/v1/me/reset"
+    assert request.headers["Authorization"] == "Bearer secret-token"
+
+
 def test_error_statuses_map_to_clean_exceptions_without_token():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(422, json={"detail": "bad token secret-token"})

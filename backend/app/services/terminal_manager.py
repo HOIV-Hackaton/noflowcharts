@@ -7,8 +7,9 @@ from typing import Any
 from sqlmodel import Session
 
 from app.agent.planner import SAFETY_POLICY_SUMMARY, Planner
+from app.core.config import get_settings
 from app.core.errors import SafetyError, ValidationError
-from app.core.redaction import redact_text
+from app.core.redaction import redact_payload, redact_text
 from app.db.session import engine
 from app.db.models import TerminalCommand
 from app.repositories.runs import RunRepository
@@ -288,6 +289,7 @@ class TerminalManager:
         runtime.waiting_after_rejection = False
         self._audit(runtime.run_id, "agent_guidance_received", {"message": guidance})
         await self._broadcast(runtime, {"type": "agent_guidance_recorded"})
+        await self._propose_agent(runtime)
 
     async def _accept_agent(self, runtime: TerminalRuntime, command_id: int) -> None:
         with Session(engine) as session:
@@ -416,8 +418,9 @@ class TerminalManager:
         self._runtimes.pop(runtime.run_id, None)
 
     async def _broadcast(self, runtime: TerminalRuntime, event: dict[str, Any]) -> None:
+        safe_event = redact_payload(event, get_settings().configured_secrets())
         for queue in list(runtime.subscribers):
-            await queue.put(event)
+            await queue.put(safe_event)
 
     def _context(self, run_id: str) -> dict[str, Any]:
         with Session(engine) as session:

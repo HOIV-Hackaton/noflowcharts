@@ -11,7 +11,7 @@ DEFAULT_SQLITE_PATH = BACKEND_DIR / "data" / "app.db"
 
 
 class Settings(BaseSettings):
-    phoenix_api_base_url: str | None = None
+    phoenix_api_base_url: str | None = "http://68.210.101.85:8000"
     phoenix_api_token: str | None = None
 
     ssh_private_key_path: str | None = None

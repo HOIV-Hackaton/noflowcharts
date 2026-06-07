@@ -93,6 +93,10 @@ MUTATING_COMMANDS = {
 
 SHELL_TOKENS = {"&&", "||", ";", "|"}
 
+CRITICAL_PATHS = ("/", "/etc", "/home", "/var", "/srv", "/var/lib/postgresql")
+DATABASE_PATHS = ("/var/lib/postgresql", "/var/lib/mysql")
+SECURITY_SERVICES = {"ufw", "firewalld", "auditd", "apparmor", "selinux"}
+
 SECRET_PATH_PATTERNS = [
     re.compile(r"(^|/)\.ssh(/|$)"),
     re.compile(r"(^|/)\.env($|[.\s])"),
@@ -252,7 +256,113 @@ def _blocked_reason(command: str) -> str | None:
     for pattern, reason in BLOCK_PATTERNS:
         if pattern.search(command):
             return reason
+    tokens = _tokens(command)
+    if not tokens:
+        return None
+    token_reason = _blocked_token_reason(tokens)
+    if token_reason:
+        return token_reason
     return None
+
+
+def _blocked_token_reason(tokens: list[str]) -> str | None:
+    command_tokens = _without_sudo(tokens)
+    if not command_tokens:
+        return None
+    base = _base_command(command_tokens)
+    if base == "rm" and _rm_deletes_critical_path(command_tokens):
+        return "Broad recursive deletion is blocked"
+    if base == "chmod" and _chmod_grants_blanket_permissions(command_tokens):
+        return "Blanket world-writable permissions are blocked"
+    if base in {"systemctl", "service"} and _disables_security_control(command_tokens):
+        return "Disabling firewall, audit, or security controls is blocked"
+    if base == "ufw" and _contains_any(command_tokens[1:], {"disable", "reset"}):
+        return "Disabling firewall, audit, or security controls is blocked"
+    if base == "iptables" and _contains_any(command_tokens[1:], {"-F", "--flush"}):
+        return "Disabling firewall, audit, or security controls is blocked"
+    if base == "nft" and _contains_ordered(command_tokens[1:], ["flush", "ruleset"]):
+        return "Disabling firewall, audit, or security controls is blocked"
+    if base == "find" and _find_deletes_logs(command_tokens):
+        return "Deleting logs or shell history is blocked"
+    if base in {"shred", "wipe"} and _targets_log_or_history(command_tokens[1:]):
+        return "Deleting logs or shell history is blocked"
+    return None
+
+
+def _without_sudo(tokens: list[str]) -> list[str]:
+    if _base_command(tokens) != "sudo":
+        return tokens
+    target = _sudo_target(tokens)
+    if not target:
+        return []
+    for index, token in enumerate(tokens):
+        if token.split("/")[-1] == target:
+            return tokens[index:]
+    return []
+
+
+def _rm_deletes_critical_path(tokens: list[str]) -> bool:
+    if not _has_recursive_flag(tokens) or not _has_force_flag(tokens):
+        return False
+    return any(_is_path_at_or_under(token, CRITICAL_PATHS) or _is_path_at_or_under(token, DATABASE_PATHS) for token in _path_like_tokens(tokens[1:]))
+
+
+def _chmod_grants_blanket_permissions(tokens: list[str]) -> bool:
+    if not _has_recursive_flag(tokens):
+        return False
+    grants_world_write = any(token == "777" or token.lower() in {"a+rwx", "ugo+rwx", "o+w", "a+w"} for token in tokens[1:])
+    if not grants_world_write:
+        return False
+    return any(_is_path_at_or_under(token, CRITICAL_PATHS) for token in _path_like_tokens(tokens[1:]))
+
+
+def _disables_security_control(tokens: list[str]) -> bool:
+    operations = {"stop", "disable", "mask"}
+    return _contains_any(tokens[1:], operations) and _contains_any(tokens[1:], SECURITY_SERVICES)
+
+
+def _find_deletes_logs(tokens: list[str]) -> bool:
+    return any(_is_path_at_or_under(token, ("/var/log",)) for token in _path_like_tokens(tokens[1:])) and _contains_any(tokens[1:], {"-delete"})
+
+
+def _targets_log_or_history(tokens: list[str]) -> bool:
+    return any(_is_path_at_or_under(token, ("/var/log",)) or token.endswith(".bash_history") or token.endswith(".zsh_history") for token in _path_like_tokens(tokens))
+
+
+def _has_recursive_flag(tokens: list[str]) -> bool:
+    return any(token in {"-r", "-R", "--recursive"} or (token.startswith("-") and not token.startswith("--") and any(flag in token for flag in "rR")) for token in tokens[1:])
+
+
+def _has_force_flag(tokens: list[str]) -> bool:
+    return any(token in {"-f", "--force"} or (token.startswith("-") and not token.startswith("--") and "f" in token) for token in tokens[1:])
+
+
+def _path_like_tokens(tokens: list[str]) -> list[str]:
+    return [token for token in tokens if token.startswith("/") or token.startswith("~/") or token.startswith("./") or token.startswith("../")]
+
+
+def _is_path_at_or_under(path: str, roots: tuple[str, ...]) -> bool:
+    normalized = path.rstrip("/") or "/"
+    for root in roots:
+        root_normalized = root.rstrip("/") or "/"
+        if normalized == root_normalized or normalized.startswith(root_normalized + "/"):
+            return True
+    return False
+
+
+def _contains_any(tokens: list[str], values: set[str]) -> bool:
+    lowered_values = {value.lower() for value in values}
+    return any(token.lower() in lowered_values for token in tokens)
+
+
+def _contains_ordered(tokens: list[str], values: list[str]) -> bool:
+    position = 0
+    for token in tokens:
+        if token.lower() == values[position]:
+            position += 1
+            if position == len(values):
+                return True
+    return False
 
 
 def _reads_secret_path(command: str) -> bool:

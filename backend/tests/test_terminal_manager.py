@@ -110,6 +110,14 @@ async def wait_for(queue, event_type: str, attempts: int = 50):
     raise AssertionError(f"Did not receive {event_type}")
 
 
+async def wait_for_terminal_output_containing(queue, text: str, attempts: int = 50):
+    for _ in range(attempts):
+        event = await asyncio.wait_for(queue.get(), timeout=1)
+        if event.get("type") == "terminal_output" and text in event.get("data", ""):
+            return event
+    raise AssertionError(f"Did not receive terminal output containing {text}")
+
+
 def test_terminal_requires_ssh_confirmation():
     async def run_test():
         manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer())
@@ -127,8 +135,11 @@ def test_manual_read_only_command_executes_and_records_exit_code():
         await wait_for(queue, "terminal_opened")
 
         await manager.handle_message(runtime, {"type": "input", "data": "uptime\r"})
+        output = await wait_for_terminal_output_containing(queue, "command output")
         completed = await wait_for(queue, "command_completed")
 
+        assert "secret-value" not in output["data"]
+        assert "[REDACTED]" in output["data"]
         assert completed["exit_code"] == 0
         assert "uptime" in FakePty.instances[-1].writes[0]
         logs = manager.logs(run_id)
@@ -258,15 +269,15 @@ def test_agent_guidance_after_rejection_is_not_submitted_as_shell_command():
 
         await manager.handle_message(runtime, {"type": "input", "data": "sorry try again\r"})
         await wait_for(queue, "agent_guidance_recorded")
+        await wait_for(queue, "agent_proposal")
 
         assert FakePty.instances[-1].writes == []
         logs = manager.logs(run_id)
-        assert len(logs) == 1
+        assert len(logs) == 2
+        assert logs[0].status == TerminalCommandStatus.REJECTED.value
+        assert logs[1].status == TerminalCommandStatus.SUBMITTED.value
         context = manager._context(run_id)
         assert {"source": "technician", "status": "guidance", "guidance": "sorry try again"} in context["observations"]
-
-        await manager.handle_message(runtime, {"type": "agent_next"})
-        await wait_for(queue, "agent_proposal")
         assert any(observation.get("guidance") == "sorry try again" for observation in planner.observations)
         await manager.close_run(run_id, "test_done")
 
