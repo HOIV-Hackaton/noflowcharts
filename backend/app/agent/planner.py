@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -39,6 +39,41 @@ class DiagnosticToolProposal(BaseModel):
     rollback_note: str | None = None
     evidence_basis: str | None = None
     evidence_gap: str | None = None
+
+
+class AgentHandoffDecision(BaseModel):
+    mode: Literal["command_proposal", "handoff_to_execution", "needs_more_diagnosis", "return_to_diagnosis"] = "command_proposal"
+    reason: str | None = None
+    diagnostic_question: str | None = None
+
+
+COMMON_AGENT_RULES = """Shared non-negotiable rules:
+- Do not assume context. Use only the ticket, customer system, observations, handoff context, and safety policy supplied in the user message.
+- The backend enforces human approval and safety checks. You must still avoid unsafe or low-value commands.
+- Propose exactly one shell command only when your role is ready for a human-reviewed action.
+- The command string must be a single simple command. Do not use &&, ||, ;, pipes, command substitution, newlines, or fallback chains.
+- Prefer read-only commands without sudo when they provide enough evidence. Use sudo -n only for targeted privileged commands that truly need it.
+- Never propose commands that read secrets, dump environment files, delete customer data, clear logs/history, disable firewall/audit/security controls, reinitialize databases, or work around permissions by running services as root.
+- Do not repeat a command when recent observations already contain its answer; use those observations to choose the next smallest diagnostic, fix, or validation.
+- Treat successful empty output from filters/listener checks as a real negative finding. Do not re-run an equivalent probe just because it printed nothing.
+- Related ticket context is historical assistance only. Do not assume the current ticket has the same root cause and do not copy historical commands blindly.
+- Return JSON only.
+"""
+
+
+COMMAND_JSON_CONTRACT = """For a command proposal, return JSON only with keys: intent, command, expected_signal, risk_level, command_class_hint, rollback_note, phase, evidence_basis, evidence_gap.
+
+Field guidance:
+- intent: one technician-readable sentence explaining why this exact command is the next best step.
+- command: one shell command only.
+- expected_signal: what output or exit status would confirm or disprove the current hypothesis.
+- risk_level: low, medium, or high.
+- command_class_hint: read_only, mutating, risky_mutating, or blocked.
+- rollback_note: required for mutating/risky commands; otherwise null.
+- phase: diagnose, fix, validate, or recover.
+- evidence_basis: specific observation(s) that justify this command, or "ticket symptom only" if none exist yet.
+- evidence_gap: what is still unknown after this command, or null if the command should close the loop.
+"""
 
 
 PLANNER_SYSTEM_PROMPT = """You are the backend troubleshooting planner for an AI-assisted service desk.
@@ -87,6 +122,72 @@ Field guidance:
 - phase: diagnose, fix, validate, or recover.
 - evidence_basis: specific observation(s) that justify this command, or "ticket symptom only" if none exist yet.
 - evidence_gap: what is still unknown after this command, or null if the command should close the loop.
+"""
+
+
+DIAGNOSIS_AGENT_SYSTEM_PROMPT = f"""You are the diagnosis agent for an AI-assisted service desk backend.
+
+Your responsibility is to identify the technical root cause before any fix is attempted. You may either propose one read-only diagnostic command or hand off to the execution agent when observations already support a concrete, minimal fix.
+
+Primary objective: produce evidence-backed diagnosis for hidden Ubuntu service incidents without guessing. Optimize for correct root cause, no data loss, minimal commands, and useful activity documentation.
+
+Diagnosis rules:
+- Start from the customer symptom and current observations; build ranked hypotheses implicitly through the next best evidence-gathering step.
+- For the first command, or whenever observations do not identify a concrete service/config/path, the command must be read-only, must not use sudo, and must not use shell control operators.
+- Prefer service-local and app-local checks: health endpoint, listening ports, systemd unit status, recent journal logs, config syntax, disk space, permissions on the exact affected path.
+- If the ticket names an explicit customer-facing health URL, validate that URL directly with curl --max-time 5 -fsS before lower-level listener checks.
+- If observations reveal a concrete candidate unit, process, config path, mount, port, or application directory, pivot to that resource before doing more broad discovery.
+- If an EnvironmentFile is involved, inspect only relevant non-secret keys like PORT or HOST rather than dumping the full file.
+- Hand off to execution only when evidence supports a specific technical cause and a targeted fix path.
+
+{COMMON_AGENT_RULES}
+
+To hand off to execution, return:
+{{"mode":"handoff_to_execution","reason":"specific evidence-backed root cause and fix target"}}
+
+Otherwise, {COMMAND_JSON_CONTRACT}
+"""
+
+
+EXECUTION_AGENT_SYSTEM_PROMPT = f"""You are the execution agent for an AI-assisted service desk backend.
+
+Your responsibility is to propose the smallest safe fix command after diagnosis has identified a concrete technical cause. Every command you propose will still require technician approval before SSH execution.
+
+Execution rules:
+- Do not diagnose by guessing. If the handoff lacks enough evidence for a targeted fix, return to the diagnosis agent.
+- Prefer persistent, service-local fixes over temporary workarounds.
+- Use the smallest targeted edit, permission correction, service enable/start/restart, or config repair that addresses the observed root cause.
+- Avoid package installs, broad filesystem changes, broad restarts, recursive permissions, database resets, and unrelated service changes.
+- If a service is disabled, enable it separately from starting it unless the evidence and safety policy justify a combined systemctl action.
+- If a config value is wrong, make the smallest targeted edit and then restart only the affected service.
+- Include a rollback_note for mutating commands.
+
+{COMMON_AGENT_RULES}
+
+If more diagnosis is needed, return:
+{{"mode":"needs_more_diagnosis","reason":"why a fix would be premature","diagnostic_question":"the exact uncertainty diagnosis must resolve"}}
+
+Otherwise, {COMMAND_JSON_CONTRACT}
+"""
+
+
+VERIFICATION_AGENT_SYSTEM_PROMPT = f"""You are the verification agent for an AI-assisted service desk backend.
+
+Your responsibility is to prove that the customer benefit is restored and that the fix is persistent where relevant. You do not propose new fixes. If verification fails or evidence is ambiguous, return to diagnosis.
+
+Verification rules:
+- Propose one read-only validation command that checks customer-facing behavior first.
+- Prefer bounded HTTP validation such as curl --max-time 5 -fsS when a health endpoint or local URL is known.
+- When safe and proportionate, validate persistence with a relevant service restart check, enabled-state check, config syntax check, or equivalent persistent configuration evidence.
+- If the previous validation command failed, timed out, or shows the incident remains active, return to diagnosis. Do not route directly to execution.
+- If a ticket provides a public validation command or script, use it only after direct health/fix evidence indicates the system is likely healthy.
+
+{COMMON_AGENT_RULES}
+
+If verification failed or is not justified, return:
+{{"mode":"return_to_diagnosis","reason":"what failed or remains unproven","diagnostic_question":"the exact uncertainty diagnosis must resolve"}}
+
+Otherwise, {COMMAND_JSON_CONTRACT}
 """
 
 
@@ -142,10 +243,188 @@ class Planner:
         related_ticket: dict | None = None,
         run_id: str | None = None,
     ) -> CommandProposal:
+        return self._propose_command(
+            system_prompt=PLANNER_SYSTEM_PROMPT,
+            ticket=ticket,
+            customer_system=customer_system,
+            observations=observations,
+            safety_policy=safety_policy,
+            related_ticket=related_ticket,
+            run_id=run_id,
+            operation="planner.propose_next_command",
+        )
+
+    def propose_diagnosis_command(
+        self,
+        ticket: dict,
+        customer_system: dict,
+        observations: list[dict],
+        safety_policy: str,
+        related_ticket: dict | None = None,
+        handoff_context: dict[str, Any] | None = None,
+        run_id: str | None = None,
+    ) -> CommandProposal:
+        payload = self._complete_agent_json(
+            DIAGNOSIS_AGENT_SYSTEM_PROMPT,
+            ticket,
+            customer_system,
+            observations,
+            safety_policy,
+            related_ticket,
+            handoff_context,
+            run_id=run_id,
+            operation="planner.propose_diagnosis_command",
+        )
+        decision = AgentHandoffDecision.model_validate(payload)
+        if decision.mode == "handoff_to_execution":
+            return self.propose_execution_command(
+                ticket,
+                customer_system,
+                observations,
+                safety_policy,
+                related_ticket=related_ticket,
+                handoff_context={"from_agent": "diagnosis", "reason": decision.reason},
+                run_id=run_id,
+            )
+        try:
+            return CommandProposal.model_validate(payload)
+        except ValidationError as exc:
+            raise AgentError(f"Diagnosis agent returned invalid command proposal: {exc}") from exc
+
+    def propose_execution_command(
+        self,
+        ticket: dict,
+        customer_system: dict,
+        observations: list[dict],
+        safety_policy: str,
+        related_ticket: dict | None = None,
+        handoff_context: dict[str, Any] | None = None,
+        run_id: str | None = None,
+    ) -> CommandProposal:
+        payload = self._complete_agent_json(
+            EXECUTION_AGENT_SYSTEM_PROMPT,
+            ticket,
+            customer_system,
+            observations,
+            safety_policy,
+            related_ticket,
+            handoff_context,
+            run_id=run_id,
+            operation="planner.propose_execution_command",
+        )
+        decision = AgentHandoffDecision.model_validate(payload)
+        if decision.mode == "needs_more_diagnosis":
+            return self.propose_diagnosis_command(
+                ticket,
+                customer_system,
+                observations
+                + [
+                    {
+                        "source": "execution_agent",
+                        "status": "needs_more_diagnosis",
+                        "reason": decision.reason,
+                        "diagnostic_question": decision.diagnostic_question,
+                    }
+                ],
+                safety_policy,
+                related_ticket=related_ticket,
+                handoff_context={"from_agent": "execution", "reason": decision.reason, "diagnostic_question": decision.diagnostic_question},
+                run_id=run_id,
+            )
+        try:
+            return CommandProposal.model_validate(payload)
+        except ValidationError as exc:
+            raise AgentError(f"Execution agent returned invalid command proposal: {exc}") from exc
+
+    def propose_verification_command(
+        self,
+        ticket: dict,
+        customer_system: dict,
+        observations: list[dict],
+        safety_policy: str,
+        related_ticket: dict | None = None,
+        handoff_context: dict[str, Any] | None = None,
+        run_id: str | None = None,
+    ) -> CommandProposal:
+        payload = self._complete_agent_json(
+            VERIFICATION_AGENT_SYSTEM_PROMPT,
+            ticket,
+            customer_system,
+            observations,
+            safety_policy,
+            related_ticket,
+            handoff_context,
+            run_id=run_id,
+            operation="planner.propose_verification_command",
+        )
+        decision = AgentHandoffDecision.model_validate(payload)
+        if decision.mode == "return_to_diagnosis":
+            return self.propose_diagnosis_command(
+                ticket,
+                customer_system,
+                observations
+                + [
+                    {
+                        "source": "verification_agent",
+                        "status": "return_to_diagnosis",
+                        "reason": decision.reason,
+                        "diagnostic_question": decision.diagnostic_question,
+                    }
+                ],
+                safety_policy,
+                related_ticket=related_ticket,
+                handoff_context={"from_agent": "verification", "reason": decision.reason, "diagnostic_question": decision.diagnostic_question},
+                run_id=run_id,
+            )
+        try:
+            return CommandProposal.model_validate(payload)
+        except ValidationError as exc:
+            raise AgentError(f"Verification agent returned invalid command proposal: {exc}") from exc
+
+    def _propose_command(
+        self,
+        system_prompt: str,
+        ticket: dict,
+        customer_system: dict,
+        observations: list[dict],
+        safety_policy: str,
+        related_ticket: dict | None = None,
+        handoff_context: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        operation: str = "planner.propose_command",
+    ) -> CommandProposal:
+        try:
+            payload = self._complete_agent_json(
+                system_prompt,
+                ticket,
+                customer_system,
+                observations,
+                safety_policy,
+                related_ticket,
+                handoff_context,
+                run_id=run_id,
+                operation=operation,
+            )
+            return CommandProposal.model_validate(payload)
+        except ValidationError as exc:
+            raise AgentError(f"Planner returned invalid command proposal: {exc}") from exc
+
+    def _complete_agent_json(
+        self,
+        system_prompt: str,
+        ticket: dict,
+        customer_system: dict,
+        observations: list[dict],
+        safety_policy: str,
+        related_ticket: dict | None = None,
+        handoff_context: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        operation: str = "planner.complete_agent_json",
+    ) -> dict[str, Any]:
         messages = [
             {
                 "role": "system",
-                "content": PLANNER_SYSTEM_PROMPT,
+                "content": system_prompt,
             },
             {
                 "role": "user",
@@ -157,6 +436,7 @@ class Planner:
                             "related_ticket": related_ticket,
                             "recent_observations": observations[-8:],
                             "anti_loop_context": _anti_loop_context(observations),
+                            "handoff_context": handoff_context,
                             "safety_policy": safety_policy,
                         },
                         get_settings().configured_secrets(),
@@ -165,10 +445,9 @@ class Planner:
             },
         ]
         try:
-            payload = complete_json_with_metrics(self.provider, messages, timeout=30.0, operation="planner.propose_next_command", run_id=run_id)
-            return CommandProposal.model_validate(payload)
-        except ValidationError as exc:
-            raise AgentError(f"Planner returned invalid command proposal: {exc}") from exc
+            return complete_json_with_metrics(self.provider, messages, timeout=30.0, operation=operation, run_id=run_id)
+        except AgentError:
+            raise
 
     def propose_diagnostic_tool(
         self,

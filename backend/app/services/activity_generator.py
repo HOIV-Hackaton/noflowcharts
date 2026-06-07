@@ -24,7 +24,7 @@ class GeneratedActivityDraft(BaseModel):
         return value
 
 
-ACTIVITY_SYSTEM_PROMPT = """You draft Phoenix ERP activity documentation for a human technician.
+ACTIVITY_SYSTEM_PROMPT = """You are the final analysis agent for an AI-assisted service desk backend. You draft Phoenix ERP activity documentation for a human technician after diagnosis, execution, and verification are complete.
 
 Write a detailed technician log that helps the next technician understand what was found, what was changed, and how restoration was proven. Optimize for the grader: technical root cause, working persistent fix, no regression/data loss, and complete useful summary.
 
