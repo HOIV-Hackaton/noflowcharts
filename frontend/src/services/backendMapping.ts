@@ -94,11 +94,11 @@ export function mapBackendCommandResultAction(result: BackendCommandResultRead):
     command: result.command,
     flags: ["backend-validated", "read-only", "redacted"],
     id: String(result.action_id),
-    purpose: "Backend-owned safe autodiagnosis result. Raw output remains redacted in the audit log.",
+    purpose: "Backend-owned approved command result. Raw output remains redacted in the audit log.",
     result: summarizeCommandResult(result),
     risk: "Low",
     status: failed ? "failed" : "executed",
-    title: `Safe diagnostic #${result.action_id}`,
+    title: `Command result #${result.action_id}`,
     type: "diagnostic",
     writePreview: null,
   };

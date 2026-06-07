@@ -15,7 +15,7 @@ from app.db.session import engine
 from app.db.models import TerminalCommand
 from app.repositories.runs import RunRepository
 from app.schemas.phoenix import CustomerSystem
-from app.schemas.runs import RunStatus, TerminalCommandSource, TerminalCommandStatus, ValidationStatus
+from app.schemas.runs import CommandClassification, RunStatus, TerminalCommandSource, TerminalCommandStatus, ValidationStatus
 from app.services.audit_log import AuditLog
 from app.services.events import event_bus, persist_and_publish_ws_event_sync
 from app.services.terminal_safety import TerminalSafetyReviewer
@@ -26,6 +26,7 @@ from app.services.write_preview import WritePreviewer
 
 IDLE_TIMEOUT_SECONDS = 15 * 60
 COMMAND_TIMEOUT_SECONDS = 30
+MAX_TERMINAL_AUTO_DIAGNOSIS_STEPS = 12
 EXIT_MARKER_RE = re.compile(r"__NOFLOW_EXIT:(\d+):(-?\d+)__")
 SECRET_PROMPT_RE = re.compile(r"(?i)(password|passphrase|token|secret|api\s*key|private\s*key|sudo password)\s*:")
 NONINTERACTIVE_ENV = "SYSTEMD_PAGER=cat SYSTEMD_COLORS=0 PAGER=cat LESS=FRXMK"
@@ -52,6 +53,7 @@ class TerminalRuntime:
     agent_workflow_phase: str = "diagnosis"
     current_agent_phase: str | None = None
     waiting_after_rejection: bool = False
+    auto_diagnosis_steps: int = 0
     last_activity: float = field(default_factory=monotonic_seconds)
     secret_input_mode: bool = False
     reader_task: asyncio.Task | None = None
@@ -342,11 +344,36 @@ class TerminalManager:
                 write_preview=write_preview,
             )
         self._audit(runtime.run_id, "agent_command_proposed", {"command_id": terminal_command.id, "command": command, "original_command": proposal.command, "intent": proposal.intent, "phase": phase})
+        auto_run_read_only_diagnosis = (
+            safety.decision == "allow"
+            and safety.classification == CommandClassification.READ_ONLY
+            and _agent_phase(phase) == "diagnose"
+            and runtime.auto_diagnosis_steps < MAX_TERMINAL_AUTO_DIAGNOSIS_STEPS
+        )
         if safety.decision == "block":
             self._audit(runtime.run_id, "agent_command_blocked", {"command_id": terminal_command.id, "reason": safety.reason})
             self._status(runtime.run_id, "blocked", "Agent command was blocked by the safety layer.", phase=phase, busy=False)
             await self._broadcast(runtime, {"type": "command_blocked", "command_id": terminal_command.id, "reason": safety.reason})
+        elif auto_run_read_only_diagnosis:
+            runtime.auto_diagnosis_steps += 1
+            self._audit(runtime.run_id, "agent_read_only_diagnosis_auto_approved", {"command_id": terminal_command.id, "command": command, "phase": phase})
+            self._status(runtime.run_id, "running_command", "Read-only diagnosis command is running in the terminal.", phase=phase)
+            await self._broadcast(
+                runtime,
+                {
+                    "type": "agent_auto_command",
+                    "command_id": terminal_command.id,
+                    "command": command,
+                    "intent": proposal.intent,
+                    "phase": phase,
+                    "classification": safety.classification.value,
+                    "reason": safety.reason,
+                },
+            )
+            await self._execute(runtime, terminal_command.id, command, TerminalCommandSource.AGENT)
         else:
+            if safety.classification == CommandClassification.READ_ONLY and _agent_phase(phase) == "diagnose" and runtime.auto_diagnosis_steps >= MAX_TERMINAL_AUTO_DIAGNOSIS_STEPS:
+                self._audit(runtime.run_id, "agent_auto_diagnosis_limit_reached", {"max_steps": MAX_TERMINAL_AUTO_DIAGNOSIS_STEPS})
             self._status(runtime.run_id, "awaiting_review", "Agent command is ready for technician review.", phase=phase, busy=False)
             await self._broadcast(
                 runtime,

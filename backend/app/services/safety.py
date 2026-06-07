@@ -213,7 +213,7 @@ def _contains_shell_control(tokens: list[str]) -> bool:
 def _is_read_only(tokens: list[str]) -> bool:
     base = _base_command(tokens)
     if base == "systemctl":
-        return len(tokens) > 1 and tokens[1] in {"status", "is-active", "is-enabled", "list-units", "cat", "show"}
+        return _systemctl_subcommand(tokens) in {"status", "is-active", "is-enabled", "list-units", "cat", "show"}
     if base == "journalctl":
         return True
     return base in READ_ONLY_COMMANDS and not _looks_mutating(tokens)

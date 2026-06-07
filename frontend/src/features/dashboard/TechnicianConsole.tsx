@@ -43,7 +43,6 @@ import {
   mapAuditEvent,
   mapBackendCustomer,
   mapBackendAction,
-  mapBackendCommandResultAction,
   mapBackendCustomerSystem,
   mapBackendTicket,
   mapRelatedTicket,
@@ -115,6 +114,7 @@ export function TechnicianConsole() {
   const [analysisReady, setAnalysisReady] = useState(false);
   const [actions, setActions] = useState<ProposedAction[]>([]);
   const [autodiagnosisRunning, setAutodiagnosisRunning] = useState(false);
+  const [terminalAgentStartRequestId, setTerminalAgentStartRequestId] = useState(0);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [terminalCommands, setTerminalCommands] = useState<TerminalCommandLog[]>([]);
   const [terminalTranscript, setTerminalTranscript] = useState<TerminalTranscriptLine[]>([]);
@@ -436,10 +436,6 @@ export function TechnicianConsole() {
     setActions((currentActions) => {
       let nextActions = currentActions;
 
-      for (const result of state.command_results) {
-        nextActions = upsertAction(nextActions, mapBackendCommandResultAction(result));
-      }
-
       if (state.current_action) {
         nextActions = upsertAction(nextActions, mapBackendAction(state.current_action, state.command_results));
       }
@@ -512,12 +508,6 @@ export function TechnicianConsole() {
       setAnalysisReady(true);
     }
 
-    if (event.type === "safe_autodiagnosis_started") {
-      setAgentPhase("diagnosis");
-      setAutodiagnosisRunning(true);
-      setAnalysisReady(true);
-    }
-
     if (event.type === "command_running") {
       setAgentPhase("execution");
     }
@@ -536,13 +526,7 @@ export function TechnicianConsole() {
       setAgentPhase("final_analysis");
     }
 
-    if (
-      event.type === "safe_autodiagnosis_stopped" ||
-      event.type === "agent_diagnostic_limit_reached" ||
-      event.type === "command_blocked" ||
-      event.type === "command_proposed" ||
-      event.type === "safe_autodiagnosis_handed_to_human"
-    ) {
+    if (event.type === "command_blocked" || event.type === "command_proposed") {
       setAutodiagnosisRunning(false);
     }
 
@@ -727,75 +711,26 @@ export function TechnicianConsole() {
     }
   };
 
-  const startAutodiagnosis = async () => {
+  const startAutodiagnosis = () => {
     if (!backendReady || !backendRunId || autodiagnosisRunning) {
       return;
     }
 
     if (connectionStatus !== "connected") {
-      setNotice("Approve the backend connection before starting safe autodiagnosis.");
+      setNotice("Approve the backend connection before starting automated diagnosis.");
       return;
     }
 
-    setAutodiagnosisRunning(true);
     setAnalysisReady(true);
+    setAgentPhase("diagnosis");
     setRunState("analyzing");
+    setTerminalAgentStartRequestId((current) => current + 1);
+    setTicketTab("actions");
     appendEvent(
       "analysis",
-      "Safe autodiagnosis started",
-      "Backend will auto-run only deterministic read-only diagnostic tools.",
+      "Automated diagnosis requested",
+      "Terminal will connect and start the agent. Read-only diagnosis may auto-run; fixes and validation require approval.",
     );
-
-    try {
-      const state = await backendApi.startAutodiagnosis(backendRunId);
-      syncRunState(state);
-      await refreshAuditEvents(backendRunId);
-      await refreshRunMetrics(backendRunId);
-      setAnalysisReady(true);
-
-      const currentActionNeedsReview =
-        state.current_action !== null &&
-        (state.current_action.status === "proposed" ||
-          state.current_action.status === "edited" ||
-          state.current_action.status === "blocked");
-
-      if (state.current_action?.status === "blocked" || state.run.status === "failed") {
-        appendEvent(
-          "error",
-          "Safe autodiagnosis stopped",
-          "See audit log for the blocked request or error.",
-        );
-        setNotice("Safe autodiagnosis stopped. See audit log for the blocked request or error.");
-        setTicketTab("actions");
-        return;
-      }
-
-      if (currentActionNeedsReview) {
-        appendEvent("approval", "A proposed fix requires technician approval", "Safe autodiagnosis handed off to the normal approval flow.");
-        setNotice("A proposed fix requires technician approval.");
-        setTicketTab("actions");
-        return;
-      }
-
-      appendEvent(
-        "analysis",
-        "Safe autodiagnosis completed",
-        "Redacted diagnostic evidence was captured.",
-      );
-      setNotice("Safe autodiagnosis completed. Redacted diagnostic evidence was captured.");
-      setTicketTab("actions");
-    } catch (error) {
-      setNotice(`Safe autodiagnosis stopped. See audit log for the blocked request or error. ${getApiErrorMessage(error)}`);
-      appendEvent(
-        "error",
-        "Safe autodiagnosis stopped",
-        "See audit log for the blocked request or error.",
-      );
-      await refreshAuditEvents(backendRunId).catch(() => undefined);
-      await refreshRunMetrics(backendRunId).catch(() => undefined);
-    } finally {
-      setAutodiagnosisRunning(false);
-    }
   };
 
   const updateActionCommand = (actionId: string, command: string) => {
@@ -1407,6 +1342,7 @@ export function TechnicianConsole() {
               autodiagnosisRunning={autodiagnosisRunning}
               backendRunId={backendRunId}
               canStartAutodiagnosis={canStartAutodiagnosis}
+              autoStartAgentRequestId={terminalAgentStartRequestId}
               runState={runState}
               selectedSystem={selectedSystem}
               setLogFilter={setLogFilter}
@@ -1666,18 +1602,6 @@ function runWebSocketEventTitle(type: string, phase: AgentPhase | null) {
     return `Agent phase: ${formatAgentPhaseLabel(phase)}`;
   }
 
-  if (type === "safe_autodiagnosis_started") {
-    return "Safe autodiagnosis started";
-  }
-
-  if (type === "safe_autodiagnosis_stopped") {
-    return "Safe autodiagnosis stopped";
-  }
-
-  if (type === "agent_diagnostic_result") {
-    return "Diagnostic result captured";
-  }
-
   if (type === "knowledge_search_performed") {
     return "Knowledge memory retrieved";
   }
@@ -1688,24 +1612,6 @@ function runWebSocketEventTitle(type: string, phase: AgentPhase | null) {
 function runWebSocketEventDetail(event: BackendRunWebSocketEvent, phase: AgentPhase | null) {
   if (event.type === "agent_phase_selected" && phase) {
     return `Current phase is ${formatAgentPhaseLabel(phase)}.`;
-  }
-
-  if (event.type === "agent_diagnostic_result") {
-    const tool = typeof event.payload.tool === "string" ? event.payload.tool : "diagnostic tool";
-    const exitCode = typeof event.payload.exit_code === "number" ? event.payload.exit_code : "unknown";
-    return `${tool} finished with exit ${exitCode}. Redacted details are available in the logs.`;
-  }
-
-  if (event.type === "safe_autodiagnosis_started") {
-    const maxSteps = typeof event.payload.max_steps === "number" ? event.payload.max_steps : null;
-    return maxSteps
-      ? `Backend will run up to ${maxSteps} allowlisted read-only diagnostic tools.`
-      : "Backend will run allowlisted read-only diagnostic tools.";
-  }
-
-  if (event.type === "safe_autodiagnosis_stopped") {
-    const reason = typeof event.payload.reason === "string" ? event.payload.reason.split("_").join(" ") : "completed or paused";
-    return `Reason: ${reason}.`;
   }
 
   if (event.type === "knowledge_search_performed") {
@@ -1734,12 +1640,6 @@ function runWebSocketEventDetail(event: BackendRunWebSocketEvent, phase: AgentPh
 
 function runWebSocketEventType(event: BackendRunWebSocketEvent): EventType {
   const type = event.type;
-  const reason = typeof event.payload.reason === "string" ? event.payload.reason : "";
-
-  if (type === "safe_autodiagnosis_stopped" && reason === "human_approval_required") {
-    return "approval";
-  }
-
   if (type.includes("validation")) {
     return "validation";
   }
@@ -1763,8 +1663,6 @@ function runWebSocketEventType(event: BackendRunWebSocketEvent): EventType {
 
 function shouldRefreshRunArtifacts(type: string) {
   return (
-    type === "agent_diagnostic_result" ||
-    type === "safe_autodiagnosis_handed_to_human" ||
     type.includes("activity") ||
     type.includes("command") ||
     type.includes("knowledge") ||
