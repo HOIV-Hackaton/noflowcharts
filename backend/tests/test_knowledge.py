@@ -31,6 +31,11 @@ class FakeEmbeddingProvider:
         return vector
 
 
+class ZeroEmbeddingProvider:
+    def embed(self, text, timeout=20.0):
+        return [0.0] * VECTOR_DIMENSIONS
+
+
 def test_ingest_creates_five_resolved_ticket_chunks_and_replaces_existing_ticket_chunks():
     with make_session() as session:
         service = KnowledgeService(session, embedding_provider=FakeEmbeddingProvider())
@@ -70,3 +75,39 @@ def test_seed_and_search_support_chunk_type_filter_and_ticket_id():
         assert results[0].chunk_type == "diagnosis"
         assert results[0].similarity_score > 0
         assert all(result.chunk_type == "diagnosis" for result in results)
+
+
+def test_search_falls_back_to_keywords_when_vector_search_has_no_results():
+    with make_session() as session:
+        service = KnowledgeService(session, embedding_provider=FakeEmbeddingProvider())
+        service.seed(
+            [
+                KnowledgeSeedItem(
+                    ticket_id=7001,
+                    chunk_type="diagnosis",
+                    content="status API unavailable after reboot no listener on localhost 8080 missing systemd startup persistence",
+                )
+            ]
+        )
+
+        results = service.search("manual restart worked after reboot no listener 8080 service not enabled", chunk_type="diagnosis", top_k=5)
+
+        assert results
+        assert results[0].ticket_id == 7001
+        assert "startup persistence" in results[0].content
+
+
+def test_search_seeds_bundled_demo_knowledge_when_table_is_empty():
+    with make_session() as session:
+        service = KnowledgeService(session, embedding_provider=ZeroEmbeddingProvider())
+
+        results = service.search(
+            "Ubuntu status API localhost:8080/health unavailable after reboot service worked after manual restart "
+            "known issue systemd service not enabled or wrong unit name",
+            top_k=5,
+        )
+
+        assert results
+        assert results[0].ticket_id == 7020
+        assert any("after reboot" in result.content for result in results)
+        assert any("wrong unit name" in result.content for result in results)

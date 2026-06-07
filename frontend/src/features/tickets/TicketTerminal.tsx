@@ -20,6 +20,7 @@ type TerminalMessage =
   | { type: "command_running"; command_id?: number }
   | { type: "confirmation_required"; command_id: number; command: string; reason?: string }
   | { type: "error"; message: string }
+  | { type: "knowledge_search_performed"; query?: string | null; result_count?: number | null; top_ticket_id?: number | null; top_chunk_type?: string | null; top_similarity_score?: number | null }
   | { type: "output"; data: string }
   | { type: "status"; message: string }
   | { type: "terminal_closed"; reason?: string }
@@ -628,6 +629,7 @@ function parseTerminalMessage(value: string): TerminalMessage | null {
       message.type === "command_running" ||
       message.type === "confirmation_required" ||
       message.type === "error" ||
+      message.type === "knowledge_search_performed" ||
       message.type === "output" ||
       message.type === "status" ||
       message.type === "terminal_closed" ||
@@ -763,6 +765,19 @@ function handleTerminalStatusMessage(
       }
       terminal.writeln("\x1b[33m╰─\x1b[0m \x1b[32m[a] accept\x1b[0m  \x1b[31m[r] reject\x1b[0m");
       break;
+    case "knowledge_search_performed": {
+      const count = typeof message.result_count === "number" ? message.result_count : 0;
+      const query = message.query?.trim() || "similar ticket context";
+      const topMatch = formatKnowledgeTopMatch(message);
+      terminal.writeln("\r\n\x1b[35m╭─ Tool used: search_knowledge_base\x1b[0m");
+      terminal.writeln(`\x1b[35m│\x1b[0m \x1b[90mQuery\x1b[0m ${query}`);
+      terminal.writeln(`\x1b[35m│\x1b[0m \x1b[90mResult\x1b[0m Found ${count} knowledge snippet${count === 1 ? "" : "s"}.`);
+      if (topMatch) {
+        terminal.writeln(`\x1b[35m│\x1b[0m \x1b[90mTop match\x1b[0m ${topMatch}`);
+      }
+      terminal.writeln("\x1b[35m╰─\x1b[0m Using retrieved memory as historical guidance only.");
+      break;
+    }
     case "status":
       terminal.writeln(`\r\n\x1b[90m${message.message}\x1b[0m`);
       break;
@@ -782,6 +797,13 @@ function handleTerminalStatusMessage(
     case "terminal_output":
       break;
   }
+}
+
+function formatKnowledgeTopMatch(message: Extract<TerminalMessage, { type: "knowledge_search_performed" }>) {
+  const ticket = typeof message.top_ticket_id === "number" ? `ticket ${message.top_ticket_id}` : null;
+  const chunkType = message.top_chunk_type?.trim() ? message.top_chunk_type : null;
+  const score = typeof message.top_similarity_score === "number" ? `score ${message.top_similarity_score.toFixed(2)}` : null;
+  return [ticket, chunkType, score].filter(Boolean).join(" · ") || null;
 }
 
 function formatTerminalWritePreview(preview: WritePreview | null | undefined) {

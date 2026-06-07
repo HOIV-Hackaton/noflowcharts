@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -16,7 +17,7 @@ from app.repositories.runs import RunRepository
 from app.schemas.phoenix import CustomerSystem
 from app.schemas.runs import RunStatus, TerminalCommandSource, TerminalCommandStatus, ValidationStatus
 from app.services.audit_log import AuditLog
-from app.services.events import persist_and_publish_ws_event_sync
+from app.services.events import event_bus, persist_and_publish_ws_event_sync
 from app.services.terminal_safety import TerminalSafetyReviewer
 from app.services.terminal_session import SshPtySession, monotonic_seconds
 from app.services.ssh_runner import SshRunner
@@ -296,17 +297,28 @@ class TerminalManager:
         selected_phase = _workflow_phase(forced_phase or runtime.agent_workflow_phase)
         runtime.agent_workflow_phase = selected_phase
         self._status(runtime.run_id, "generating_command", "Agent is generating the next terminal command...", phase=selected_phase)
-        proposal = await asyncio.to_thread(
-            self._propose_for_phase,
-            planner,
-            selected_phase,
-            context.get("ticket", {}),
-            context.get("customer_system", {}),
-            context.get("observations", []),
-            SAFETY_POLICY_SUMMARY,
-            context.get("related_ticket"),
-            runtime.run_id,
-        )
+        tool_event_queue = await event_bus.subscribe(runtime.run_id)
+        tool_event_task = asyncio.create_task(self._forward_terminal_tool_events(runtime, tool_event_queue))
+        try:
+            proposal = await asyncio.to_thread(
+                self._propose_for_phase,
+                planner,
+                selected_phase,
+                context.get("ticket", {}),
+                context.get("customer_system", {}),
+                context.get("observations", []),
+                SAFETY_POLICY_SUMMARY,
+                context.get("related_ticket"),
+                runtime.run_id,
+            )
+        finally:
+            event_bus.unsubscribe(runtime.run_id, tool_event_queue)
+            await asyncio.sleep(0)
+            while not tool_event_queue.empty():
+                await self._forward_terminal_tool_event(runtime, tool_event_queue.get_nowait())
+            tool_event_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await tool_event_task
         command = _make_command_non_interactive(proposal.command)
         phase = _agent_phase(proposal.phase or selected_phase)
         runtime.agent_workflow_phase = _workflow_phase(phase)
@@ -349,6 +361,29 @@ class TerminalManager:
                     "write_preview": write_preview,
                 },
             )
+
+    async def _forward_terminal_tool_events(self, runtime: TerminalRuntime, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        while True:
+            event = await queue.get()
+            await self._forward_terminal_tool_event(runtime, event)
+
+    async def _forward_terminal_tool_event(self, runtime: TerminalRuntime, event: dict[str, Any]) -> None:
+        if event.get("type") != "knowledge_search_performed":
+            return
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        results = payload.get("results") if isinstance(payload.get("results"), list) else []
+        first_result = results[0] if results and isinstance(results[0], dict) else {}
+        await self._broadcast(
+            runtime,
+            {
+                "type": "knowledge_search_performed",
+                "query": payload.get("query"),
+                "result_count": payload.get("result_count"),
+                "top_ticket_id": first_result.get("ticket_id"),
+                "top_chunk_type": first_result.get("chunk_type"),
+                "top_similarity_score": first_result.get("similarity_score"),
+            },
+        )
 
     def _propose_for_phase(
         self,

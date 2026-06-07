@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -15,8 +16,14 @@ def main() -> None:
     payload = json.dumps({"items": items}).encode("utf-8")
     url = f"{args.base_url.rstrip('/')}/api/knowledge/seed"
     request = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-    with urlopen(request, timeout=60) as response:
-        body = json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=60) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"Seed request failed with HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise SystemExit(f"Seed request failed: {exc.reason}") from exc
     print(f"Seeded {body.get('inserted_count', 0)} knowledge snippets from {seed_path}")
 
 

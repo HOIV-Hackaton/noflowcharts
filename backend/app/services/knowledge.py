@@ -1,4 +1,6 @@
 from collections.abc import Iterable
+import json
+from pathlib import Path
 from typing import Protocol
 
 from sqlmodel import Session
@@ -51,6 +53,7 @@ class KnowledgeService:
         return KnowledgeIngestResponse(inserted_count=len(chunks), chunks=chunks)
 
     def seed(self, items: Iterable[KnowledgeSeedItem]) -> KnowledgeSeedResponse:
+        self.repo.delete_seed_chunks()
         chunks = []
         for item in items:
             content = item.content.strip()
@@ -65,7 +68,15 @@ class KnowledgeService:
         return KnowledgeSeedResponse(inserted_count=len(chunks), chunks=chunks)
 
     def search(self, query: str, chunk_type: KnowledgeChunkType | None = None, top_k: int = 5) -> list[KnowledgeSearchResult]:
-        scored = self.repo.search(self._embed(query), chunk_type=chunk_type, limit=max(1, min(top_k, 8)))
+        limit = max(1, min(top_k, 8))
+        if self.repo.count_chunks() == 0:
+            self._seed_bundled_demo_knowledge()
+        scored = self.repo.search(self._embed(query), chunk_type=chunk_type, limit=limit)
+        if not scored:
+            scored = self.repo.keyword_search(query, chunk_type=chunk_type, limit=limit)
+        if not scored:
+            self._seed_bundled_demo_knowledge()
+            scored = self.repo.keyword_search(query, chunk_type=chunk_type, limit=limit)
         return [self._search_result(item) for item in scored]
 
     def ingest_resolved_run(self, run: Run, draft: ActivityDraft) -> KnowledgeIngestResponse | None:
@@ -97,6 +108,13 @@ class KnowledgeService:
             ticket_id=chunk.ticket_id,
             similarity_score=round(scored.similarity_score, 6),
         )
+
+    def _seed_bundled_demo_knowledge(self) -> None:
+        seed_path = Path(__file__).resolve().parents[2] / "seed_knowledge.json"
+        if not seed_path.exists():
+            return
+        items = [KnowledgeSeedItem.model_validate(item) for item in json.loads(seed_path.read_text(encoding="utf-8"))]
+        self.seed(items)
 
 
 def build_resolved_knowledge_chunks(run: Run, draft: ActivityDraft, repo: RunRepository) -> ResolvedKnowledgeChunks:
