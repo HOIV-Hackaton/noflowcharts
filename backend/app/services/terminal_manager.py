@@ -100,11 +100,11 @@ class TerminalManager:
             runtime.agent_active = True
             runtime.waiting_after_rejection = False
             self._audit(runtime.run_id, "agent_mode_started", {})
-            await self._propose_agent(runtime)
+            await self._safe_propose_agent(runtime)
         elif message_type == "agent_next":
             runtime.agent_active = True
             runtime.waiting_after_rejection = False
-            await self._propose_agent(runtime)
+            await self._safe_propose_agent(runtime)
         elif message_type == "agent_accept":
             await self._accept_agent(runtime, int(message.get("command_id")))
         elif message_type == "agent_reject":
@@ -309,7 +309,17 @@ class TerminalManager:
         runtime.waiting_after_rejection = False
         self._audit(runtime.run_id, "agent_guidance_received", {"message": guidance})
         await self._broadcast(runtime, {"type": "agent_guidance_recorded"})
-        await self._propose_agent(runtime)
+        await self._safe_propose_agent(runtime)
+
+    async def _safe_propose_agent(self, runtime: TerminalRuntime) -> None:
+        try:
+            await self._propose_agent(runtime)
+        except Exception as exc:
+            runtime.agent_active = False
+            runtime.waiting_after_rejection = False
+            message = redact_text(str(exc), get_settings().configured_secrets())
+            self._audit(runtime.run_id, "agent_proposal_failed", {"error": message})
+            await self._broadcast(runtime, {"type": "error", "message": f"Agent could not propose the next command: {message}"})
 
     async def _accept_agent(self, runtime: TerminalRuntime, command_id: int) -> None:
         with Session(engine) as session:
@@ -421,7 +431,9 @@ class TerminalManager:
             self._audit(runtime.run_id, f"{event_prefix}_command_completed", {"command_id": command_id, "exit_code": exit_code})
             await self._broadcast(runtime, {"type": "command_completed", "command_id": command_id, "exit_code": exit_code})
             if source == TerminalCommandSource.AGENT and runtime.agent_active and not runtime.waiting_after_rejection:
-                await self._propose_agent(runtime)
+                self._audit(runtime.run_id, "agent_continuing", {"after_command_id": command_id})
+                await self._broadcast(runtime, {"type": "status", "message": "Agent is preparing the next action..."})
+                await self._safe_propose_agent(runtime)
 
     async def _close_runtime(self, runtime: TerminalRuntime, reason: str) -> None:
         if runtime.closing:

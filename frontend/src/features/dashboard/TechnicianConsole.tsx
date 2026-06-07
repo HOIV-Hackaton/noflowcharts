@@ -1462,6 +1462,22 @@ function isTicketTab(tab: string | null): tab is TabId {
 }
 
 function readAgentPhase(value: unknown): AgentPhase | null {
+  if (value === "diagnose") {
+    return "diagnosis";
+  }
+
+  if (value === "fix") {
+    return "execution";
+  }
+
+  if (value === "validate") {
+    return "verification";
+  }
+
+  if (value === "recover") {
+    return "diagnosis";
+  }
+
   if (
     value === "diagnosis" ||
     value === "execution" ||
