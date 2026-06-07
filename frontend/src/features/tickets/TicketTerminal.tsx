@@ -11,6 +11,8 @@ type TerminalMessage =
   | { type: "agent_guidance_recorded" }
   | { type: "agent_phase_selected"; phase: string }
   | { type: "agent_proposal"; command_id: number; command: string; classification?: string; intent?: string; phase?: string | null; reason?: string }
+  | { type: "agent_phase_selected"; phase: string }
+  | { type: "agent_proposal"; command_id: number; command: string; classification?: string; intent?: string; phase?: string | null; reason?: string }
   | { type: "agent_waiting_for_guidance"; command_id?: number }
   | { type: "command_blocked"; command_id?: number; reason?: string }
   | { type: "command_cancelled"; command_id?: number }
@@ -580,6 +582,7 @@ function parseTerminalMessage(value: string): TerminalMessage | null {
       message.type === "agent_cancelled" ||
       message.type === "agent_guidance_recorded" ||
       message.type === "agent_phase_selected" ||
+      message.type === "agent_phase_selected" ||
       message.type === "agent_proposal" ||
       message.type === "agent_waiting_for_guidance" ||
       message.type === "command_blocked" ||
@@ -709,4 +712,9 @@ function handleTerminalStatusMessage(
     case "terminal_output":
       break;
   }
+}
+
+function formatAgentPhase(phase: string) {
+  const normalized = phase.replace(/[_-]+/g, " ").trim();
+  return normalized ? normalized[0].toUpperCase() + normalized.slice(1) : "Unknown";
 }
