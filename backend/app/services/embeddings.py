@@ -3,6 +3,7 @@ from openai import AzureOpenAI, OpenAI
 from app.core.config import Settings, get_settings
 from app.core.errors import AgentError, ConfigurationError
 from app.core.redaction import redact_text
+from app.repositories.knowledge import VECTOR_DIMENSIONS
 
 
 class AzureOpenAiEmbeddingProvider:
@@ -35,6 +36,7 @@ class AzureOpenAiEmbeddingProvider:
             response = self.client.embeddings.create(
                 model=self.deployment,
                 input=text,
+                dimensions=VECTOR_DIMENSIONS,
                 timeout=timeout,
             )
             if not response.data:

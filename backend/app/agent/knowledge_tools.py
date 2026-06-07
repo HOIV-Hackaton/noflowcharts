@@ -21,7 +21,9 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
         "description": (
             "Search resolved service-desk knowledge snippets when you suspect a known issue type or want to check "
             "if a similar Linux service problem was solved before. Use it before proposing commands for familiar "
-            "symptoms such as nginx 502, disk full, failed systemd services, web-root permission problems, or MySQL startup failures."
+            "symptoms such as nginx 502, Bad Gateway storefront pages, status API unavailable, API is down, "
+            "localhost health endpoint failures, disk full, failed systemd services, web-root permission problems, "
+            "or MySQL startup failures."
         ),
         "parameters": {
             "type": "object",
