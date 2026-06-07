@@ -8,7 +8,7 @@ from app.core.errors import AgentError, ValidationError
 from app.db.session import engine, init_db
 from app.repositories.runs import RunRepository
 from app.schemas.phoenix import CustomerSystem, SystemInfo, Ticket, TicketStatus
-from app.schemas.runs import CommandClassification, RunStatus, TerminalCommandStatus
+from app.schemas.runs import CommandClassification, RunStatus, TerminalCommandStatus, ValidationStatus
 from app.services.safety import classify_command
 from app.services.terminal_manager import TerminalManager
 from app.services.terminal_safety import TerminalSafetyResult
@@ -62,6 +62,19 @@ class ClosingWithoutMarkerPty(FakePty):
         self.closed = True
 
 
+class SplitMarkerPty(FakePty):
+    def write(self, data):
+        self.writes.append(data)
+        marker_id = _marker_id(data)
+        if marker_id is not None:
+            self.reads.extend(["health ok\n__NOFLOW_EXIT", f":{marker_id}:0__\n"])
+
+
+class HangingPty(FakePty):
+    def write(self, data):
+        self.writes.append(data)
+
+
 class ConfirmingReviewer:
     def review(self, command, context=None):
         deterministic = classify_command(command)
@@ -106,6 +119,47 @@ class PhasedTerminalPlanner:
     def propose_verification_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
         self.calls.append(("verification", observations))
         return CommandProposal(intent="Verify the customer-facing health endpoint after the fix.", command="curl --max-time 5 -fsS http://localhost/health", expected_signal="HTTP endpoint responds successfully", phase="validate")
+
+
+class FixPhaseReadOnlyCommandPlanner:
+    def __init__(self):
+        self.calls = []
+
+    def propose_diagnosis_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
+        self.calls.append(("diagnosis", observations))
+        return CommandProposal(intent="Run the targeted repair script.", command="/usr/local/bin/repair-status-api", expected_signal="Repair script exits successfully", phase="fix")
+
+    def propose_verification_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
+        self.calls.append(("verification", observations))
+        return CommandProposal(intent="Validate the customer-facing endpoint.", command="curl --max-time 5 -fsS http://localhost/health", expected_signal="Endpoint responds successfully", phase="validate")
+
+
+class DiagnosisThenDiagnosisPlanner:
+    def __init__(self):
+        self.calls = []
+
+    def propose_diagnosis_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
+        self.calls.append(("diagnosis", observations))
+        if len(self.calls) == 1:
+            return CommandProposal(intent="Check uptime before selecting a service.", command="uptime", expected_signal="System uptime is visible", phase="diagnose")
+        return CommandProposal(intent="Check processes after uptime did not identify a root cause.", command="ps aux", expected_signal="Processes are visible", phase="diagnose")
+
+    def propose_verification_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
+        self.calls.append(("verification", observations))
+        return CommandProposal(intent="This should not be reached after diagnosis.", command="curl --max-time 5 -fsS http://localhost/health", expected_signal="Endpoint responds", phase="validate")
+
+
+class NonHeuristicValidationPlanner:
+    def __init__(self):
+        self.calls = []
+
+    def propose_diagnosis_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
+        self.calls.append(("diagnosis", observations))
+        return CommandProposal(intent="Run targeted repair after evidence.", command="systemctl restart nginx", expected_signal="Restart succeeds", phase="fix")
+
+    def propose_verification_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
+        self.calls.append(("verification", observations))
+        return CommandProposal(intent="Run the ticket-specific validation script.", command="/usr/local/bin/verify-status", expected_signal="Script exits successfully", phase="validate")
 
 
 class FakeWritePreviewer:
@@ -226,24 +280,22 @@ def test_completion_announcement_writes_ticket_complete_banner_to_terminal():
     asyncio.run(run_test())
 
 
-def test_terminal_disconnect_closes_ssh_runtime():
+def test_split_exit_marker_still_completes_terminal_command():
     async def run_test():
-        FakePty.instances = []
-        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer())
+        manager = TerminalManager(pty_factory=SplitMarkerPty, safety_reviewer=ConfirmingReviewer())
         run_id = create_run()
         runtime, queue = await manager.connect(run_id)
         await wait_for(queue, "terminal_opened")
-        pty = FakePty.instances[-1]
 
-        manager.disconnect(runtime, queue)
+        await manager.handle_message(runtime, {"type": "input", "data": "uptime\r"})
+        completed = await wait_for(queue, "command_completed")
 
-        for _ in range(50):
-            if pty.closed and run_id not in manager._runtimes:
-                break
-            await asyncio.sleep(0.01)
-
-        assert pty.closed is True
-        assert run_id not in manager._runtimes
+        assert completed["exit_code"] == 0
+        logs = manager.logs(run_id)
+        assert logs[-1].status == TerminalCommandStatus.COMPLETED.value
+        assert logs[-1].exit_code == 0
+        assert "health ok" in logs[-1].output
+        await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())
 
@@ -346,6 +398,26 @@ def test_agent_reject_records_without_writing_to_pty():
     asyncio.run(run_test())
 
 
+def test_agent_next_is_blocked_while_proposal_awaits_review():
+    async def run_test():
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=FakePlanner())
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        await wait_for(queue, "agent_proposal")
+        await manager.handle_message(runtime, {"type": "agent_next"})
+        status = await wait_for(queue, "status")
+
+        assert status["message"] == "Review the current agent proposal before requesting another action."
+        assert len(manager.logs(run_id)) == 1
+        assert FakePty.instances[-1].writes == []
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
 def test_agent_proposal_reports_current_phase():
     async def run_test():
         manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=FakePlanner(phase="fix"))
@@ -409,13 +481,80 @@ def test_agent_followup_failure_is_reported_without_killing_reader():
         continuing = await wait_for(queue, "status")
         error = await wait_for(queue, "error")
 
-        assert continuing["message"] == "Agent is preparing the next action..."
+        assert continuing["message"] == "Agent is preparing validation evidence..."
         assert "empty response" in error["message"]
         assert runtime.reader_task is not None
         assert not runtime.reader_task.done()
         with Session(engine) as session:
             audit_events = RunRepository(session).list_audit_events(run_id)
         assert any(event.type == "agent_proposal_failed" and "empty response" in event.payload["error"] for event in audit_events)
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_agent_command_timeout_interrupts_and_returns_to_diagnosis():
+    async def run_test():
+        planner = DiagnosisThenDiagnosisPlanner()
+        manager = TerminalManager(
+            pty_factory=HangingPty,
+            safety_reviewer=ConfirmingReviewer(),
+            planner=planner,
+            command_timeout_seconds=0.01,
+        )
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        await wait_for(queue, "agent_phase_selected")
+        proposal = await wait_for(queue, "agent_proposal")
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": proposal["command_id"]})
+
+        completed = await wait_for(queue, "command_completed")
+        status = await wait_for(queue, "status")
+        next_phase = await wait_for(queue, "agent_phase_selected")
+        next_proposal = await wait_for(queue, "agent_proposal")
+
+        assert completed["exit_code"] == 124
+        assert status["message"] == "Command timed out; agent is returning to diagnosis."
+        assert next_phase["phase"] == "diagnose"
+        assert next_proposal["command"] == "ps aux"
+        assert "\x03" in HangingPty.instances[-1].writes[-1]
+        logs = manager.logs(run_id)
+        assert logs[0].status == TerminalCommandStatus.FAILED.value
+        assert logs[0].exit_code == 124
+        assert "timed out" in logs[0].output
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_agent_next_is_blocked_while_command_is_running():
+    async def run_test():
+        planner = DiagnosisThenDiagnosisPlanner()
+        manager = TerminalManager(
+            pty_factory=HangingPty,
+            safety_reviewer=ConfirmingReviewer(),
+            planner=planner,
+            command_timeout_seconds=60,
+        )
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        await wait_for(queue, "agent_phase_selected")
+        proposal = await wait_for(queue, "agent_proposal")
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": proposal["command_id"]})
+        await wait_for(queue, "command_running")
+
+        await manager.handle_message(runtime, {"type": "agent_next"})
+        status = await wait_for(queue, "status")
+
+        assert status["message"] == "A command is still running. Wait for completion or timeout before requesting another agent action."
+        assert [call[0] for call in planner.calls] == ["diagnosis"]
+        assert len(manager.logs(run_id)) == 1
         await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())
@@ -445,6 +584,131 @@ def test_agent_routes_successful_terminal_fix_to_verification_command():
         assert verification_phase["phase"] == "validate"
         assert verification["command"] == "curl --max-time 5 -fsS http://localhost/health"
         assert any(call[0] == "verification" and any("restart nginx" in observation.get("command", "") for observation in call[1]) for call in planner.calls)
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_successful_diagnosis_phase_continues_diagnosis_without_heuristic_jump():
+    async def run_test():
+        planner = DiagnosisThenDiagnosisPlanner()
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=planner)
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        first_phase = await wait_for(queue, "agent_phase_selected")
+        proposal = await wait_for(queue, "agent_proposal")
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": proposal["command_id"]})
+
+        await wait_for(queue, "command_completed")
+        await wait_for(queue, "status")
+        second_phase = await wait_for(queue, "agent_phase_selected")
+        second = await wait_for(queue, "agent_proposal")
+
+        assert first_phase["phase"] == "diagnose"
+        assert second_phase["phase"] == "diagnose"
+        assert second["command"] == "ps aux"
+        assert [call[0] for call in planner.calls] == ["diagnosis", "diagnosis"]
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_successful_fix_phase_forces_terminal_validation_planner():
+    async def run_test():
+        planner = FixPhaseReadOnlyCommandPlanner()
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=planner)
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        first_phase = await wait_for(queue, "agent_phase_selected")
+        fix = await wait_for(queue, "agent_proposal")
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": fix["command_id"]})
+
+        await wait_for(queue, "command_completed")
+        continuing = await wait_for(queue, "status")
+        validation_phase = await wait_for(queue, "agent_phase_selected")
+        validation = await wait_for(queue, "agent_proposal")
+
+        assert first_phase["phase"] == "fix"
+        assert continuing["message"] == "Agent is preparing validation evidence..."
+        assert [call[0] for call in planner.calls] == ["diagnosis", "verification"]
+        assert validation_phase["phase"] == "validate"
+        assert validation["command"] == "curl --max-time 5 -fsS http://localhost/health"
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_validate_phase_collects_evidence_without_command_keyword_heuristic():
+    async def run_test():
+        planner = NonHeuristicValidationPlanner()
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=planner)
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        await wait_for(queue, "agent_phase_selected")
+        fix = await wait_for(queue, "agent_proposal")
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": fix["command_id"]})
+        await wait_for(queue, "command_completed")
+        await wait_for(queue, "status")
+        validation_phase = await wait_for(queue, "agent_phase_selected")
+        validation = await wait_for(queue, "agent_proposal")
+
+        assert validation_phase["phase"] == "validate"
+        assert validation["command"] == "/usr/local/bin/verify-status"
+
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": validation["command_id"]})
+        await wait_for(queue, "command_completed")
+        collected = await wait_for(queue, "validation_evidence_collected")
+
+        assert collected["validation_status"] == ValidationStatus.EVIDENCE_COLLECTED.value
+        assert runtime.agent_active is False
+        with Session(engine) as session:
+            run = RunRepository(session).get_run(run_id)
+            assert run.status == RunStatus.AWAITING_VALIDATION_CONFIRMATION.value
+            assert run.validation_status == ValidationStatus.EVIDENCE_COLLECTED.value
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_successful_terminal_validation_collects_evidence_and_stops_agent():
+    async def run_test():
+        planner = PhasedTerminalPlanner()
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=planner)
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        await wait_for(queue, "agent_phase_selected")
+        fix = await wait_for(queue, "agent_proposal")
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": fix["command_id"]})
+        await wait_for(queue, "command_completed")
+        await wait_for(queue, "status")
+        await wait_for(queue, "agent_phase_selected")
+        validation = await wait_for(queue, "agent_proposal")
+
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": validation["command_id"]})
+        await wait_for(queue, "command_completed")
+        collected = await wait_for(queue, "validation_evidence_collected")
+
+        assert collected["validation_status"] == ValidationStatus.EVIDENCE_COLLECTED.value
+        assert runtime.agent_active is False
+        assert len(planner.calls) == 2
+        with Session(engine) as session:
+            run = RunRepository(session).get_run(run_id)
+            assert run.status == RunStatus.AWAITING_VALIDATION_CONFIRMATION.value
+            assert run.validation_status == ValidationStatus.EVIDENCE_COLLECTED.value
+            audit_events = RunRepository(session).list_audit_events(run_id)
+        assert any(event.type == "validation_evidence_collected" for event in audit_events)
         await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())

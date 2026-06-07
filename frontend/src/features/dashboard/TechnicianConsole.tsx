@@ -459,6 +459,60 @@ export function TechnicianConsole() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!backendReady || !selectedTicketId || !backendRunId) {
+      return;
+    }
+
+    const ticketId = selectedTicketId;
+    const runId = backendRunId;
+    let cancelled = false;
+
+    async function restoreRun() {
+      try {
+        const state = await backendApi.getRun(runId);
+        if (cancelled) {
+          return;
+        }
+
+        if (state.run.ticket_id !== ticketId) {
+          removeStoredRunId(ticketId);
+          setBackendRunId(null);
+          setConnectionStatus("not_requested");
+          return;
+        }
+
+        setConnectionStatus(state.run.ssh_confirmed ? "connected" : "awaiting_approval");
+        setSystemLoaded(state.run.ssh_confirmed);
+        setAnalysisReady(true);
+        syncRunState(state);
+        await refreshAuditEvents(runId);
+        await refreshRunMetrics(runId);
+      } catch (error) {
+        if (!cancelled) {
+          removeStoredRunId(ticketId);
+          setBackendRunId(null);
+          setConnectionStatus("not_requested");
+          setNotice(`Stored backend run could not be restored. ${getApiErrorMessage(error)}`);
+        }
+      }
+    }
+
+    void restoreRun();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [backendReady, backendRunId, refreshAuditEvents, refreshRunMetrics, selectedTicketId, syncRunState]);
+
+  const setTicketTab = useCallback((tab: TabId) => {
+    setActiveTab(tab);
+
+    if (selectedTicketId) {
+      replaceAppRoute(ticketRoute(selectedTicketId, tab));
+    }
+  }, [selectedTicketId]);
+
   const handleRunWebSocketEvent = useCallback((event: BackendRunWebSocketEvent) => {
     if (event.event_id !== null) {
       runEventCursorRef.current = event.event_id;
@@ -488,6 +542,12 @@ export function TechnicianConsole() {
       setAgentPhase("verification");
     }
 
+    if (event.type === "validation_evidence_collected") {
+      setAgentPhase("verification");
+      setNotice("Validation evidence is ready for technician confirmation. Confirm validation to generate the activity draft.");
+      setTicketTab("activity");
+    }
+
     if (event.type === "validation_confirmed" || event.type === "activity_draft_generated") {
       setAgentPhase("final_analysis");
     }
@@ -509,7 +569,7 @@ export function TechnicianConsole() {
       void refreshAuditEvents(event.run_id).catch(() => undefined);
       void refreshRunMetrics(event.run_id).catch(() => undefined);
     }
-  }, [refreshAuditEvents, refreshRunMetrics, syncRunState]);
+  }, [refreshAuditEvents, refreshRunMetrics, setTicketTab, syncRunState]);
 
   useEffect(() => {
     runEventCursorRef.current = null;
@@ -579,14 +639,6 @@ export function TechnicianConsole() {
     setSidebarView("all");
     resetTicketWorkspace(ticketId, "overview");
   };
-
-  const setTicketTab = useCallback((tab: TabId) => {
-    setActiveTab(tab);
-
-    if (selectedTicketId) {
-      replaceAppRoute(ticketRoute(selectedTicketId, tab));
-    }
-  }, [selectedTicketId]);
 
   const loadSystemInfo = async () => {
     if (!selectedTicket) {
@@ -943,20 +995,34 @@ export function TechnicianConsole() {
       return;
     }
 
-    const evidence = "Technician validated that the customer-facing service is restored after approved action execution.";
+    let latestTerminalCommands = terminalCommands;
+    try {
+      latestTerminalCommands = (await backendApi.getTerminalLogs(backendRunId)).map(mapTerminalCommand);
+      setTerminalCommands(latestTerminalCommands);
+    } catch {
+      latestTerminalCommands = terminalCommands;
+    }
+
+    const evidence =
+      latestTerminalValidationEvidence(latestTerminalCommands) ??
+      "Technician validated that the customer-facing service is restored after approved action execution.";
     setAgentPhase("verification");
 
     try {
       const state = await backendApi.confirmValidation(backendRunId, evidence);
       syncRunState(state);
+      const draftResponse = await backendApi.generateActivityDraft(backendRunId);
+      setDraft(mapActivityDraft(draftResponse));
       setAgentPhase("final_analysis");
       await refreshAuditEvents(backendRunId);
       await refreshRunMetrics(backendRunId);
       appendEvent("validation", "Validation passed", evidence);
+      appendEvent("output", "Activity draft generated", "Backend generated the ERP activity draft after validation confirmation.");
+      setTicketTab("activity");
       return;
     } catch (error) {
-      setNotice(`Validation confirmation failed. ${getApiErrorMessage(error)}`);
-      appendEvent("error", "Validation blocked", "Backend did not accept the validation evidence.");
+      setNotice(`Validation confirmation or draft generation failed. ${getApiErrorMessage(error)}`);
+      appendEvent("error", "Validation handoff blocked", "Backend did not complete validation confirmation and activity draft generation.");
       return;
     }
   };
@@ -1691,6 +1757,92 @@ function shouldRefreshRunArtifacts(type: string) {
     type.includes("terminal") ||
     type.includes("validation")
   );
+}
+
+function latestTerminalValidationEvidence(commands: TerminalCommandLog[]) {
+  const command = [...commands].reverse().find((candidate) => {
+    if (candidate.status !== "completed" || candidate.exitCode !== 0) {
+      return false;
+    }
+
+    return isTerminalValidationCommand(candidate.command, candidate.output);
+  });
+
+  if (!command) {
+    return null;
+  }
+
+  const output = command.output.trim().replace(/\s+/g, " ").slice(0, 240);
+  const outputEvidence = output ? ` Output evidence: ${output}` : "";
+  return `Successful terminal validation command \`${command.command}\` exited 0.${outputEvidence}`;
+}
+
+function isTerminalValidationCommand(command: string, output: string) {
+  const commandText = command.toLowerCase();
+  const outputText = output.toLowerCase();
+  return (
+    ["curl", "health", "is-active", "smoke", "wget --spider"].some((term) => commandText.includes(term)) ||
+    [
+      "validation passed",
+      "validated successfully",
+      "health check passed",
+      "http 200",
+      "status 200",
+      "service reachable",
+      "service is reachable",
+      "service healthy",
+      "service is healthy",
+    ].some((term) => outputText.includes(term))
+  );
+}
+
+function readStoredRunId(ticketId: number) {
+  try {
+    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const stored = JSON.parse(raw) as Record<string, unknown>;
+    const value = stored[String(ticketId)];
+    return typeof value === "string" && value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeRunId(ticketId: number, runId: string) {
+  try {
+    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
+    const stored = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    stored[String(ticketId)] = runId;
+    window.localStorage.setItem(STORED_RUNS_KEY, JSON.stringify(stored));
+  } catch {
+    return;
+  }
+}
+
+function removeStoredRunId(ticketId: number) {
+  try {
+    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
+    if (!raw) {
+      return;
+    }
+
+    const stored = JSON.parse(raw) as Record<string, unknown>;
+    delete stored[String(ticketId)];
+    window.localStorage.setItem(STORED_RUNS_KEY, JSON.stringify(stored));
+  } catch {
+    return;
+  }
+}
+
+function clearStoredRunIds() {
+  try {
+    window.localStorage.removeItem(STORED_RUNS_KEY);
+  } catch {
+    return;
+  }
 }
 
 function upsertTicket(tickets: Ticket[], ticket: Ticket) {

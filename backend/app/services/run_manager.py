@@ -24,6 +24,7 @@ from app.schemas.runs import (
     RunRead,
     RunStateRead,
     RunStatus,
+    TerminalCommandStatus,
     ValidationStatus,
 )
 from app.services.audit_log import AuditLog
@@ -435,13 +436,25 @@ class RunManager:
         run = self._run(run_id)
         if not self._is_concrete_validation_evidence(evidence):
             raise ValidationError("Validation confirmation requires concrete evidence")
-        successful_results = [result for result in self.repo.list_command_results(run.id) if result.exit_code == 0 and not result.timed_out]
-        validation_results = [result for result in successful_results if self._result_is_validation_evidence(result)]
-        if not validation_results:
+        validation_results = [
+            result
+            for result in self.repo.list_command_results(run.id)
+            if result.exit_code == 0 and not result.timed_out and self._result_is_validation_evidence(result)
+        ]
+        terminal_validation_results = [
+            command
+            for command in self.repo.list_terminal_commands(run.id)
+            if self._terminal_result_is_validation_evidence(command)
+        ]
+        if run.validation_status != ValidationStatus.EVIDENCE_COLLECTED.value and not validation_results and not terminal_validation_results:
             raise ValidationError("Validation requires at least one successful validation command result as evidence")
         self.repo.set_validation_status(run, ValidationStatus.HUMAN_CONFIRMED, confirmed=True)
         self.repo.update_run_status(run, RunStatus.READY_FOR_ACTIVITY)
-        self.audit.record("validation_evidence", {"evidence": evidence, "result_count": len(validation_results)}, run.id)
+        self.audit.record(
+            "validation_evidence",
+            {"evidence": evidence, "result_count": len(validation_results), "terminal_result_count": len(terminal_validation_results)},
+            run.id,
+        )
         self.audit.record("human_validation_confirmation", {"confirmed": True}, run.id)
         self._event(run.id, "validation_confirmed", {"status": RunStatus.READY_FOR_ACTIVITY.value})
         return self.state(run.id)
@@ -461,7 +474,7 @@ class RunManager:
         actions = [self._action_payload(action) for action in self.repo.list_actions(run.id)]
         terminal_commands = [self._terminal_command_payload(command) for command in self.repo.list_terminal_commands(run.id)]
         command_results = [self._command_result_payload(result) for result in self.repo.list_command_results(run.id)]
-        validation_events = [event.payload for event in self.audit.for_run(run.id) if event.type in {"validation_evidence", "human_validation_confirmation"}]
+        validation_events = [event.payload for event in self.audit.for_run(run.id) if event.type in {"validation_evidence", "validation_evidence_collected", "human_validation_confirmation"}]
         activity_generator = self.activity_generator or ActivityGenerator()
         self.audit.record("agent_phase_selected", {"phase": "final_analysis", "observation_count": len(command_results)}, run.id)
         self._event(run.id, "agent_phase_selected", {"phase": "final_analysis"})
@@ -675,6 +688,28 @@ class RunManager:
         if any(term in action_text for term in ("validat", "verify", "confirm", "test", "respond", "restored", "customer benefit")):
             return True
         return any(term in command_text for term in ("curl", "health", "is-active", "smoke", "wget --spider"))
+
+    def _terminal_result_is_validation_evidence(self, command) -> bool:
+        if command.status != TerminalCommandStatus.COMPLETED.value or command.exit_code != 0:
+            return False
+        command_text = " ".join(filter(None, [command.final_command, command.original_command])).lower()
+        output_text = (command.output or "").lower()
+        if any(term in command_text for term in ("curl", "health", "is-active", "smoke", "wget --spider")):
+            return True
+        return any(
+            term in output_text
+            for term in (
+                "validation passed",
+                "validated successfully",
+                "health check passed",
+                "http 200",
+                "status 200",
+                "service reachable",
+                "service is reachable",
+                "service healthy",
+                "service is healthy",
+            )
+        )
 
     def _ticket_validation_proposal(self, snapshot: dict[str, Any], observations: list[dict[str, Any]]) -> CommandProposal | None:
         ticket = snapshot.get("ticket", {})
