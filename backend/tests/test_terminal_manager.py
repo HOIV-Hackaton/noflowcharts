@@ -87,7 +87,7 @@ class ConfirmingReviewer:
 
 
 class FakePlanner:
-    def __init__(self, command="systemctl status nginx", phase="diagnose"):
+    def __init__(self, command="systemctl restart nginx", phase="fix"):
         self.command = command
         self.phase = phase
         self.observations = []
@@ -442,6 +442,27 @@ def test_agent_reject_records_without_writing_to_pty():
     asyncio.run(run_test())
 
 
+def test_agent_read_only_diagnosis_auto_runs_in_terminal():
+    async def run_test():
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=FakePlanner("systemctl status nginx", phase="diagnose"))
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        auto_command = await wait_for(queue, "agent_auto_command")
+        await wait_for(queue, "command_completed")
+
+        assert auto_command["command"] == "systemctl --no-pager status nginx"
+        assert "systemctl --no-pager status nginx" in FakePty.instances[-1].writes[0]
+        logs = manager.logs(run_id)
+        assert logs[0].status == TerminalCommandStatus.COMPLETED.value
+        assert runtime.auto_diagnosis_steps == 1
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
 def test_agent_next_is_blocked_while_proposal_awaits_review():
     async def run_test():
         manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=FakePlanner())
@@ -573,19 +594,19 @@ def test_agent_command_timeout_interrupts_and_returns_to_diagnosis():
 
         await manager.handle_message(runtime, {"type": "agent_start"})
         await wait_for(queue, "agent_phase_selected")
-        proposal = await wait_for(queue, "agent_proposal")
-        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": proposal["command_id"]})
+        await wait_for(queue, "agent_auto_command")
+        await wait_for(queue, "command_running")
 
         completed = await wait_for(queue, "command_completed")
         status = await wait_for(queue, "status")
         next_phase = await wait_for(queue, "agent_phase_selected")
-        next_proposal = await wait_for(queue, "agent_proposal")
+        next_auto = await wait_for(queue, "agent_auto_command")
 
         assert completed["exit_code"] == 124
         assert status["message"] == "Command timed out; agent is returning to diagnosis."
         assert next_phase["phase"] == "diagnose"
-        assert next_proposal["command"] == "ps aux"
-        assert "\x03" in HangingPty.instances[-1].writes[-1]
+        assert next_auto["command"] == "ps aux"
+        assert any("\x03" in write for write in HangingPty.instances[-1].writes)
         logs = manager.logs(run_id)
         assert logs[0].status == TerminalCommandStatus.FAILED.value
         assert logs[0].exit_code == 124
@@ -658,8 +679,7 @@ def test_agent_next_is_blocked_while_command_is_running():
 
         await manager.handle_message(runtime, {"type": "agent_start"})
         await wait_for(queue, "agent_phase_selected")
-        proposal = await wait_for(queue, "agent_proposal")
-        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": proposal["command_id"]})
+        await wait_for(queue, "agent_auto_command")
         await wait_for(queue, "command_running")
 
         await manager.handle_message(runtime, {"type": "agent_next"})
@@ -712,15 +732,15 @@ def test_successful_diagnosis_phase_continues_diagnosis_without_heuristic_jump()
 
         await manager.handle_message(runtime, {"type": "agent_start"})
         first_phase = await wait_for(queue, "agent_phase_selected")
-        proposal = await wait_for(queue, "agent_proposal")
-        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": proposal["command_id"]})
+        first = await wait_for(queue, "agent_auto_command")
 
         await wait_for(queue, "command_completed")
         await wait_for(queue, "status")
         second_phase = await wait_for(queue, "agent_phase_selected")
-        second = await wait_for(queue, "agent_proposal")
+        second = await wait_for(queue, "agent_auto_command")
 
         assert first_phase["phase"] == "diagnose"
+        assert first["command"] == "uptime"
         assert second_phase["phase"] == "diagnose"
         assert second["command"] == "ps aux"
         assert [call[0] for call in planner.calls] == ["diagnosis", "diagnosis"]
@@ -837,7 +857,7 @@ def test_agent_guidance_after_rejection_is_not_submitted_as_shell_command():
 
         await manager.handle_message(runtime, {"type": "agent_start"})
         proposal = await wait_for(queue, "agent_proposal")
-        assert proposal["command"] == "systemctl --no-pager status nginx"
+        assert proposal["command"] == "systemctl --no-pager restart nginx"
         await manager.handle_message(runtime, {"type": "agent_reject", "command_id": proposal["command_id"], "reason": "not enough context"})
         await wait_for(queue, "agent_waiting_for_guidance")
 
@@ -863,7 +883,7 @@ def test_agent_systemctl_list_units_is_made_non_interactive_before_proposal():
         manager = TerminalManager(
             pty_factory=FakePty,
             safety_reviewer=ConfirmingReviewer(),
-            planner=FakePlanner("systemctl list-units --type=service --all"),
+            planner=FakePlanner("systemctl list-units --type=service --all", phase="validate"),
         )
         run_id = create_run()
         runtime, queue = await manager.connect(run_id)

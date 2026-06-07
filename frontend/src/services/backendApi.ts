@@ -371,10 +371,6 @@ export const backendApi = {
     return request<BackendRunStateRead>(`/api/runs/${runId}/next`, { method: "POST" });
   },
 
-  startAutodiagnosis(runId: string) {
-    return request<BackendRunStateRead>(`/api/runs/${runId}/autodiagnosis/start`, { method: "POST" });
-  },
-
   confirmRisk(runId: string, actionId: number | null, confirmationText: string) {
     return request<BackendRunStateRead>(`/api/runs/${runId}/confirm-risk`, {
       data: { action_id: actionId, confirmation_text: confirmationText },

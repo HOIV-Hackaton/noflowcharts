@@ -118,6 +118,7 @@ export function TicketWorkspace(props: {
   pendingActions: ProposedAction[];
   relatedTicket: RelatedTicket | null;
   autodiagnosisRunning: boolean;
+  autoStartAgentRequestId: number;
   runState: RunState;
   canStartAutodiagnosis: boolean;
   selectedSystem: CustomerSystem | null;
@@ -298,6 +299,7 @@ export function TicketWorkspace(props: {
         >
           <ActionsTab
             autodiagnosisRunning={props.autodiagnosisRunning}
+            autoStartAgentRequestId={props.autoStartAgentRequestId}
             canStartAutodiagnosis={props.canStartAutodiagnosis}
             connectionStatus={props.connectionStatus}
             onLoadSystem={props.onLoadSystem}
@@ -693,7 +695,7 @@ function IncidentPath({
     }
     if (!analysisReady) {
       return {
-        label: autodiagnosisRunning ? "Read-only diagnostics running" : "Run read-only diagnostics",
+        label: autodiagnosisRunning ? "Automated diagnosis requested" : "Start automated diagnosis",
         onClick: canStartAutodiagnosis ? onStartAutodiagnosis : onStartAnalysis,
         disabled: autodiagnosisRunning,
       };
@@ -898,7 +900,7 @@ function AnalysisTab({
                   variant="default"
                 >
                   <PlayIcon data-icon="inline-start" />
-                  {autodiagnosisRunning ? "Autonomous diagnosis running" : "Start autonomous diagnosis"}
+                  {autodiagnosisRunning ? "Automated diagnosis requested" : "Start automated diagnosis"}
                 </Button>
                 <Button className="w-fit" onClick={onStartAnalysis} type="button" variant="outline">
                   <PlayIcon data-icon="inline-start" />
@@ -1115,6 +1117,7 @@ function analysisEvidenceRows(
 
 function ActionsTab({
   autodiagnosisRunning,
+  autoStartAgentRequestId,
   canStartAutodiagnosis,
   connectionStatus,
   onLoadSystem,
@@ -1127,6 +1130,7 @@ function ActionsTab({
   systemLoading,
 }: {
   autodiagnosisRunning: boolean;
+  autoStartAgentRequestId: number;
   canStartAutodiagnosis: boolean;
   connectionStatus: ConnectionStatus;
   onLoadSystem: () => Promise<void> | void;
@@ -1163,6 +1167,7 @@ function ActionsTab({
       <Suspense fallback={<EmptyState title="Loading terminal" detail="Preparing the remote terminal surface." />}>
         <TicketTerminal
           autodiagnosisRunning={autodiagnosisRunning}
+          autoStartAgentRequestId={autoStartAgentRequestId}
           canStartAutodiagnosis={canStartAutodiagnosis}
           onAgentPhaseChange={onAgentPhaseChange}
           onStartAutodiagnosis={onStartAutodiagnosis}
@@ -1412,7 +1417,7 @@ function getConnectionApprovalDescription(intent: ConnectionIntent | null) {
   }
 
   if (intent === "autodiagnosis") {
-    return "This approves backend SSH access for the selected customer system, then starts safe autodiagnosis.";
+    return "This approves backend SSH access for the selected customer system, then starts automated diagnosis in the terminal.";
   }
 
   if (intent === "terminal") {

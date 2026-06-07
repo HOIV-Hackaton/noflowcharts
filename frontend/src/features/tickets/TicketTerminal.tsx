@@ -9,6 +9,7 @@ import type { AgentPhase, WritePreview } from "@/types";
 import { runTerminalWebSocketUrl } from "../../services/backendApi";
 
 type TerminalMessage =
+  | { type: "agent_auto_command"; command_id: number; command: string; classification?: string; intent?: string; phase?: string | null; reason?: string }
   | { type: "agent_cancelled" }
   | { type: "agent_guidance_recorded" }
   | { type: "agent_phase_selected"; phase: string }
@@ -45,6 +46,7 @@ type SetPendingCommand = (pending: PendingConfirmation | null) => void;
 export function TicketTerminal({
   autodiagnosisRunning = false,
   canStartAutodiagnosis = false,
+  autoStartAgentRequestId = 0,
   onAgentPhaseChange,
   onTerminalConnectionError,
   onStartAutodiagnosis,
@@ -52,6 +54,7 @@ export function TicketTerminal({
   variant = "default",
 }: {
   autodiagnosisRunning?: boolean;
+  autoStartAgentRequestId?: number;
   canStartAutodiagnosis?: boolean;
   onAgentPhaseChange?: (phase: AgentPhase) => void;
   onStartAutodiagnosis?: () => void;
@@ -65,6 +68,8 @@ export function TicketTerminal({
   const socketRef = useRef<WebSocket | null>(null);
   const terminalHadErrorRef = useRef(false);
   const pendingConfirmationRef = useRef<PendingConfirmation | null>(null);
+  const pendingAgentStartRef = useRef(false);
+  const lastAutoStartAgentRequestRef = useRef(0);
   const suppressRawInputUntilRef = useRef(0);
   const lastFitSizeRef = useRef({ height: 0, width: 0 });
   const resizeFrameRef = useRef<number | null>(null);
@@ -433,9 +438,13 @@ export function TicketTerminal({
         terminal.options.disableStdin = false;
         setConnectionState("connected");
         window.setTimeout(sendResize, 0);
+        if (pendingAgentStartRef.current) {
+          pendingAgentStartRef.current = false;
+          window.setTimeout(requestAgentAction, 0);
+        }
       }
 
-      if (message.type === "agent_proposal" || message.type === "agent_phase_selected") {
+      if (message.type === "agent_auto_command" || message.type === "agent_proposal" || message.type === "agent_phase_selected") {
         setAgentStarted(true);
       }
 
@@ -496,6 +505,24 @@ export function TicketTerminal({
     terminal.writeln(`\r\n\x1b[90m${agentStarted ? "Requesting next agent action..." : "Starting agent..."}\x1b[0m`);
     setAgentStarted(true);
   };
+
+  useEffect(() => {
+    if (!autoStartAgentRequestId || autoStartAgentRequestId === lastAutoStartAgentRequestRef.current || !runId) {
+      return;
+    }
+
+    lastAutoStartAgentRequestRef.current = autoStartAgentRequestId;
+    pendingAgentStartRef.current = true;
+    if (connectionState === "connected") {
+      pendingAgentStartRef.current = false;
+      requestAgentAction();
+      return;
+    }
+
+    if (connectionState === "disconnected") {
+      connect();
+    }
+  }, [autoStartAgentRequestId, connectionState, runId]);
 
   const cancelAgent = () => {
     const socket = socketRef.current;
@@ -576,12 +603,12 @@ export function TicketTerminal({
         )}
         {connectionState === "connected" ? (
           <Button onClick={requestAgentAction} type="button" variant="outline">
-            {agentStarted ? "Next agent action" : "Start agent"}
+            {agentStarted ? "Next agent action" : "Start automated diagnosis"}
           </Button>
         ) : null}
         {onStartAutodiagnosis && (canStartAutodiagnosis || autodiagnosisRunning) ? (
           <Button disabled={autodiagnosisRunning} onClick={onStartAutodiagnosis} type="button" variant="outline">
-            {autodiagnosisRunning ? "Automated diagnosis running" : "Start automated diagnosis"}
+            {autodiagnosisRunning ? "Automated diagnosis requested" : "Start automated diagnosis"}
           </Button>
         ) : null}
         {connectionState === "connected" && agentStarted ? (
@@ -619,6 +646,7 @@ function parseTerminalMessage(value: string): TerminalMessage | null {
     const message = JSON.parse(value) as TerminalMessage;
     if (
       message.type === "agent_cancelled" ||
+      message.type === "agent_auto_command" ||
       message.type === "agent_guidance_recorded" ||
       message.type === "agent_phase_selected" ||
       message.type === "agent_proposal" ||
@@ -664,7 +692,7 @@ function formatAgentTerminalPhase(value: string) {
 }
 
 function readTerminalMessageAgentPhase(message: TerminalMessage): AgentPhase | null {
-  if (message.type === "agent_phase_selected" || message.type === "agent_proposal") {
+  if (message.type === "agent_auto_command" || message.type === "agent_phase_selected" || message.type === "agent_proposal") {
     return readAgentPhase(message.phase);
   }
 
@@ -688,6 +716,19 @@ function handleTerminalStatusMessage(
   switch (message.type) {
     case "agent_cancelled":
       terminal.writeln("\r\n\x1b[90mAgent mode cancelled.\x1b[0m");
+      break;
+    case "agent_auto_command":
+      terminal.writeln("\r\n\x1b[36m╭─ Read-only diagnosis auto-running\x1b[0m");
+      if (message.phase) {
+        terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mPhase\x1b[0m ${formatAgentTerminalPhase(message.phase)}`);
+      }
+      terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mIntent\x1b[0m ${message.intent ?? "Read-only diagnostic command."}`);
+      terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mRisk\x1b[0m ${message.classification ?? "read_only"}`);
+      if (message.reason) {
+        terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mReason\x1b[0m ${message.reason}`);
+      }
+      terminal.writeln(`\x1b[36m│\x1b[0m \x1b[1m${message.command}\x1b[0m`);
+      terminal.writeln("\x1b[36m╰─\x1b[0m Running automatically because it is read-only diagnosis.");
       break;
     case "agent_guidance_recorded":
       terminal.writeln("\r\n\x1b[90mAgent guidance recorded.\x1b[0m");
