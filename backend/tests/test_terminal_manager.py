@@ -110,6 +110,14 @@ async def wait_for(queue, event_type: str, attempts: int = 50):
     raise AssertionError(f"Did not receive {event_type}")
 
 
+async def wait_for_terminal_output_containing(queue, text: str, attempts: int = 50):
+    for _ in range(attempts):
+        event = await asyncio.wait_for(queue.get(), timeout=1)
+        if event.get("type") == "terminal_output" and text in event.get("data", ""):
+            return event
+    raise AssertionError(f"Did not receive terminal output containing {text}")
+
+
 def test_terminal_requires_ssh_confirmation():
     async def run_test():
         manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer())
@@ -127,8 +135,11 @@ def test_manual_read_only_command_executes_and_records_exit_code():
         await wait_for(queue, "terminal_opened")
 
         await manager.handle_message(runtime, {"type": "input", "data": "uptime\r"})
+        output = await wait_for_terminal_output_containing(queue, "command output")
         completed = await wait_for(queue, "command_completed")
 
+        assert "secret-value" not in output["data"]
+        assert "[REDACTED]" in output["data"]
         assert completed["exit_code"] == 0
         assert "uptime" in FakePty.instances[-1].writes[0]
         logs = manager.logs(run_id)

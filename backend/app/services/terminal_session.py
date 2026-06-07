@@ -161,7 +161,8 @@ class TerminalSession:
             try:
                 if channel.recv_ready():
                     data = channel.recv(4096).decode("utf-8", errors="replace")
-                    loop.call_soon_threadsafe(output_queue.put_nowait, {"type": "output", "data": data})
+                    safe_data = redact_text(data, self.settings.configured_secrets())
+                    loop.call_soon_threadsafe(output_queue.put_nowait, {"type": "output", "data": safe_data})
                 elif channel.closed or channel.exit_status_ready():
                     loop.call_soon_threadsafe(
                         output_queue.put_nowait,
