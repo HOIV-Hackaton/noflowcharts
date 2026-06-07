@@ -111,9 +111,12 @@ class RunManager:
         if proposal is None:
             planner = self.planner or Planner()
             phase = self._select_agent_phase(run, observations)
+            self._status(run.id, "generating_command", "Agent is generating the next command...", phase=phase)
             self.audit.record("agent_phase_selected", {"phase": phase, "observation_count": len(observations)}, run.id)
             self._event(run.id, "agent_phase_selected", {"phase": phase})
             proposal = self._propose_for_phase(planner, phase, snapshot, observations, run.id)
+        else:
+            self._status(run.id, "generating_command", "Agent is preparing validation evidence...", phase="verification")
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
         write_preview = self._write_preview(run, proposal.command, safety)
@@ -132,9 +135,11 @@ class RunManager:
             self.repo.update_action_status(action, ActionStatus.BLOCKED)
             self.audit.record("blocked_command", {"command": proposal.command, "reason": safety.reason}, run.id)
             self._event(run.id, "command_blocked", {"action_id": action.id, "reason": safety.reason})
+            self._status(run.id, "blocked", "Command was blocked by the safety layer.", busy=False)
         else:
             self.audit.record("command_proposed", {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
             self._event(run.id, "command_proposed", {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value, "write_preview": write_preview})
+            self._status(run.id, "awaiting_review", "Command is ready for technician review.", busy=False)
         return self.state(run.id)
 
     def _propose_for_phase(self, planner: Planner, phase: str, snapshot: dict[str, Any], observations: list[dict[str, Any]], run_id: str) -> CommandProposal:
@@ -186,6 +191,7 @@ class RunManager:
         self.repo.update_run_status(run, RunStatus.DIAGNOSING)
         self.audit.record("safe_autodiagnosis_started", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS}, run.id)
         self._event(run.id, "safe_autodiagnosis_started", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS})
+        self._status(run.id, "running_diagnostics", "Agent is running safe read-only diagnostics...", phase="diagnosis")
 
         planner = self.planner or Planner()
         for _ in range(MAX_AUTO_DIAGNOSTIC_STEPS - self._auto_diagnostic_count(run.id)):
@@ -197,6 +203,7 @@ class RunManager:
 
             snapshot = self._snapshot(run)
             observations = self._observations(run.id)
+            self._status(run.id, "generating_diagnostic", "Agent is choosing the next diagnostic check...", phase="diagnosis")
             proposal = planner.propose_diagnostic_tool(
                 ticket=snapshot.get("ticket", {}),
                 customer_system=snapshot.get("customer_system", {}),
@@ -224,6 +231,7 @@ class RunManager:
                 self._add_proposed_action(run, command, event_type="safe_autodiagnosis_handed_to_human")
                 self.audit.record("safe_autodiagnosis_stopped", {"reason": "human_approval_required", "command": proposal.command}, run.id)
                 self._event(run.id, "safe_autodiagnosis_stopped", {"reason": "human_approval_required"})
+                self._status(run.id, "awaiting_review", "A proposed command needs technician review.", phase="execution", busy=False)
                 return self.state(run.id)
 
             assert proposal.tool is not None
@@ -233,6 +241,7 @@ class RunManager:
                 self.audit.record("agent_diagnostic_blocked", {"tool": proposal.tool, "arguments": proposal.arguments, "reason": exc.message}, run.id)
                 self._event(run.id, "agent_diagnostic_blocked", {"tool": proposal.tool, "reason": exc.message})
                 self.audit.record("safe_autodiagnosis_stopped", {"reason": "diagnostic_blocked"}, run.id)
+                self._status(run.id, "blocked", "Diagnostic request was blocked by the safety layer.", phase="diagnosis", busy=False)
                 return self.state(run.id)
 
             self.audit.record("agent_diagnostic_allowed", {"tool": proposal.tool, "rule_id": diagnostic.rule_id, "command": diagnostic.command}, run.id)
@@ -263,9 +272,11 @@ class RunManager:
                 run.id,
             )
             self._event(run.id, "agent_diagnostic_result", {"tool": diagnostic.tool, "rule_id": diagnostic.rule_id, "exit_code": diagnostic.exit_code})
+            self._status(run.id, "diagnostic_result", "Diagnostic evidence was captured.", phase="diagnosis", busy=False)
 
         self.audit.record("agent_diagnostic_limit_reached", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS}, run_id)
         self._event(run_id, "agent_diagnostic_limit_reached", {"max_steps": MAX_AUTO_DIAGNOSTIC_STEPS})
+        self._status(run_id, "diagnostic_limit_reached", "Safe diagnostic limit reached.", phase="diagnosis", busy=False)
         return self.state(run_id)
 
     def request_safer_alternative(self, run_id: str, action_id: int | None = None) -> RunStateRead:
@@ -277,6 +288,7 @@ class RunManager:
         snapshot = self._snapshot(run)
         observations = self._observations(run.id)
         planner = self.planner or Planner()
+        self._status(run.id, "generating_command", "Agent is generating a safer alternative...", phase="execution")
         proposal = planner.propose_next_command(
             ticket=snapshot.get("ticket", {}),
             customer_system=snapshot.get("customer_system", {}),
@@ -315,9 +327,11 @@ class RunManager:
             self.repo.update_action_status(action, ActionStatus.BLOCKED)
             self.audit.record("blocked_command", {"action_id": action.id, "command": proposal.command, "reason": safety.reason}, run.id)
             self._event(run.id, "command_blocked", {"action_id": action.id, "reason": safety.reason})
+            self._status(run.id, "blocked", "Safer alternative was still blocked by the safety layer.", phase="execution", busy=False)
         else:
             self.audit.record("safer_alternative_proposed", {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
             self._event(run.id, "safer_alternative_proposed", {"action_id": action.id, "classification": safety.classification.value, "write_preview": write_preview})
+            self._status(run.id, "awaiting_review", "Safer alternative is ready for technician review.", phase="execution", busy=False)
         return self.state(run.id)
 
     def confirm_risk(self, run_id: str, confirmation_text: str, action_id: int | None = None) -> RunStateRead:
@@ -364,6 +378,7 @@ class RunManager:
         self.repo.update_action_status(action, ActionStatus.RUNNING)
         self.audit.record("safety_result", {"action_id": action.id, "classification": safety.classification.value, "reason": safety.reason}, run.id)
         self._event(run.id, "command_running", {"action_id": action.id})
+        self._status(run.id, "running_command", "Approved command is running on the customer system...", phase="execution")
         try:
             result = self.ssh_runner.run(self._customer_system(run).system, action.command)
             stored = self.repo.add_command_result(action, result.command, result.exit_code, result.stdout, result.stderr, result.timed_out)
@@ -382,11 +397,13 @@ class RunManager:
                 run.id,
             )
             self._event(run.id, "command_result", {"action_id": action.id, "result_id": stored.id, "exit_code": result.exit_code, "timed_out": result.timed_out})
+            self._status(run.id, "command_result", "Command finished and output was captured.", phase="verification", busy=False)
         except Exception as exc:
             self.repo.update_action_status(action, ActionStatus.FAILED)
             self.repo.update_run_status(run, RunStatus.FAILED)
             self.audit.record("command_result", {"action_id": action.id, "error": str(exc)}, run.id)
             self._event(run.id, "command_failed", {"action_id": action.id, "error": str(exc)})
+            self._status(run.id, "command_failed", "Command failed. Review the captured error before retrying.", phase="recovery", busy=False)
             raise
 
     def reject(self, run_id: str, action_id: int | None = None) -> RunStateRead:
@@ -478,6 +495,7 @@ class RunManager:
         activity_generator = self.activity_generator or ActivityGenerator()
         self.audit.record("agent_phase_selected", {"phase": "final_analysis", "observation_count": len(command_results)}, run.id)
         self._event(run.id, "agent_phase_selected", {"phase": "final_analysis"})
+        self._status(run.id, "generating_activity", "Agent is generating the Phoenix activity draft...", phase="final_analysis")
         generated = activity_generator.generate(
             ticket=snapshot.get("ticket", {}),
             customer_system=snapshot.get("customer_system", {}),
@@ -489,6 +507,7 @@ class RunManager:
         draft = self.repo.upsert_activity_draft(run, **generated.model_dump())
         self.audit.record("activity_draft_generated", generated.model_dump(), run.id)
         self._event(run.id, "activity_draft_generated", {"draft_id": draft.id})
+        self._status(run.id, "activity_ready", "Activity draft is ready for technician review.", phase="final_analysis", busy=False)
         return ActivityDraftRead.model_validate(draft, from_attributes=True)
 
     def update_activity_draft(self, run_id: str, update: ActivityDraftUpdate) -> ActivityDraftRead:
@@ -917,3 +936,9 @@ class RunManager:
 
     def _event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
         persist_and_publish_ws_event_sync(run_id, event_type, payload)
+
+    def _status(self, run_id: str, key: str, message: str, phase: str | None = None, busy: bool = True) -> None:
+        payload: dict[str, Any] = {"key": key, "message": message, "busy": busy}
+        if phase is not None:
+            payload["phase"] = phase
+        self._event(run_id, "run_status", payload)

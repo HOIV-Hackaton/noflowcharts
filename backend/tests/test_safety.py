@@ -89,6 +89,29 @@ def test_edited_compound_command_is_risky_not_auto_allowed():
 @pytest.mark.parametrize(
     "command",
     [
+        "psql -c 'select 1'",
+        "psql --command '\\l'",
+        "psql -Atc 'select count(*) from users'",
+    ],
+)
+def test_bounded_psql_command_is_not_blocked_as_interactive(command):
+    result = classify_command(command)
+
+    assert result.classification == CommandClassification.RISKY_MUTATING
+    assert result.requires_typed_confirmation is True
+    assert result.blocked is False
+
+
+def test_bare_psql_remains_blocked_as_interactive():
+    result = classify_command("psql")
+
+    assert result.classification == CommandClassification.BLOCKED
+    assert result.blocked is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "chown www-data:www-data /srv/app/uploads",
         "chmod 750 /srv/app/uploads",
         "systemctl status nginx",
