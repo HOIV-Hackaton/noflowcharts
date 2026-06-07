@@ -83,6 +83,19 @@ class FailingFollowupPlanner(FakePlanner):
         raise AgentError("Azure OpenAI returned an empty response")
 
 
+class PhasedTerminalPlanner:
+    def __init__(self):
+        self.calls = []
+
+    def propose_diagnosis_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
+        self.calls.append(("diagnosis", observations))
+        return CommandProposal(intent="Restart the affected service after diagnosis evidence.", command="systemctl restart nginx", expected_signal="Restart exits successfully", phase="fix")
+
+    def propose_verification_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
+        self.calls.append(("verification", observations))
+        return CommandProposal(intent="Verify the customer-facing health endpoint after the fix.", command="curl --max-time 5 -fsS http://localhost/health", expected_signal="HTTP endpoint responds successfully", phase="validate")
+
+
 class FakeWritePreviewer:
     def __init__(self):
         self.calls = []
@@ -353,6 +366,35 @@ def test_agent_followup_failure_is_reported_without_killing_reader():
         with Session(engine) as session:
             audit_events = RunRepository(session).list_audit_events(run_id)
         assert any(event.type == "agent_proposal_failed" and "empty response" in event.payload["error"] for event in audit_events)
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_agent_routes_successful_terminal_fix_to_verification_command():
+    async def run_test():
+        planner = PhasedTerminalPlanner()
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=planner)
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        first_phase = await wait_for(queue, "agent_phase_selected")
+        proposal = await wait_for(queue, "agent_proposal")
+        await manager.handle_message(runtime, {"type": "agent_accept", "command_id": proposal["command_id"]})
+
+        await wait_for(queue, "command_completed")
+        await wait_for(queue, "status")
+        verification_phase = await wait_for(queue, "agent_phase_selected")
+        verification = await wait_for(queue, "agent_proposal")
+
+        assert first_phase["phase"] == "fix"
+        assert planner.calls[0][0] == "diagnosis"
+        assert planner.calls[-1][0] == "verification"
+        assert verification_phase["phase"] == "validate"
+        assert verification["command"] == "curl --max-time 5 -fsS http://localhost/health"
+        assert any(call[0] == "verification" and any("restart nginx" in observation.get("command", "") for observation in call[1]) for call in planner.calls)
         await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())
