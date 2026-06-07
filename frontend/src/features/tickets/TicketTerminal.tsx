@@ -42,6 +42,7 @@ type PendingConfirmation = {
 };
 
 type SetPendingCommand = (pending: PendingConfirmation | null) => void;
+type AgentRequestMode = "auto_diagnosis" | "manual";
 type TerminalWaitingState = {
   message: string;
   timer: number;
@@ -72,7 +73,7 @@ export function TicketTerminal({
   const socketRef = useRef<WebSocket | null>(null);
   const terminalHadErrorRef = useRef(false);
   const pendingConfirmationRef = useRef<PendingConfirmation | null>(null);
-  const pendingAgentStartRef = useRef(false);
+  const pendingAgentStartModeRef = useRef<AgentRequestMode | null>(null);
   const lastAutoStartAgentRequestRef = useRef(0);
   const suppressRawInputUntilRef = useRef(0);
   const lastFitSizeRef = useRef({ height: 0, width: 0 });
@@ -446,9 +447,10 @@ export function TicketTerminal({
         terminal.options.disableStdin = false;
         setConnectionState("connected");
         window.setTimeout(sendResize, 0);
-        if (pendingAgentStartRef.current) {
-          pendingAgentStartRef.current = false;
-          window.setTimeout(requestAgentAction, 0);
+        if (pendingAgentStartModeRef.current) {
+          const mode = pendingAgentStartModeRef.current;
+          pendingAgentStartModeRef.current = null;
+          window.setTimeout(() => requestAgentAction(mode), 0);
         }
       }
 
@@ -506,16 +508,27 @@ export function TicketTerminal({
     socketRef.current?.close();
   };
 
-  const requestAgentAction = () => {
+  const requestAgentAction = (mode: AgentRequestMode = "manual") => {
     const socket = socketRef.current;
     const terminal = terminalRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN || !terminal) {
       return;
     }
 
-    socket.send(JSON.stringify({ type: agentStarted ? "agent_next" : "agent_start" }));
+    socket.send(
+      JSON.stringify({
+        type: agentStarted ? "agent_next" : "agent_start",
+        ...(mode === "auto_diagnosis" ? { auto_run_read_only_diagnosis: true } : {}),
+      }),
+    );
     setTerminalHasContent(true);
-    startTerminalWaiting(agentStarted ? "Requesting next agent action..." : "Starting agent...");
+    startTerminalWaiting(
+      agentStarted
+        ? "Requesting next agent action..."
+        : mode === "auto_diagnosis"
+          ? "Starting automated diagnosis..."
+          : "Starting agent...",
+    );
     setAgentStarted(true);
   };
 
@@ -525,10 +538,10 @@ export function TicketTerminal({
     }
 
     lastAutoStartAgentRequestRef.current = autoStartAgentRequestId;
-    pendingAgentStartRef.current = true;
+    pendingAgentStartModeRef.current = "auto_diagnosis";
     if (connectionState === "connected") {
-      pendingAgentStartRef.current = false;
-      requestAgentAction();
+      pendingAgentStartModeRef.current = null;
+      requestAgentAction("auto_diagnosis");
       return;
     }
 
@@ -666,7 +679,7 @@ export function TicketTerminal({
           </Button>
         )}
         {connectionState === "connected" ? (
-          <Button onClick={requestAgentAction} type="button" variant="outline">
+          <Button onClick={() => requestAgentAction()} type="button" variant="outline">
             {agentStarted ? "Next agent action" : "Start agent"}
           </Button>
         ) : null}
