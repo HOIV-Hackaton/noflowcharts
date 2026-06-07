@@ -71,6 +71,23 @@ class FakePlanner:
         return CommandProposal(intent="Check service status", command=self.command, expected_signal="Service state is visible", phase=self.phase)
 
 
+class FakeWritePreviewer:
+    def __init__(self):
+        self.calls = []
+
+    def preview(self, system, command):
+        self.calls.append((system.ip, command))
+        if ">" not in command and "tee" not in command and "sed -i" not in command:
+            return {"status": "not_applicable", "redacted": True}
+        return {
+            "status": "available",
+            "command_kind": "echo_redirect",
+            "target_path": "/etc/app.conf",
+            "diff": "--- a/etc/app.conf\n+++ b/etc/app.conf\n@@\n-old\n+new\n",
+            "redacted": True,
+        }
+
+
 def _marker_id(data: str) -> int | None:
     prefix = "__NOFLOW_EXIT:"
     if prefix not in data:
@@ -324,6 +341,33 @@ def test_agent_systemctl_list_units_is_made_non_interactive_before_proposal():
         logs = manager.logs(run_id)
         assert logs[-1].original_command == "systemctl list-units --type=service --all"
         assert logs[-1].final_command == "systemctl --no-pager list-units --type=service --all"
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_agent_write_proposal_includes_write_preview():
+    async def run_test():
+        previewer = FakeWritePreviewer()
+        manager = TerminalManager(
+            pty_factory=FakePty,
+            safety_reviewer=ConfirmingReviewer(),
+            planner=FakePlanner("echo 'PORT=9090' > /etc/app.conf", phase="fix"),
+            write_previewer=previewer,
+        )
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        proposal = await wait_for(queue, "agent_proposal")
+
+        assert proposal["write_preview"]["status"] == "available"
+        assert proposal["write_preview"]["target_path"] == "/etc/app.conf"
+        logs = manager.logs(run_id)
+        assert logs[-1].write_preview["status"] == "available"
+        assert previewer.calls == [("10.0.0.5", "echo 'PORT=9090' > /etc/app.conf")]
+        assert FakePty.instances[-1].writes == []
         await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())

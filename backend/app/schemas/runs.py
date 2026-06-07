@@ -99,6 +99,7 @@ class ActionRead(BaseModel):
     intent: str | None = None
     risk_reason: str | None = None
     expected_signal: str | None = None
+    write_preview: dict[str, Any] | None = None
     typed_confirmation_status: ConfirmationStatus
     edited_command: str | None = None
     created_at: datetime
@@ -156,6 +157,7 @@ class TerminalCommandRead(BaseModel):
     edited_to: str | None = None
     classification: CommandClassification | None = None
     risk_reason: str | None = None
+    write_preview: dict[str, Any] | None = None
     exit_code: int | None = None
     output: str = ""
     started_at: datetime | None = None
