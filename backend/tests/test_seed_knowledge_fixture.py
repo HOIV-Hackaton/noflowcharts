@@ -22,4 +22,7 @@ def test_seed_knowledge_contains_one_completed_ticket_workflow():
     assert "Customer reports API is down" in combined
     assert "502 Bad Gateway" in combined
     assert "http://localhost:8080/health" in combined
+    assert "after reboot" in combined
+    assert "no listener on port 8080" in combined
+    assert "startup persistence" in combined
     assert "&&" not in combined
