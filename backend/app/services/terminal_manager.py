@@ -253,18 +253,22 @@ class TerminalManager:
     async def _propose_agent(self, runtime: TerminalRuntime) -> None:
         planner = self.planner or Planner()
         context = self._context(runtime.run_id)
+        selected_phase = self._select_agent_phase(context.get("observations", []))
         proposal = await asyncio.to_thread(
-            planner.propose_next_command,
+            self._propose_for_phase,
+            planner,
+            selected_phase,
             context.get("ticket", {}),
             context.get("customer_system", {}),
             context.get("observations", []),
             SAFETY_POLICY_SUMMARY,
             context.get("related_ticket"),
+            runtime.run_id,
         )
         command = _make_command_non_interactive(proposal.command)
-        phase = _agent_phase(proposal.phase)
+        phase = _agent_phase(proposal.phase or selected_phase)
         runtime.current_agent_phase = phase
-        self._audit(runtime.run_id, "agent_phase_selected", {"phase": phase})
+        self._audit(runtime.run_id, "agent_phase_selected", {"phase": phase, "routed_phase": selected_phase})
         await self._broadcast(runtime, {"type": "agent_phase_selected", "phase": phase})
         safety = self.safety_reviewer.review(command, context)
         status = TerminalCommandStatus.BLOCKED if safety.decision == "block" else TerminalCommandStatus.SUBMITTED
@@ -300,6 +304,53 @@ class TerminalManager:
                     "write_preview": write_preview,
                 },
             )
+
+    def _propose_for_phase(
+        self,
+        planner: Planner,
+        phase: str,
+        ticket: dict[str, Any],
+        customer_system: dict[str, Any],
+        observations: list[dict[str, Any]],
+        safety_policy: str,
+        related_ticket: dict[str, Any] | None,
+        run_id: str,
+    ):
+        if phase == "verification" and hasattr(planner, "propose_verification_command"):
+            return planner.propose_verification_command(
+                ticket=ticket,
+                customer_system=customer_system,
+                observations=observations,
+                safety_policy=safety_policy,
+                related_ticket=related_ticket,
+                run_id=run_id,
+            )
+        if phase == "execution" and hasattr(planner, "propose_execution_command"):
+            return planner.propose_execution_command(
+                ticket=ticket,
+                customer_system=customer_system,
+                observations=observations,
+                safety_policy=safety_policy,
+                related_ticket=related_ticket,
+                run_id=run_id,
+            )
+        if hasattr(planner, "propose_diagnosis_command"):
+            return planner.propose_diagnosis_command(
+                ticket=ticket,
+                customer_system=customer_system,
+                observations=observations,
+                safety_policy=safety_policy,
+                related_ticket=related_ticket,
+                run_id=run_id,
+            )
+        return planner.propose_next_command(
+            ticket=ticket,
+            customer_system=customer_system,
+            observations=observations,
+            safety_policy=safety_policy,
+            related_ticket=related_ticket,
+            run_id=run_id,
+        )
 
     async def _record_agent_guidance(self, runtime: TerminalRuntime, guidance: str) -> None:
         guidance = guidance.strip()
@@ -488,6 +539,30 @@ class TerminalManager:
                 "observations": observations,
             }
 
+    def _select_agent_phase(self, observations: list[dict[str, Any]]) -> str:
+        completed = [
+            observation
+            for observation in observations
+            if observation.get("status") in {TerminalCommandStatus.COMPLETED.value, TerminalCommandStatus.FAILED.value}
+        ]
+        if not completed:
+            return "diagnosis"
+
+        latest = completed[-1]
+        latest_failed = latest.get("status") == TerminalCommandStatus.FAILED.value or latest.get("exit_code") not in {0, None}
+        latest_was_validation = _terminal_observation_is_validation_evidence(latest)
+        if latest_failed and latest_was_validation:
+            return "diagnosis"
+
+        if latest.get("classification") in {CommandClassification.MUTATING.value, CommandClassification.RISKY_MUTATING.value}:
+            return "verification" if not latest_failed else "diagnosis"
+
+        if latest_was_validation:
+            return "verification" if not latest_failed else "diagnosis"
+
+        return "diagnosis"
+
+
     def _write_preview(self, run_id: str, command: str) -> dict[str, Any] | None:
         with Session(engine) as session:
             repo = RunRepository(session)
@@ -546,9 +621,26 @@ def _make_command_non_interactive(command: str) -> str:
 
 def _agent_phase(phase: str | None) -> str:
     normalized = (phase or "").strip().lower()
-    if normalized in {"diagnose", "fix", "validate", "recover"}:
-        return normalized
+    aliases = {
+        "diagnosis": "diagnose",
+        "diagnose": "diagnose",
+        "execution": "fix",
+        "fix": "fix",
+        "verification": "validate",
+        "validate": "validate",
+        "recover": "recover",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
     return "diagnose"
+
+
+def _terminal_observation_is_validation_evidence(observation: dict[str, Any]) -> bool:
+    command_text = str(observation.get("command") or "").lower()
+    output_text = str(observation.get("output") or "").lower()
+    if any(term in command_text for term in ("curl", "health", "is-active", "smoke", "wget --spider")):
+        return True
+    return any(term in output_text for term in ("validation", "validated", "health", "http 200", "status 200", "ok", "passed", "reachable"))
 
 
 def _main_command_index(parts: list[str]) -> int | None:
