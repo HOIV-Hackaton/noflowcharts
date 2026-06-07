@@ -63,24 +63,10 @@ export function PageHeading({
 
 export function StatusLabel({ label }: { label: string }) {
   const normalized = label.toLowerCase();
-  const variant =
-    normalized.includes("failed") ||
-    normalized.includes("rejected") ||
-    normalized.includes("error") ||
-    normalized.includes("abort") ||
-    normalized.includes("blocked") ||
-    normalized.includes("high")
-      ? "destructive"
-      : normalized.includes("open") ||
-          normalized.includes("approval") ||
-          normalized.includes("analysis") ||
-          normalized.includes("agent") ||
-          normalized.includes("running")
-        ? "default"
-        : "secondary";
+  const toneClass = statusToneClass(normalized);
 
   return (
-    <Badge className="capitalize" variant={variant}>
+    <Badge className={cn("capitalize", toneClass)} variant="outline">
       {label}
     </Badge>
   );
@@ -119,7 +105,9 @@ export function StatsGrid({
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            {typeof stat.progress === "number" ? <Progress value={stat.progress} /> : null}
+            {typeof stat.progress === "number" ? (
+              <Progress indicatorClassName={statProgressClass(stat.tone)} value={stat.progress} />
+            ) : null}
             {stat.detail ? <p className="text-xs text-muted-foreground">{stat.detail}</p> : null}
           </CardContent>
         </Card>
@@ -263,7 +251,7 @@ export function PriorityBars({
                 <span>{priority}</span>
                 <span className="text-muted-foreground">{count}</span>
               </div>
-              <Progress value={(count / total) * 100} />
+              <Progress indicatorClassName={priorityProgressClass(priority)} value={(count / total) * 100} />
             </div>
           );
         })}
@@ -330,6 +318,72 @@ function StatsGridSkeleton({
       ))}
     </div>
   );
+}
+
+function statusToneClass(normalized: string) {
+  if (
+    normalized.includes("failed") ||
+    normalized.includes("rejected") ||
+    normalized.includes("error") ||
+    normalized.includes("abort") ||
+    normalized.includes("blocked") ||
+    normalized.includes("high")
+  ) {
+    return "border-red-400/30 bg-red-500/15 text-red-200";
+  }
+
+  if (
+    normalized.includes("done") ||
+    normalized.includes("complete") ||
+    normalized.includes("submitted") ||
+    normalized.includes("success") ||
+    normalized.includes("passed")
+  ) {
+    return "border-emerald-400/30 bg-emerald-500/15 text-emerald-200";
+  }
+
+  if (normalized.includes("pending") || normalized.includes("waiting") || normalized.includes("approval")) {
+    return "border-orange-400/30 bg-orange-500/15 text-orange-200";
+  }
+
+  if (normalized.includes("medium") || normalized.includes("warning") || normalized.includes("validation")) {
+    return "border-yellow-400/35 bg-yellow-500/15 text-yellow-100";
+  }
+
+  if (normalized.includes("open") || normalized.includes("analysis") || normalized.includes("agent") || normalized.includes("running")) {
+    return "border-sky-400/30 bg-sky-500/15 text-sky-200";
+  }
+
+  if (normalized.includes("low") || normalized.includes("idle")) {
+    return "border-zinc-400/30 bg-zinc-500/15 text-zinc-200";
+  }
+
+  return "border-border bg-secondary text-secondary-foreground";
+}
+
+function statProgressClass(tone: DashboardStat["tone"]) {
+  switch (tone) {
+    case "danger":
+      return "bg-red-300";
+    case "success":
+      return "bg-emerald-300";
+    case "warning":
+      return "bg-yellow-300";
+    case "default":
+    default:
+      return "bg-sky-300";
+  }
+}
+
+function priorityProgressClass(priority: Priority) {
+  switch (priority) {
+    case "High":
+      return "bg-red-300";
+    case "Medium":
+      return "bg-yellow-300";
+    case "Low":
+      return "bg-zinc-300";
+  }
 }
 
 function TicketTableSkeleton() {

@@ -4,6 +4,7 @@ import {
   ArrowLeftIcon,
   CheckIcon,
   ClipboardCheckIcon,
+  Loader2Icon,
   PlayIcon,
   ShieldCheckIcon,
   TerminalIcon,
@@ -39,6 +40,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import type { BackendLlmMetricsRead } from "@/services/backendApi";
 import {
   formatConnection,
   formatDate,
@@ -86,9 +88,11 @@ export function TicketWorkspace(props: {
   backendRunId: string | null;
   connectionStatus: ConnectionStatus;
   draft: ActivityDraft;
+  draftGenerating: boolean;
   events: RunEvent[];
   executedActions: ProposedAction[];
   logFilter: "all" | EventType;
+  llmMetrics: BackendLlmMetricsRead | null;
   notice: string;
   onAbort: () => void;
   onApproveAction: (actionId: string) => void;
@@ -277,6 +281,7 @@ export function TicketWorkspace(props: {
             analyticsStats={props.analyticsStats}
             analysisReady={props.analysisReady}
             connectionStatus={props.connectionStatus}
+            llmMetrics={props.llmMetrics}
             onRequestConnectionApproval={requestConnectionApproval}
             onStartAutodiagnosis={props.onStartAutodiagnosis}
             onStartAnalysis={props.onStartAnalysis}
@@ -318,6 +323,7 @@ export function TicketWorkspace(props: {
         <TabsContent value="activity">
           <ActivityTab
             draft={props.draft}
+            draftGenerating={props.draftGenerating}
             notice={props.notice}
             onDraftChange={props.onDraftChange}
             onGenerateDraft={props.onGenerateDraft}
@@ -334,7 +340,7 @@ export function TicketWorkspace(props: {
 
       <ConfirmDialog
         confirmLabel="Abort run"
-        description="This stops the current run and disconnects any active terminal session."
+        description="This stops the current run, disconnects any active terminal session, and reloads the workspace."
         onConfirm={props.onAbort}
         onOpenChange={setAbortDialogOpen}
         open={abortDialogOpen}
@@ -842,6 +848,7 @@ function AnalysisTab({
   autodiagnosisRunning,
   canStartAutodiagnosis,
   connectionStatus,
+  llmMetrics,
   onRequestConnectionApproval,
   onStartAutodiagnosis,
   onStartAnalysis,
@@ -854,6 +861,7 @@ function AnalysisTab({
   autodiagnosisRunning: boolean;
   canStartAutodiagnosis: boolean;
   connectionStatus: ConnectionStatus;
+  llmMetrics: BackendLlmMetricsRead | null;
   onRequestConnectionApproval: (intent: ConnectionIntent) => void;
   onStartAutodiagnosis: () => void;
   onStartAnalysis: () => void;
@@ -941,8 +949,130 @@ function AnalysisTab({
           )}
         </CardContent>
       </Card>
+      <LlmTelemetryPanel metrics={llmMetrics} />
     </div>
   );
+}
+
+function LlmTelemetryPanel({ metrics }: { metrics: BackendLlmMetricsRead | null }) {
+  if (!metrics) {
+    return null;
+  }
+
+  const requests = metrics.requests.slice(0, 6);
+  const operations = Object.entries(metrics.by_operation);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>LLM telemetry</CardTitle>
+        <CardDescription>
+          {metrics.request_count} requests, {metrics.error_count} errors, {metrics.tokens.total_tokens} tokens.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4 px-0">
+        {operations.length ? (
+          <Table className="table-fixed">
+            <colgroup>
+              <col className="w-48" />
+              <col className="w-28" />
+              <col className="w-28" />
+              <col className="w-28" />
+              <col className="w-28" />
+            </colgroup>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Operation</TableHead>
+                <TableHead>Input</TableHead>
+                <TableHead>Output</TableHead>
+                <TableHead>Total</TableHead>
+                <TableHead>Cost</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {operations.map(([operation, summary]) => (
+                <TableRow key={operation}>
+                  <TableCell className="whitespace-normal break-words font-medium">
+                    <TruncatedText maxLength={52} text={operation} />
+                  </TableCell>
+                  <TableCell>{formatTokenCount(summary.prompt_tokens)}</TableCell>
+                  <TableCell>{formatTokenCount(summary.completion_tokens)}</TableCell>
+                  <TableCell>{formatTokenCount(summary.total_tokens)}</TableCell>
+                  <TableCell>{formatUsd(summary.estimated_cost_usd)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        ) : null}
+        {requests.length ? (
+          <Table className="table-fixed">
+            <colgroup>
+              <col className="w-44" />
+              <col className="w-44" />
+              <col className="w-28" />
+              <col className="w-28" />
+              <col />
+            </colgroup>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Operation</TableHead>
+                <TableHead>Model</TableHead>
+                <TableHead>Latency</TableHead>
+                <TableHead>Tokens</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {requests.map((request) => (
+                <TableRow key={request.id}>
+                  <TableCell className="whitespace-normal break-words font-medium">
+                    <TruncatedText maxLength={52} text={request.operation} />
+                  </TableCell>
+                  <TableCell className="whitespace-normal break-words text-muted-foreground">
+                    <TruncatedText maxLength={52} text={`${request.provider} / ${request.model}`} />
+                  </TableCell>
+                  <TableCell>{formatMetricMs(request.latency_ms)}</TableCell>
+                  <TableCell>{formatTokenCount(request.total_tokens)}</TableCell>
+                  <TableCell>
+                    <StatusLabel label={request.error ? "error" : "completed"} />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        ) : (
+          <div className="px-4 py-3">
+            <p className="font-medium text-foreground">No LLM request records</p>
+            <p className="text-sm text-muted-foreground">Backend returned zero LLM requests for this run.</p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function formatMetricMs(value: number | null | undefined) {
+  if (typeof value !== "number") {
+    return "n/a";
+  }
+
+  return `${Math.round(value)} ms`;
+}
+
+function formatTokenCount(value: number) {
+  return Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatUsd(value: number | null | undefined) {
+  if (typeof value !== "number") {
+    return "n/a";
+  }
+
+  return Intl.NumberFormat(undefined, {
+    currency: "USD",
+    maximumFractionDigits: 4,
+    style: "currency",
+  }).format(value);
 }
 
 function analysisEvidenceRows(
@@ -1294,6 +1424,7 @@ function getConnectionApprovalDescription(intent: ConnectionIntent | null) {
 
 function ActivityTab({
   draft,
+  draftGenerating,
   notice,
   onDraftChange,
   onGenerateDraft,
@@ -1306,6 +1437,7 @@ function ActivityTab({
   validation,
 }: {
   draft: ActivityDraft;
+  draftGenerating: boolean;
   notice: string;
   onDraftChange: (draft: ActivityDraft) => void;
   onGenerateDraft: () => void;
@@ -1322,13 +1454,16 @@ function ActivityTab({
   const canConfirmValidation =
     runState === "validating" || runState === "ready_to_submit" || runState === "submitted";
   const generationStatus = validationPassed
-    ? "Ready: validation is confirmed."
+    ? draftGenerating
+      ? "Generating the activity draft from audit evidence."
+      : "Ready: validation is confirmed."
     : canConfirmValidation
       ? "Required first: approve the collected validation evidence."
       : "Required first: run a validation command and collect successful evidence.";
 
   return (
-    <Card>
+    <Card className="relative overflow-hidden">
+      {draftGenerating ? <div className="absolute inset-x-0 top-0 h-0.5 animate-pulse bg-primary motion-reduce:animate-none" /> : null}
       <CardHeader>
         <CardTitle>ERP activity draft</CardTitle>
         <CardDescription>
@@ -1343,24 +1478,34 @@ function ActivityTab({
             <p className="text-sm text-muted-foreground">{generationStatus}</p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
-            <Button disabled={!canConfirmValidation || validationPassed} onClick={onRunValidation} type="button" variant="outline">
+            <Button disabled={draftGenerating || !canConfirmValidation || validationPassed} onClick={onRunValidation} type="button" variant="outline">
               <CheckIcon data-icon="inline-start" />
               Confirm validation
             </Button>
-            <Button disabled={!validationPassed} onClick={onGenerateDraft} type="button" variant="outline">
-              <ClipboardCheckIcon data-icon="inline-start" />
-              Generate from audit
+            <Button disabled={draftGenerating || !validationPassed} onClick={onGenerateDraft} type="button" variant="outline">
+              {draftGenerating ? (
+                <Loader2Icon className="size-4 animate-spin motion-reduce:animate-none" data-icon="inline-start" />
+              ) : (
+                <ClipboardCheckIcon data-icon="inline-start" />
+              )}
+              {draftGenerating ? "Generating draft" : "Generate from audit"}
             </Button>
           </div>
         </div>
+        {draftGenerating ? (
+          <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            <Loader2Icon className="size-4 shrink-0 animate-spin text-foreground motion-reduce:animate-none" />
+            <span>Generating the Phoenix activity draft from audit events and command evidence.</span>
+          </div>
+        ) : null}
         <div className="flex flex-wrap gap-2">
-          <Button onClick={onSave} type="button" variant="outline">
+          <Button disabled={draftGenerating} onClick={onSave} type="button" variant="outline">
             Save draft
           </Button>
-          <Button disabled={!complete || submitStatus === "submitted"} onClick={onReview} type="button" variant="outline">
+          <Button disabled={draftGenerating || !complete || submitStatus === "submitted"} onClick={onReview} type="button" variant="outline">
             Mark reviewed
           </Button>
-          <Button disabled={!complete || submitStatus === "submitted"} onClick={onSubmit} type="button">
+          <Button disabled={draftGenerating || !complete || submitStatus === "submitted"} onClick={onSubmit} type="button">
             Submit activity
           </Button>
         </div>
@@ -1378,6 +1523,7 @@ function ActivityTab({
             <label className={rows > 3 ? "lg:col-span-2" : ""} key={field}>
               <span className="text-sm font-medium text-foreground">{label}</span>
               <Textarea
+                disabled={draftGenerating}
                 onChange={(event) => onDraftChange({ ...draft, [field]: event.target.value })}
                 rows={rows}
                 value={draft[field]}
