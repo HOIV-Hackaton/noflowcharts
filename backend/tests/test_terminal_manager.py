@@ -10,6 +10,7 @@ from app.repositories.runs import RunRepository
 from app.schemas.phoenix import CustomerSystem, SystemInfo, Ticket, TicketStatus
 from app.schemas.runs import CommandClassification, RunStatus, TerminalCommandStatus, ValidationStatus
 from app.services.safety import classify_command
+from app.services.events import persist_and_publish_ws_event_sync
 from app.services.terminal_manager import TerminalManager
 from app.services.terminal_safety import TerminalSafetyResult
 
@@ -106,6 +107,28 @@ class FailingFollowupPlanner(FakePlanner):
         if self.calls == 1:
             return super().propose_next_command(ticket, customer_system, observations, safety_policy, related_ticket, run_id)
         raise AgentError("Azure OpenAI returned an empty response")
+
+
+class KnowledgeToolPlanner(FakePlanner):
+    def propose_next_command(self, ticket, customer_system, observations, safety_policy, related_ticket=None, run_id=None):
+        assert run_id is not None
+        persist_and_publish_ws_event_sync(
+            run_id,
+            "knowledge_search_performed",
+            {
+                "query": "Status API unavailable 502 Bad Gateway",
+                "result_count": 1,
+                "results": [
+                    {
+                        "ticket_id": 7001,
+                        "chunk_type": "diagnosis",
+                        "similarity_score": 0.91,
+                        "preview": "status-api cache ownership mismatch",
+                    }
+                ],
+            },
+        )
+        return super().propose_next_command(ticket, customer_system, observations, safety_policy, related_ticket, run_id)
 
 
 class PhasedTerminalPlanner:
@@ -455,6 +478,27 @@ def test_agent_proposal_reports_current_phase():
         with Session(engine) as session:
             audit_events = RunRepository(session).list_audit_events(run_id)
         assert any(event.type == "agent_phase_selected" and event.payload["phase"] == "fix" for event in audit_events)
+        await manager.close_run(run_id, "test_done")
+
+    asyncio.run(run_test())
+
+
+def test_agent_knowledge_search_is_forwarded_to_terminal():
+    async def run_test():
+        manager = TerminalManager(pty_factory=FakePty, safety_reviewer=ConfirmingReviewer(), planner=KnowledgeToolPlanner())
+        run_id = create_run()
+        runtime, queue = await manager.connect(run_id)
+        await wait_for(queue, "terminal_opened")
+
+        await manager.handle_message(runtime, {"type": "agent_start"})
+        knowledge = await wait_for(queue, "knowledge_search_performed")
+        await wait_for(queue, "agent_proposal")
+
+        assert knowledge["query"] == "Status API unavailable 502 Bad Gateway"
+        assert knowledge["result_count"] == 1
+        assert knowledge["top_ticket_id"] == 7001
+        assert knowledge["top_chunk_type"] == "diagnosis"
+        assert knowledge["top_similarity_score"] == 0.91
         await manager.close_run(run_id, "test_done")
 
     asyncio.run(run_test())
