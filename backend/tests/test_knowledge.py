@@ -101,8 +101,13 @@ def test_search_seeds_bundled_demo_knowledge_when_table_is_empty():
     with make_session() as session:
         service = KnowledgeService(session, embedding_provider=ZeroEmbeddingProvider())
 
-        results = service.search("Ubuntu status API localhost:8080 unavailable after reboot no listener", top_k=5)
+        results = service.search(
+            "Ubuntu status API localhost:8080/health unavailable after reboot service worked after manual restart "
+            "known issue systemd service not enabled or wrong unit name",
+            top_k=5,
+        )
 
         assert results
-        assert results[0].ticket_id == 7001
+        assert results[0].ticket_id == 7020
         assert any("after reboot" in result.content for result in results)
+        assert any("wrong unit name" in result.content for result in results)

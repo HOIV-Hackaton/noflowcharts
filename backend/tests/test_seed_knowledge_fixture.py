@@ -7,7 +7,7 @@ def test_seed_knowledge_contains_one_completed_ticket_workflow():
     items = json.loads(seed_path.read_text(encoding="utf-8"))
 
     assert len(items) == 5
-    assert {item["ticket_id"] for item in items} == {7001}
+    assert {item["ticket_id"] for item in items} == {7020}
     assert {item["chunk_type"] for item in items} == {"problem", "diagnosis", "commands", "fix", "validation"}
 
     combined = "\n".join(item["content"] for item in items)
@@ -19,6 +19,7 @@ def test_seed_knowledge_contains_one_completed_ticket_workflow():
     assert "Response snippet:" in combined
     assert "no secret output" in combined.lower()
     assert "Status API unavailable" in combined
+    assert "active demo ticket 7001" in combined
     assert "Customer reports API is down" in combined
     assert "502 Bad Gateway" in combined
     assert "http://localhost:8080/health" in combined
