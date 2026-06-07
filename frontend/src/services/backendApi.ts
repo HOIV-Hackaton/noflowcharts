@@ -207,6 +207,23 @@ export type BackendRunMetricsRead = {
   llm: BackendLlmMetricsRead;
 };
 
+export type BackendMetricsSummaryRead = {
+  generated_at: string;
+  run_count: number;
+  active_run_count: number;
+  submitted_run_count: number;
+  aborted_run_count: number;
+  failed_run_count: number;
+  action_count: number;
+  command_result_count: number;
+  terminal_command_count: number;
+  audit_event_count: number;
+  run_latency: BackendLatencyStats;
+  command_latency: BackendLatencyStats;
+  terminal_command_latency: BackendLatencyStats;
+  llm: BackendLlmMetricsRead;
+};
+
 export type BackendAuditEventRead = {
   id: number;
   run_id: string | null;
@@ -423,6 +440,10 @@ export const backendApi = {
 
   getRunMetrics(runId: string) {
     return request<BackendRunMetricsRead>(`/api/metrics/runs/${runId}`);
+  },
+
+  getMetricsSummary() {
+    return request<BackendMetricsSummaryRead>("/api/metrics/summary");
   },
 
   generateActivityDraft(runId: string) {

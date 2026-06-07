@@ -31,6 +31,14 @@ export type TerminalCommandStatus =
   | "failed"
   | "cancelled";
 
+export type RelatedTicket = {
+  ticketId: number;
+  title: string;
+  description: string;
+  rationale: string | null;
+  confidence: string | null;
+};
+
 export type TechnicianSession = {
   email: string;
   name: string;
@@ -58,13 +66,6 @@ export type CustomerSystem = {
   target: string;
   username: string;
   notes: string;
-};
-
-export type Hypothesis = {
-  id: string;
-  title: string;
-  evidence: string;
-  confidence: "High" | "Medium" | "Low";
 };
 
 export type ProposedAction = {

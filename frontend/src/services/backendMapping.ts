@@ -4,6 +4,7 @@ import type {
   EventType,
   Priority,
   ProposedAction,
+  RelatedTicket,
   RunEvent,
   RunState,
   Ticket,
@@ -17,6 +18,7 @@ import type {
   BackendCustomer,
   BackendCustomerSystem,
   BackendEmployee,
+  BackendRelatedTicketRead,
   BackendRunStateRead,
   BackendTicket,
   BackendTerminalCommandRead,
@@ -155,6 +157,20 @@ export function mapActivityDraft(draft: BackendActivityDraftRead): ActivityDraft
     root_cause: draft.root_cause ?? "",
     summary: draft.summary ?? "",
     validation_result: draft.validation_result ?? "",
+  };
+}
+
+export function mapRelatedTicket(ticket: BackendRelatedTicketRead | null): RelatedTicket | null {
+  if (!ticket) {
+    return null;
+  }
+
+  return {
+    confidence: ticket.confidence,
+    description: ticket.description,
+    rationale: ticket.rationale,
+    ticketId: ticket.ticket_id,
+    title: ticket.title,
   };
 }
 

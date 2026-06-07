@@ -161,15 +161,16 @@ export function AppSidebar({
 					<SidebarGroup>
 						<SidebarGroupContent>
 							<button
-								className="mx-2 flex h-10 w-[calc(100%-1rem)] items-center gap-2 rounded-lg border border-input bg-input/30 px-3 text-left text-muted-foreground transition hover:bg-muted hover:text-foreground"
+								aria-label="Search tickets"
+								className="mx-2 flex h-10 w-[calc(100%-1rem)] items-center gap-2 rounded-lg border border-input bg-input/30 px-3 text-left text-muted-foreground transition hover:bg-muted hover:text-foreground group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
 								onClick={() => setCommandOpen(true)}
 								type="button"
 							>
 								<SearchIcon className="size-3.5 shrink-0" />
-								<span className="min-w-0 flex-1 truncate">
+								<span className="min-w-0 flex-1 truncate group-data-[collapsible=icon]:hidden">
 									{search ? `Search: ${search}` : "Search tickets"}
 								</span>
-								<span className="flex items-center gap-1">
+								<span className="flex items-center gap-1 group-data-[collapsible=icon]:hidden">
 									<Kbd>⌘</Kbd>
 									<Kbd>K</Kbd>
 								</span>

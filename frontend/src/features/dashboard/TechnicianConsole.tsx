@@ -16,18 +16,20 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getQueueHeading } from "@/lib/queue";
 import { Toast } from "../../components/ui/Toast";
-import { emptyDraft, initialValidation } from "../../data/mockData";
 import { useAuth } from "../auth/AuthProvider";
 import {
-  createActions,
   createEvent,
+  emptyDraft,
   formatDate,
+  initialValidation,
   isDraftComplete,
 } from "../../lib/serviceDesk";
 import {
   backendApi,
   getApiErrorMessage,
   runEventsWebSocketUrl,
+  type BackendEmployee,
+  type BackendMetricsSummaryRead,
   type BackendRunMetricsRead,
   type BackendRunStateRead,
   type BackendRunWebSocketEvent,
@@ -41,6 +43,7 @@ import {
   mapBackendCommandResultAction,
   mapBackendCustomerSystem,
   mapBackendTicket,
+  mapRelatedTicket,
   mapRunState,
   mapTerminalCommand,
   mapTerminalTranscript,
@@ -53,6 +56,7 @@ import type {
   EventType,
   Priority,
   ProposedAction,
+  RelatedTicket,
   RunEvent,
   RunState,
   TabId,
@@ -85,6 +89,7 @@ const routeByView: Record<SidebarView, string> = {
 export function TechnicianConsole() {
   const { session, logout } = useAuth();
   const initialRoute = getAppRouteState();
+  const [employee, setEmployee] = useState<BackendEmployee | null>(null);
   const [ticketList, setTicketList] = useState<Ticket[]>([]);
   const [systemsByTicket, setSystemsByTicket] = useState<Record<number, CustomerSystem>>({});
   const [backendReady, setBackendReady] = useState(false);
@@ -109,7 +114,9 @@ export function TechnicianConsole() {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [terminalCommands, setTerminalCommands] = useState<TerminalCommandLog[]>([]);
   const [terminalTranscript, setTerminalTranscript] = useState<TerminalTranscriptLine[]>([]);
+  const [metricsSummary, setMetricsSummary] = useState<BackendMetricsSummaryRead | null>(null);
   const [runMetrics, setRunMetrics] = useState<BackendRunMetricsRead | null>(null);
+  const [relatedTicket, setRelatedTicket] = useState<RelatedTicket | null>(null);
   const [validation, setValidation] = useState<ValidationResult>(initialValidation);
   const [draft, setDraft] = useState<ActivityDraft>(emptyDraft);
   const [submitStatus, setSubmitStatus] = useState<"idle" | "submitted">("idle");
@@ -122,6 +129,12 @@ export function TechnicianConsole() {
 
   const selectedTicket = ticketList.find((ticket) => ticket.id === selectedTicketId) ?? null;
   const selectedSystem = selectedTicketId ? systemsByTicket[selectedTicketId] ?? null : null;
+  const assignedTechnicianName = employee ? employeeName(employee) : session?.name ?? "Technician";
+  const sidebarProfile = {
+    email: employee?.username ?? session?.email ?? "",
+    name: assignedTechnicianName,
+    role: employee?.teamname ?? session?.role ?? "Technician",
+  };
   const pendingActions = actions.filter((action) => action.status === "pending");
   const executedActions = actions.filter((action) => action.status === "executed");
   const canStartAutodiagnosis =
@@ -142,22 +155,32 @@ export function TechnicianConsole() {
           backendApi.getMe(),
           backendApi.listTickets({ sort: "date" }),
         ]);
+        const backendMetrics = await backendApi.getMetricsSummary().catch((error) => {
+          setNotice(`Metrics summary failed to load. ${getApiErrorMessage(error)}`);
+          return null;
+        });
 
         if (cancelled) {
           return;
         }
 
         const assignedTo = employeeName(employee);
+        setEmployee(employee);
         setTicketList(backendTickets.map((ticket) => mapBackendTicket(ticket, assignedTo)));
+        setMetricsSummary(backendMetrics);
         setLastTicketFetchAt(new Date().toISOString());
         setBackendReady(true);
-        setNotice("");
+        if (backendMetrics) {
+          setNotice("");
+        }
       } catch (error) {
         if (cancelled) {
           return;
         }
 
         setTicketList([]);
+        setEmployee(null);
+        setMetricsSummary(null);
         setLastTicketFetchAt(null);
         setBackendReady(false);
         setNotice(`Ticket queue failed to load. ${getApiErrorMessage(error)}`);
@@ -230,17 +253,18 @@ export function TechnicianConsole() {
   const sidebarCounts = useMemo<SidebarCounts>(
     () => ({
       all: ticketList.length,
-      assigned: ticketList.filter((ticket) => ticket.assignedTo === session?.name || backendReady).length,
+      assigned: ticketList.filter((ticket) => ticket.assignedTo === assignedTechnicianName || backendReady).length,
       high: ticketList.filter((ticket) => ticket.priority === "High").length,
       pending: ticketList.filter((ticket) => ticket.status === "PENDING").length,
     }),
-    [backendReady, session?.name, ticketList],
+    [assignedTechnicianName, backendReady, ticketList],
   );
 
   const stats = useMemo<DashboardStat[]>(() => {
     const total = Math.max(ticketList.length, 1);
     const openTickets = ticketList.filter((ticket) => ticket.status === "OPEN").length;
     const highTickets = ticketList.filter((ticket) => ticket.priority === "High").length;
+    const runTotal = Math.max(metricsSummary?.run_count ?? 0, 1);
 
     return [
       {
@@ -258,14 +282,16 @@ export function TechnicianConsole() {
         value: highTickets,
       },
       {
-        detail: "Commands or connection steps waiting on a human.",
-        label: "Pending approval",
-        progress: pendingActions.length ? 100 : 0,
-        tone: pendingActions.length ? "warning" : "success",
-        value: pendingActions.length,
+        detail: metricsSummary
+          ? `${metricsSummary.submitted_run_count} submitted, ${metricsSummary.failed_run_count} failed, ${metricsSummary.audit_event_count} audit events.`
+          : "Backend metrics summary did not load.",
+        label: "Active runs",
+        progress: metricsSummary ? (metricsSummary.active_run_count / runTotal) * 100 : undefined,
+        tone: metricsSummary?.failed_run_count ? "warning" : "default",
+        value: metricsSummary ? metricsSummary.active_run_count : "unavailable",
       },
     ];
-  }, [pendingActions.length, ticketList]);
+  }, [metricsSummary, ticketList]);
 
   const ticketAnalyticsStats = useMemo<DashboardStat[]>(() => {
     if (!backendRunId) {
@@ -335,9 +361,8 @@ export function TechnicianConsole() {
           return;
         }
 
-        const assignedTo = session?.name ?? "Technician";
         setTicketList((currentTickets) =>
-          upsertTicket(currentTickets, mapBackendTicket(backendTicket, assignedTo)),
+          upsertTicket(currentTickets, mapBackendTicket(backendTicket, assignedTechnicianName)),
         );
       } catch (error) {
         if (!cancelled) {
@@ -351,7 +376,7 @@ export function TechnicianConsole() {
     return () => {
       cancelled = true;
     };
-  }, [backendReady, selectedTicketId, session?.name]);
+  }, [assignedTechnicianName, backendReady, selectedTicketId]);
 
   const resetTicketWorkspace = useCallback((ticketId: number, tab: TabId = "overview") => {
     setSelectedTicketId(ticketId);
@@ -368,6 +393,7 @@ export function TechnicianConsole() {
     setTerminalCommands([]);
     setTerminalTranscript([]);
     setRunMetrics(null);
+    setRelatedTicket(null);
     setValidation(initialValidation);
     setDraft(emptyDraft);
     setSubmitStatus("idle");
@@ -396,6 +422,7 @@ export function TechnicianConsole() {
   const syncRunState = useCallback((state: BackendRunStateRead) => {
     setRunState(mapRunState(state));
     setValidation(mapValidation(state));
+    setRelatedTicket(mapRelatedTicket(state.related_ticket));
 
     if (state.activity_draft) {
       setDraft(mapActivityDraft(state.activity_draft));
@@ -976,6 +1003,66 @@ export function TechnicianConsole() {
     }
   };
 
+  const saveDraft = async () => {
+    if (!backendReady || !backendRunId) {
+      setNotice("Backend run is required before saving an activity draft.");
+      return;
+    }
+
+    try {
+      const draftResponse = await backendApi.updateActivityDraft(backendRunId, {
+        actions_taken: draft.actions_taken,
+        commands_summary: draft.commands_summary,
+        description: draft.summary,
+        root_cause: draft.root_cause,
+        summary: draft.summary,
+        validation_result: draft.validation_result,
+      });
+      setDraft(mapActivityDraft(draftResponse));
+      await refreshAuditEvents(backendRunId);
+      await refreshRunMetrics(backendRunId);
+      setNotice("Activity draft saved to backend.");
+      return;
+    } catch (error) {
+      setNotice(`Activity draft save failed. ${getApiErrorMessage(error)}`);
+      appendEvent("error", "Activity draft save blocked", "Backend did not save the draft.");
+      return;
+    }
+  };
+
+  const reviewDraft = async () => {
+    if (!isDraftComplete(draft)) {
+      setNotice("Complete every activity field before marking the draft reviewed.");
+      return;
+    }
+
+    if (!backendReady || !backendRunId) {
+      setNotice("Backend run is required before reviewing an activity draft.");
+      return;
+    }
+
+    try {
+      await backendApi.updateActivityDraft(backendRunId, {
+        actions_taken: draft.actions_taken,
+        commands_summary: draft.commands_summary,
+        description: draft.summary,
+        root_cause: draft.root_cause,
+        summary: draft.summary,
+        validation_result: draft.validation_result,
+      });
+      const draftResponse = await backendApi.reviewActivityDraft(backendRunId, true);
+      setDraft(mapActivityDraft(draftResponse));
+      await refreshAuditEvents(backendRunId);
+      await refreshRunMetrics(backendRunId);
+      setNotice("Activity draft marked reviewed.");
+      return;
+    } catch (error) {
+      setNotice(`Activity draft review failed. ${getApiErrorMessage(error)}`);
+      appendEvent("error", "Activity draft review blocked", "Backend did not mark the draft reviewed.");
+      return;
+    }
+  };
+
   const submitActivity = async () => {
     if (!isDraftComplete(draft)) {
       setNotice("Complete every activity field before submitting.");
@@ -1000,6 +1087,9 @@ export function TechnicianConsole() {
       });
       await backendApi.reviewActivityDraft(backendRunId, true);
       await backendApi.submitActivity(backendRunId);
+      if (ticketId) {
+        await backendApi.setTicketStatus(ticketId, "DONE");
+      }
       const state = await backendApi.getRun(backendRunId);
       syncRunState(state);
       if (ticketId) {
@@ -1010,6 +1100,10 @@ export function TechnicianConsole() {
       setNotice("Activity submitted to backend.");
       await refreshAuditEvents(backendRunId);
       await refreshRunMetrics(backendRunId);
+      const backendMetrics = await backendApi.getMetricsSummary().catch(() => null);
+      if (backendMetrics) {
+        setMetricsSummary(backendMetrics);
+      }
       appendEvent("output", "Activity submitted", "Backend ERP activity submission completed.");
       return;
     } catch (error) {
@@ -1049,13 +1143,16 @@ export function TechnicianConsole() {
     setTicketsLoading(true);
 
     try {
-      const backendTickets = await backendApi.listTickets({
-        priority: priorityFilter === "all" ? null : priorityFilter,
-        sort: sortBy,
-        status: statusFilter === "all" ? null : statusFilter,
-      });
-      const assignedTo = session?.name ?? "Technician";
-      setTicketList(backendTickets.map((ticket) => mapBackendTicket(ticket, assignedTo)));
+      const [backendTickets, backendMetrics] = await Promise.all([
+        backendApi.listTickets({
+          priority: priorityFilter === "all" ? null : priorityFilter,
+          sort: sortBy,
+          status: statusFilter === "all" ? null : statusFilter,
+        }),
+        backendApi.getMetricsSummary().catch(() => null),
+      ]);
+      setTicketList(backendTickets.map((ticket) => mapBackendTicket(ticket, assignedTechnicianName)));
+      setMetricsSummary(backendMetrics);
       setLastTicketFetchAt(new Date().toISOString());
       setNotice("Backend ticket queue refreshed.");
     } catch (error) {
@@ -1075,13 +1172,16 @@ export function TechnicianConsole() {
 
     try {
       const response = await backendApi.resetEnvironment();
-      const backendTickets = await backendApi.listTickets({
-        priority: priorityFilter === "all" ? null : priorityFilter,
-        sort: sortBy,
-        status: statusFilter === "all" ? null : statusFilter,
-      });
-      const assignedTo = session?.name ?? "Technician";
-      setTicketList(backendTickets.map((ticket) => mapBackendTicket(ticket, assignedTo)));
+      const [backendTickets, backendMetrics] = await Promise.all([
+        backendApi.listTickets({
+          priority: priorityFilter === "all" ? null : priorityFilter,
+          sort: sortBy,
+          status: statusFilter === "all" ? null : statusFilter,
+        }),
+        backendApi.getMetricsSummary().catch(() => null),
+      ]);
+      setTicketList(backendTickets.map((ticket) => mapBackendTicket(ticket, assignedTechnicianName)));
+      setMetricsSummary(backendMetrics);
       setLastTicketFetchAt(new Date().toISOString());
       setSelectedTicketId(null);
       setBackendRunId(null);
@@ -1097,6 +1197,7 @@ export function TechnicianConsole() {
       setTerminalCommands([]);
       setTerminalTranscript([]);
       setRunMetrics(null);
+      setRelatedTicket(null);
       setValidation(initialValidation);
       setDraft(emptyDraft);
       setSubmitStatus("idle");
@@ -1218,11 +1319,7 @@ export function TechnicianConsole() {
         onNavigate={handleSidebarView}
         onSelectTicket={selectTicket}
         pageTitle={pageTitle}
-        profile={{
-          email: session?.email ?? "",
-          name: session?.name ?? "Technician",
-          role: session?.role ?? "Technician",
-        }}
+        profile={sidebarProfile}
         search={search}
         setSearch={setSearch}
         loading={ticketsLoading}
@@ -1254,12 +1351,15 @@ export function TechnicianConsole() {
               onRetryAction={retryAction}
               onRunValidation={runValidation}
               onSaferAlternative={requestSaferAlternative}
+              onReviewDraft={reviewDraft}
+              onSaveDraft={saveDraft}
               onStartAutodiagnosis={startAutodiagnosis}
               onStartAnalysis={startAnalysis}
               onSubmitActivity={submitActivity}
               onTabChange={setTicketTab}
               onUpdateCommand={updateActionCommand}
               pendingActions={pendingActions}
+              relatedTicket={relatedTicket}
               autodiagnosisRunning={autodiagnosisRunning}
               backendRunId={backendRunId}
               canStartAutodiagnosis={canStartAutodiagnosis}

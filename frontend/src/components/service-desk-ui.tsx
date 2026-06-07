@@ -19,7 +19,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
 import { formatDate } from "@/lib/serviceDesk";
 import type { Priority, Ticket } from "@/types";
 
@@ -108,7 +107,6 @@ export function StatsGrid({
             <CardTitle className="text-2xl">{stat.value}</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            <MiniSignal tone={stat.tone ?? "default"} />
             {typeof stat.progress === "number" ? <Progress value={stat.progress} /> : null}
             {stat.detail ? <p className="text-xs text-muted-foreground">{stat.detail}</p> : null}
           </CardContent>
@@ -297,25 +295,6 @@ export function WorkflowCards({
   );
 }
 
-function MiniSignal({ tone }: { tone: NonNullable<DashboardStat["tone"]> }) {
-  return (
-    <div className="flex h-8 items-end gap-1" aria-hidden="true">
-      {[38, 54, 44, 72, 58, 80, 68].map((height, index) => (
-        <span
-          className={cn(
-            "flex-1 rounded-sm bg-primary/30",
-            tone === "danger" && "bg-destructive/40",
-            tone === "success" && "bg-foreground/40",
-            tone === "warning" && "bg-muted-foreground/40",
-          )}
-          key={`${height}-${index}`}
-          style={{ height: `${height}%` }}
-        />
-      ))}
-    </div>
-  );
-}
-
 function StatsGridSkeleton({ count = 4 }: { count?: number }) {
   return (
     <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
@@ -326,15 +305,6 @@ function StatsGridSkeleton({ count = 4 }: { count?: number }) {
             <Skeleton className="h-8 w-14" />
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            <div className="flex h-8 items-end gap-1">
-              {[38, 54, 44, 72, 58, 80, 68].map((height, barIndex) => (
-                <Skeleton
-                  className="flex-1 rounded-sm"
-                  key={`${index}-${barIndex}`}
-                  style={{ height: `${height}%` }}
-                />
-              ))}
-            </div>
             <Skeleton className="h-1 w-full rounded-full" />
             <Skeleton className="h-3 w-4/5" />
           </CardContent>

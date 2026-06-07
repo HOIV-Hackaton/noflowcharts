@@ -9,7 +9,8 @@ import { runTerminalWebSocketUrl } from "../../services/backendApi";
 type TerminalMessage =
   | { type: "agent_cancelled" }
   | { type: "agent_guidance_recorded" }
-  | { type: "agent_proposal"; command_id: number; command: string; classification?: string; intent?: string; reason?: string }
+  | { type: "agent_phase_selected"; phase: string }
+  | { type: "agent_proposal"; command_id: number; command: string; classification?: string; intent?: string; phase?: string | null; reason?: string }
   | { type: "agent_waiting_for_guidance"; command_id?: number }
   | { type: "command_blocked"; command_id?: number; reason?: string }
   | { type: "command_cancelled"; command_id?: number }
@@ -30,6 +31,7 @@ type PendingConfirmation = {
   input: string;
   intent?: string;
   mode: "choose" | "comment" | "edit";
+  phase?: string | null;
   reason?: string;
   source: "agent" | "manual";
 };
@@ -121,6 +123,26 @@ export function TicketTerminal({
     setPendingCommand({ ...pending, input: command, mode: "edit" });
     terminal.writeln("\r\n\x1b[33mEdit command, then press Enter:\x1b[0m");
     terminal.write(command);
+  }
+
+  function retryPendingCommand() {
+    const pending = pendingConfirmationRef.current;
+    const socket = socketRef.current;
+    const terminal = terminalRef.current;
+    if (!pending || !socket || socket.readyState !== WebSocket.OPEN || !terminal) {
+      return;
+    }
+
+    if (pending.source !== "agent") {
+      terminal.writeln("\r\n\x1b[90mRetry is available for agent proposals. Cancel and retype manual commands.\x1b[0m");
+      return;
+    }
+
+    const message = "Technician requested a retry. Do not repeat the same proposal unless it is clearly justified; propose the safest next step.";
+    setPendingCommand(null);
+    socket.send(JSON.stringify({ command_id: pending.commandId, reason: "Retry requested from terminal.", type: "agent_reject" }));
+    socket.send(JSON.stringify({ message, type: "agent_message" }));
+    terminal.writeln("\r\n\x1b[90mRetry requested. Waiting for a new agent proposal.\x1b[0m");
   }
 
   function submitEditedPendingCommand(command: string) {
@@ -235,6 +257,11 @@ export function TicketTerminal({
       return;
     }
 
+    if (answer === "t") {
+      retryPendingCommand();
+      return;
+    }
+
     if (answer === "c") {
       beginCommentPendingCommand();
       return;
@@ -242,7 +269,7 @@ export function TicketTerminal({
 
     terminal.writeln(
       pending.source === "agent"
-        ? "\r\nChoose: \x1b[32ma\x1b[0mccept, \x1b[31mr\x1b[0meject, \x1b[33me\x1b[0mdit, or \x1b[90mc\x1b[0momment."
+        ? "\r\nChoose: \x1b[32ma\x1b[0mccept, \x1b[31mr\x1b[0meject, \x1b[33me\x1b[0mdit, re\x1b[36mt\x1b[0mry, or \x1b[90mc\x1b[0momment."
         : "\r\nChoose: \x1b[32ma\x1b[0mccept or \x1b[31mr\x1b[0meject.",
     );
   }
@@ -376,7 +403,7 @@ export function TicketTerminal({
         return;
       }
 
-      if (message.type === "agent_proposal") {
+      if (message.type === "agent_proposal" || message.type === "agent_phase_selected") {
         setAgentStarted(true);
       }
 
@@ -552,6 +579,7 @@ function parseTerminalMessage(value: string): TerminalMessage | null {
     if (
       message.type === "agent_cancelled" ||
       message.type === "agent_guidance_recorded" ||
+      message.type === "agent_phase_selected" ||
       message.type === "agent_proposal" ||
       message.type === "agent_waiting_for_guidance" ||
       message.type === "command_blocked" ||
@@ -575,6 +603,18 @@ function parseTerminalMessage(value: string): TerminalMessage | null {
   return null;
 }
 
+function formatAgentTerminalPhase(value: string) {
+  const normalized = value.trim().replace(/[-_]+/g, " ").toLowerCase();
+  if (!normalized) {
+    return "Unknown";
+  }
+
+  return normalized
+    .split(/\s+/)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
 function handleTerminalStatusMessage(
   terminal: Terminal,
   message: TerminalMessage,
@@ -587,6 +627,9 @@ function handleTerminalStatusMessage(
     case "agent_guidance_recorded":
       terminal.writeln("\r\n\x1b[90mAgent guidance recorded.\x1b[0m");
       break;
+    case "agent_phase_selected":
+      terminal.writeln(`\r\n\x1b[36mAgent phase: ${formatAgentTerminalPhase(message.phase)}\x1b[0m`);
+      break;
     case "agent_proposal":
       setPendingCommand({
         classification: message.classification,
@@ -595,10 +638,14 @@ function handleTerminalStatusMessage(
         input: "",
         intent: message.intent,
         mode: "choose",
+        phase: message.phase,
         reason: message.reason,
         source: "agent",
       });
       terminal.writeln("\r\n\x1b[36m╭─ Agent proposed command\x1b[0m");
+      if (message.phase) {
+        terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mPhase\x1b[0m ${formatAgentTerminalPhase(message.phase)}`);
+      }
       terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mIntent\x1b[0m ${message.intent ?? "Review command in terminal."}`);
       terminal.writeln(`\x1b[36m│\x1b[0m \x1b[90mRisk\x1b[0m ${message.classification ?? "unclassified"}`);
       if (message.reason) {
@@ -606,7 +653,7 @@ function handleTerminalStatusMessage(
       }
       terminal.writeln(`\x1b[36m│\x1b[0m \x1b[1m${message.command}\x1b[0m`);
       terminal.writeln(
-        "\x1b[36m╰─\x1b[0m \x1b[32m[a] accept\x1b[0m  \x1b[31m[r] reject\x1b[0m  \x1b[33m[e] edit\x1b[0m  \x1b[90m[c] comment\x1b[0m",
+        "\x1b[36m╰─\x1b[0m \x1b[32m[a] accept\x1b[0m  \x1b[31m[r] reject\x1b[0m  \x1b[33m[e] edit\x1b[0m  \x1b[36m[t] retry\x1b[0m  \x1b[90m[c] comment\x1b[0m",
       );
       break;
     case "agent_waiting_for_guidance":

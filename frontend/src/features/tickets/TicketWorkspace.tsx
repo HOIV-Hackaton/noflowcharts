@@ -37,7 +37,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { hypotheses, tabs } from "@/data/mockData";
 import { cn } from "@/lib/utils";
 import {
   formatConnection,
@@ -52,6 +51,7 @@ import type {
   CustomerSystem,
   EventType,
   ProposedAction,
+  RelatedTicket,
   RunEvent,
   RunState,
   TabId,
@@ -66,6 +66,15 @@ const TicketTerminal = lazy(() =>
 );
 
 type ConnectionIntent = "analysis" | "autodiagnosis" | "terminal";
+
+const TICKET_TABS: Array<{ id: TabId; label: string }> = [
+  { id: "overview", label: "Overview" },
+  { id: "system", label: "System" },
+  { id: "analysis", label: "Analysis" },
+  { id: "actions", label: "Terminal" },
+  { id: "logs", label: "Logs" },
+  { id: "activity", label: "Activity" },
+];
 
 export function TicketWorkspace(props: {
   activeTab: TabId;
@@ -89,15 +98,18 @@ export function TicketWorkspace(props: {
   onGenerateDraft: () => void;
   onLoadSystem: () => Promise<void> | void;
   onRejectAction: (actionId: string) => void;
+  onReviewDraft: () => void;
   onRetryAction: (actionId: string) => void;
   onRunValidation: () => void;
   onSaferAlternative: (actionId: string) => void;
+  onSaveDraft: () => void;
   onStartAutodiagnosis: () => void;
   onStartAnalysis: () => void;
   onSubmitActivity: () => void;
   onTabChange: (tabId: TabId) => void;
   onUpdateCommand: (actionId: string, command: string) => void;
   pendingActions: ProposedAction[];
+  relatedTicket: RelatedTicket | null;
   autodiagnosisRunning: boolean;
   runState: RunState;
   canStartAutodiagnosis: boolean;
@@ -211,7 +223,7 @@ export function TicketWorkspace(props: {
       <Tabs onValueChange={(value) => props.onTabChange(value as TabId)} value={props.activeTab}>
         <div className="-mx-1 max-w-full overflow-x-auto px-1 pb-1">
           <TabsList className="min-w-max gap-2" variant="line">
-            {tabs.map((tab) => (
+            {TICKET_TABS.map((tab) => (
               <TabsTrigger key={tab.id} value={tab.id}>
                 {tab.label}
                 {tab.id === "actions" && props.pendingActions.length ? (
@@ -258,12 +270,15 @@ export function TicketWorkspace(props: {
         </TabsContent>
         <TabsContent value="analysis">
           <AnalysisTab
+            actions={props.actions}
             analyticsStats={props.analyticsStats}
             analysisReady={props.analysisReady}
             connectionStatus={props.connectionStatus}
             onRequestConnectionApproval={requestConnectionApproval}
             onStartAutodiagnosis={props.onStartAutodiagnosis}
             onStartAnalysis={props.onStartAnalysis}
+            relatedTicket={props.relatedTicket}
+            terminalCommands={props.terminalCommands}
             autodiagnosisRunning={props.autodiagnosisRunning}
             canStartAutodiagnosis={props.canStartAutodiagnosis}
           />
@@ -294,6 +309,8 @@ export function TicketWorkspace(props: {
             notice={props.notice}
             onDraftChange={props.onDraftChange}
             onGenerateDraft={props.onGenerateDraft}
+            onReview={props.onReviewDraft}
+            onSave={props.onSaveDraft}
             onSubmit={props.onSubmitActivity}
             submitStatus={props.submitStatus}
             validation={props.validation}
@@ -353,35 +370,47 @@ function AgentPhaseProgress({
           <StatusLabel label={currentLabel} />
           {autodiagnosisRunning ? <StatusLabel label="autonomous diagnosis running" /> : null}
         </div>
-        <div className="grid w-full grid-cols-2 gap-2 sm:w-auto sm:grid-cols-4">
+        <ol className="flex w-full min-w-0 overflow-x-auto py-1 sm:w-auto sm:min-w-[520px]">
           {AGENT_PHASE_STEPS.map((step, index) => {
             const active = index === activeIndex;
             const completed = activeIndex > index;
+            const reached = active || completed;
 
             return (
-              <div
+              <li
                 aria-current={active ? "step" : undefined}
-                className={cn(
-                  "flex min-h-10 items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors",
-                  active
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : completed
-                      ? "border-primary/50 bg-primary/10 text-foreground"
-                      : "border-border bg-background text-muted-foreground",
-                )}
+                className="min-w-28 flex-1"
                 key={step.phase}
               >
-                <span
-                  className={cn(
-                    "flex size-2.5 shrink-0 rounded-full",
-                    active ? "bg-primary-foreground" : completed ? "bg-primary" : "bg-muted-foreground/40",
-                  )}
-                />
-                <span className="min-w-0 truncate">{step.label}</span>
-              </div>
+                <div className="flex items-center">
+                  <span
+                    className={cn(
+                      "relative z-10 flex size-4 shrink-0 rounded-full border-2 bg-background",
+                      active
+                        ? "border-primary ring-4 ring-primary/20"
+                        : completed
+                          ? "border-primary bg-primary"
+                          : "border-muted-foreground/40",
+                    )}
+                  />
+                  {index < AGENT_PHASE_STEPS.length - 1 ? (
+                    <span
+                      className={cn(
+                        "h-px flex-1",
+                        reached ? "bg-primary/70" : "bg-border",
+                      )}
+                    />
+                  ) : null}
+                </div>
+                <div className="mt-2 pr-3">
+                  <p className={cn("text-sm font-medium", reached ? "text-foreground" : "text-muted-foreground")}>
+                    {step.label}
+                  </p>
+                </div>
+              </li>
             );
           })}
-        </div>
+        </ol>
       </div>
     </div>
   );
@@ -775,6 +804,7 @@ function SystemInfoSkeleton() {
 }
 
 function AnalysisTab({
+  actions,
   analyticsStats,
   analysisReady,
   autodiagnosisRunning,
@@ -783,7 +813,10 @@ function AnalysisTab({
   onRequestConnectionApproval,
   onStartAutodiagnosis,
   onStartAnalysis,
+  relatedTicket,
+  terminalCommands,
 }: {
+  actions: ProposedAction[];
   analyticsStats: DashboardStat[];
   analysisReady: boolean;
   autodiagnosisRunning: boolean;
@@ -792,8 +825,11 @@ function AnalysisTab({
   onRequestConnectionApproval: (intent: ConnectionIntent) => void;
   onStartAutodiagnosis: () => void;
   onStartAnalysis: () => void;
+  relatedTicket: RelatedTicket | null;
+  terminalCommands: TerminalCommandLog[];
 }) {
   const requiresConnection = connectionStatus !== "connected";
+  const evidenceRows = analysisEvidenceRows(actions, terminalCommands, relatedTicket);
 
   return (
     <div className="flex flex-col gap-4">
@@ -831,34 +867,79 @@ function AnalysisTab({
               </>
             )}
           </div>
-          {analysisReady ? (
+          {analysisReady && evidenceRows.length ? (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Hypothesis</TableHead>
+                  <TableHead>Source</TableHead>
                   <TableHead>Evidence</TableHead>
-                  <TableHead>Confidence</TableHead>
+                  <TableHead>Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {hypotheses.map((hypothesis) => (
-                  <TableRow key={hypothesis.id}>
-                    <TableCell className="font-medium">{hypothesis.title}</TableCell>
-                    <TableCell className="whitespace-normal text-muted-foreground">{hypothesis.evidence}</TableCell>
+                {evidenceRows.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell className="font-medium">{row.source}</TableCell>
+                    <TableCell className="whitespace-normal text-muted-foreground">{row.evidence}</TableCell>
                     <TableCell>
-                      <StatusLabel label={hypothesis.confidence} />
+                      <StatusLabel label={row.status} />
                     </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           ) : (
-            <EmptyState title="No analysis yet" detail="Start analysis to queue hypotheses and actions." />
+            <EmptyState
+              title={analysisReady ? "No backend analysis evidence" : "No analysis yet"}
+              detail={
+                analysisReady
+                  ? "Backend actions, terminal commands, or related-ticket context will appear here when available."
+                  : "Start analysis or autonomous diagnosis to collect backend evidence."
+              }
+            />
           )}
         </CardContent>
       </Card>
     </div>
   );
+}
+
+function analysisEvidenceRows(
+  actions: ProposedAction[],
+  terminalCommands: TerminalCommandLog[],
+  relatedTicket: RelatedTicket | null,
+) {
+  const rows: Array<{ evidence: string; id: string; source: string; status: string }> = [];
+
+  if (relatedTicket) {
+    rows.push({
+      evidence: [relatedTicket.rationale, relatedTicket.description].filter(Boolean).join(" ") || relatedTicket.title,
+      id: `related-${relatedTicket.ticketId}`,
+      source: `Related ticket #${relatedTicket.ticketId}`,
+      status: relatedTicket.confidence ?? "related",
+    });
+  }
+
+  for (const action of actions.slice(0, 8)) {
+    rows.push({
+      evidence: action.result ? `${action.purpose} Result: ${action.result}` : `${action.purpose} Command: ${action.command}`,
+      id: `action-${action.id}`,
+      source: action.title,
+      status: action.status,
+    });
+  }
+
+  for (const command of terminalCommands.slice(0, 8)) {
+    const exitCode = command.exitCode === null ? "pending" : `exit ${command.exitCode}`;
+    rows.push({
+      evidence: `${command.command} (${exitCode})`,
+      id: `terminal-${command.id}`,
+      source: `${command.source} terminal command`,
+      status: command.status,
+    });
+  }
+
+  return rows;
 }
 
 function ActionsTab({
@@ -1056,6 +1137,8 @@ function ActivityTab({
   notice,
   onDraftChange,
   onGenerateDraft,
+  onReview,
+  onSave,
   onSubmit,
   submitStatus,
   validation,
@@ -1064,6 +1147,8 @@ function ActivityTab({
   notice: string;
   onDraftChange: (draft: ActivityDraft) => void;
   onGenerateDraft: () => void;
+  onReview: () => void;
+  onSave: () => void;
   onSubmit: () => void;
   submitStatus: "idle" | "submitted";
   validation: ValidationResult;
@@ -1083,6 +1168,12 @@ function ActivityTab({
         <div className="flex flex-wrap gap-2">
           <Button onClick={onGenerateDraft} type="button" variant="outline">
             Generate from audit
+          </Button>
+          <Button onClick={onSave} type="button" variant="outline">
+            Save draft
+          </Button>
+          <Button disabled={!complete || submitStatus === "submitted"} onClick={onReview} type="button" variant="outline">
+            Mark reviewed
           </Button>
           <Button disabled={!complete || submitStatus === "submitted"} onClick={onSubmit} type="button">
             Submit activity

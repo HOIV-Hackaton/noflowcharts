@@ -1,26 +1,24 @@
 import type {
   ActivityDraft,
   EventType,
-  ProposedAction,
   RunEvent,
   RunState,
-  Ticket,
+  ValidationResult,
 } from "../types";
 
-export function createActions(ticket: Ticket): ProposedAction[] {
-  return [
-    {
-      id: `${ticket.id}-diagnostic-service`,
-      type: "diagnostic",
-      title: "Inspect service state",
-      command: "systemctl status customer-app --no-pager",
-      purpose: "Confirm whether the affected service is active and capture safe status output.",
-      risk: "Low",
-      flags: [],
-      status: "pending",
-    },
-  ];
-}
+export const initialValidation: ValidationResult = {
+  status: "not_run",
+  summary: "Not run",
+  evidence: "Run validation after approved diagnostics and fixes complete.",
+};
+
+export const emptyDraft: ActivityDraft = {
+  summary: "",
+  root_cause: "",
+  actions_taken: "",
+  commands_summary: "",
+  validation_result: "",
+};
 
 export function createEvent(type: EventType, title: string, detail: string): RunEvent {
   return {
