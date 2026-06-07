@@ -448,6 +448,26 @@ export const backendApi = {
     return request<BackendMetricsSummaryRead>("/api/metrics/summary");
   },
 
+  getLlmMetrics(params: {
+    inputCostPer1mTokens?: number | null;
+    outputCostPer1mTokens?: number | null;
+    runId?: string | null;
+  } = {}) {
+    const search = new URLSearchParams();
+    if (params.runId) {
+      search.set("run_id", params.runId);
+    }
+    if (typeof params.inputCostPer1mTokens === "number") {
+      search.set("input_cost_per_1m_tokens", String(params.inputCostPer1mTokens));
+    }
+    if (typeof params.outputCostPer1mTokens === "number") {
+      search.set("output_cost_per_1m_tokens", String(params.outputCostPer1mTokens));
+    }
+
+    const query = search.toString();
+    return request<BackendLlmMetricsRead>(`/api/metrics/llm${query ? `?${query}` : ""}`);
+  },
+
   generateActivityDraft(runId: string) {
     return request<BackendActivityDraftRead>(`/api/runs/${runId}/activity/draft`, { method: "POST" });
   },

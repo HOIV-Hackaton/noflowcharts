@@ -115,6 +115,8 @@ def test_reset_me_posts_to_v1_reset_endpoint():
     assert request.url.port == 8000
     assert request.url.path == "/api/v1/me/reset"
     assert request.headers["Authorization"] == "Bearer secret-token"
+    assert request.extensions["timeout"]["connect"] == 60.0
+    assert request.extensions["timeout"]["read"] == 60.0
 
 
 def test_error_statuses_map_to_clean_exceptions_without_token():

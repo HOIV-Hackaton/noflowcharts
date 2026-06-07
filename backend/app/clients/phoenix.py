@@ -12,6 +12,7 @@ from app.schemas.phoenix import Activity, ActivityCreate, Customer, CustomerSyst
 
 TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 PHOENIX_RESET_BASE_URL = "http://68.210.101.85:8000"
+PHOENIX_RESET_TIMEOUT_SECONDS = 60.0
 
 
 class PhoenixClient:
@@ -73,11 +74,24 @@ class PhoenixClient:
     def reset_me(self) -> SimpleMessage:
         return self._validate(
             SimpleMessage,
-            self._request("POST", "/api/v1/me/reset", request_base_url=PHOENIX_RESET_BASE_URL),
+            self._request(
+                "POST",
+                "/api/v1/me/reset",
+                request_base_url=PHOENIX_RESET_BASE_URL,
+                timeout=PHOENIX_RESET_TIMEOUT_SECONDS,
+            ),
             "reset response",
         )
 
-    def _request(self, method: str, path: str, *, request_base_url: str | None = None, **kwargs: Any) -> Any:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        request_base_url: str | None = None,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> Any:
         try:
             if request_base_url is None:
                 self.settings.require_phoenix()
@@ -92,11 +106,12 @@ class PhoenixClient:
         assert base_url is not None
         base_url = base_url.rstrip("/")
         headers = {"Authorization": f"Bearer {self.settings.phoenix_api_token}"}
+        request_timeout = timeout if timeout is not None else self.timeout
         last_error: PhoenixError | None = None
 
         for attempt in range(self.retries + 1):
             try:
-                with httpx.Client(base_url=base_url, timeout=self.timeout, headers=headers, transport=self.transport) as client:
+                with httpx.Client(base_url=base_url, timeout=request_timeout, headers=headers, transport=self.transport) as client:
                     response = client.request(method, path, **kwargs)
                 return self._handle_response(response)
             except (httpx.TimeoutException, httpx.NetworkError) as exc:

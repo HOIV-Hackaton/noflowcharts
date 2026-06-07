@@ -261,6 +261,28 @@ def test_run_manager_requires_approval_before_command_execution():
         assert state.command_results[0].stdout == "active"
 
 
+def test_propose_next_emits_run_status_events_for_frontend_waiting_state():
+    with make_session() as session:
+        manager = make_manager(session)
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+
+        manager.propose_next(run_id)
+
+        status_events = [event for event in manager.events if event[1] == "run_status"]
+        assert status_events[0][2] == {
+            "key": "generating_command",
+            "message": "Agent is generating the next command...",
+            "busy": True,
+            "phase": "diagnosis",
+        }
+        assert status_events[-1][2] == {
+            "key": "awaiting_review",
+            "message": "Command is ready for technician review.",
+            "busy": False,
+        }
+
+
 def test_run_manager_write_proposal_includes_preview_before_approval_without_executing_write():
     with make_session() as session:
         ssh_runner = FakePreviewSshRunner()
@@ -460,14 +482,38 @@ def test_activity_draft_review_submission_sets_ticket_done_and_returns_completio
         phoenix = FakePhoenix()
         manager = make_manager(session, phoenix=phoenix, activity_generator=FakeActivityGenerator())
         run_id = ready_run(manager)
+        manager.events.clear()
 
         draft = manager.generate_activity_draft(run_id)
         reviewed = manager.review_activity_draft(run_id)
         activity = manager.submit_activity(run_id, ActivitySubmitRequest())
         state = manager.state(run_id)
         completion_event = manager.events[-1]
+        draft_status_events = [event for event in manager.events if event[1] == "run_status"]
 
         assert draft.summary == "Restored the status API service."
+        assert draft_status_events[:2] == [
+            (
+                run_id,
+                "run_status",
+                {
+                    "key": "generating_activity",
+                    "message": "Agent is generating the Phoenix activity draft...",
+                    "busy": True,
+                    "phase": "final_analysis",
+                },
+            ),
+            (
+                run_id,
+                "run_status",
+                {
+                    "key": "activity_ready",
+                    "message": "Activity draft is ready for technician review.",
+                    "busy": False,
+                    "phase": "final_analysis",
+                },
+            ),
+        ]
         assert reviewed.review_status == ActivityReviewStatus.REVIEWED
         assert activity.id == 9001
         assert completion_event[1] == "activity_submitted"

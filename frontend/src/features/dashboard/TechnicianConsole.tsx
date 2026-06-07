@@ -31,6 +31,7 @@ import {
   getApiErrorMessage,
   runEventsWebSocketUrl,
   type BackendEmployee,
+  type BackendLlmMetricsRead,
   type BackendMetricsSummaryRead,
   type BackendRunMetricsRead,
   type BackendRunStateRead,
@@ -73,7 +74,7 @@ import { DashboardOverview } from "./DashboardOverview";
 import { TicketWorkspace } from "../tickets/TicketWorkspace";
 
 const RESET_CONFIRMATION_TEXT = "RESET";
-const STORED_RUNS_KEY = "noflowcharts.ticketRuns.v1";
+const DEPRECATED_STORED_RUNS_KEY = "noflowcharts.ticketRuns.v1";
 
 type AppRouteState = {
   tab: TabId;
@@ -119,9 +120,11 @@ export function TechnicianConsole() {
   const [terminalTranscript, setTerminalTranscript] = useState<TerminalTranscriptLine[]>([]);
   const [metricsSummary, setMetricsSummary] = useState<BackendMetricsSummaryRead | null>(null);
   const [runMetrics, setRunMetrics] = useState<BackendRunMetricsRead | null>(null);
+  const [llmMetrics, setLlmMetrics] = useState<BackendLlmMetricsRead | null>(null);
   const [relatedTicket, setRelatedTicket] = useState<RelatedTicket | null>(null);
   const [validation, setValidation] = useState<ValidationResult>(initialValidation);
   const [draft, setDraft] = useState<ActivityDraft>(emptyDraft);
+  const [draftGenerating, setDraftGenerating] = useState(false);
   const [submitStatus, setSubmitStatus] = useState<"idle" | "submitted">("idle");
   const [logFilter, setLogFilter] = useState<"all" | EventType>("all");
   const [notice, setNotice] = useState("");
@@ -129,6 +132,14 @@ export function TechnicianConsole() {
   const [resetConfirmation, setResetConfirmation] = useState("");
   const [resetInFlight, setResetInFlight] = useState(false);
   const runEventCursorRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.removeItem(DEPRECATED_STORED_RUNS_KEY);
+    } catch {
+      return;
+    }
+  }, []);
 
   const selectedTicket = ticketList.find((ticket) => ticket.id === selectedTicketId) ?? null;
   const selectedSystem = selectedTicketId ? systemsByTicket[selectedTicketId] ?? null : null;
@@ -285,7 +296,9 @@ export function TechnicianConsole() {
       ];
     }
 
-    if (!runMetrics) {
+    const activeLlmMetrics = llmMetrics ?? runMetrics?.llm ?? null;
+
+    if (!runMetrics && !activeLlmMetrics) {
       return [
         {
           detail: "Metrics are loaded from the backend run telemetry endpoint.",
@@ -296,33 +309,43 @@ export function TechnicianConsole() {
       ];
     }
 
-    return [
-      {
-        detail: `${runMetrics.llm.tokens.prompt_tokens} input / ${runMetrics.llm.tokens.completion_tokens} output`,
-        label: "LLM tokens",
-        tone: runMetrics.llm.error_count ? "warning" : "default",
-        value: runMetrics.llm.tokens.total_tokens,
-      },
-      {
-        detail: `${runMetrics.llm.request_count} LLM requests, ${runMetrics.llm.error_count} errors`,
-        label: "LLM latency",
-        tone: runMetrics.llm.error_count ? "warning" : "default",
-        value: formatMs(runMetrics.llm.latency.average_ms),
-      },
-      {
-        detail: `${runMetrics.successful_command_count} successful / ${runMetrics.failed_command_count} failed`,
-        label: "Command latency",
-        tone: runMetrics.failed_command_count ? "warning" : "success",
-        value: formatMs(runMetrics.command_latency.average_ms),
-      },
-      {
-        detail: `${runMetrics.action_count} actions, ${runMetrics.command_result_count} stored command results`,
-        label: "Audit events",
-        tone: "default",
-        value: runMetrics.audit_event_count,
-      },
+    const stats: Array<DashboardStat | null> = [
+      activeLlmMetrics
+        ? {
+            detail: `${activeLlmMetrics.tokens.prompt_tokens} input / ${activeLlmMetrics.tokens.completion_tokens} output`,
+            label: "LLM tokens",
+            tone: activeLlmMetrics.error_count ? "warning" : "default",
+            value: activeLlmMetrics.tokens.total_tokens,
+          }
+        : null,
+      activeLlmMetrics
+        ? {
+            detail: `${activeLlmMetrics.request_count} LLM requests, ${activeLlmMetrics.error_count} errors`,
+            label: "LLM latency",
+            tone: activeLlmMetrics.error_count ? "warning" : "default",
+            value: formatMs(activeLlmMetrics.latency.average_ms),
+          }
+        : null,
+      runMetrics
+        ? {
+            detail: `${runMetrics.successful_command_count} successful / ${runMetrics.failed_command_count} failed`,
+            label: "Command latency",
+            tone: runMetrics.failed_command_count ? "warning" : "success",
+            value: formatMs(runMetrics.command_latency.average_ms),
+          }
+        : null,
+      runMetrics
+        ? {
+            detail: `${runMetrics.action_count} actions, ${runMetrics.command_result_count} stored command results`,
+            label: "Audit events",
+            tone: "default",
+            value: runMetrics.audit_event_count,
+          }
+        : null,
     ];
-  }, [backendRunId, runMetrics]);
+
+    return stats.filter((stat): stat is DashboardStat => stat !== null);
+  }, [backendRunId, llmMetrics, runMetrics]);
 
   const dismissNotice = useCallback(() => setNotice(""), []);
 
@@ -359,24 +382,25 @@ export function TechnicianConsole() {
   }, [assignedTechnicianName, backendReady, selectedTicketId]);
 
   const resetTicketWorkspace = useCallback((ticketId: number, tab: TabId = "overview") => {
-    const storedRunId = readStoredRunId(ticketId);
     setSelectedTicketId(ticketId);
-    setBackendRunId(storedRunId);
+    setBackendRunId(null);
     setActiveTab(tab);
     setSystemLoaded(false);
     setSystemLoading(false);
-    setConnectionStatus(storedRunId ? "connected" : "not_requested");
+    setConnectionStatus("not_requested");
     setRunState("idle");
     setAgentPhase(null);
-    setAnalysisReady(Boolean(storedRunId));
+    setAnalysisReady(false);
     setActions([]);
     setEvents([createEvent("approval", "Ticket opened", `Ticket ${ticketId} opened.`)]);
     setTerminalCommands([]);
     setTerminalTranscript([]);
     setRunMetrics(null);
+    setLlmMetrics(null);
     setRelatedTicket(null);
     setValidation(initialValidation);
     setDraft(emptyDraft);
+    setDraftGenerating(false);
     setSubmitStatus("idle");
     setNotice("");
   }, []);
@@ -445,58 +469,25 @@ export function TechnicianConsole() {
   }, []);
 
   const refreshRunMetrics = useCallback(async (runId: string) => {
-    try {
-      setRunMetrics(await backendApi.getRunMetrics(runId));
-    } catch (error) {
-      setNotice(`Run metrics failed to load. ${getApiErrorMessage(error)}`);
+    const [runMetricsResult, llmMetricsResult] = await Promise.allSettled([
+      backendApi.getRunMetrics(runId),
+      backendApi.getLlmMetrics({ runId }),
+    ]);
+
+    if (runMetricsResult.status === "fulfilled") {
+      setRunMetrics(runMetricsResult.value);
+    } else {
+      setRunMetrics(null);
+      setNotice(`Run metrics failed to load. ${getApiErrorMessage(runMetricsResult.reason)}`);
+    }
+
+    if (llmMetricsResult.status === "fulfilled") {
+      setLlmMetrics(llmMetricsResult.value);
+    } else {
+      setLlmMetrics(null);
+      setNotice(`LLM metrics failed to load. ${getApiErrorMessage(llmMetricsResult.reason)}`);
     }
   }, []);
-
-  useEffect(() => {
-    if (!backendReady || !selectedTicketId || !backendRunId) {
-      return;
-    }
-
-    const ticketId = selectedTicketId;
-    const runId = backendRunId;
-    let cancelled = false;
-
-    async function restoreRun() {
-      try {
-        const state = await backendApi.getRun(runId);
-        if (cancelled) {
-          return;
-        }
-
-        if (state.run.ticket_id !== ticketId) {
-          removeStoredRunId(ticketId);
-          setBackendRunId(null);
-          setConnectionStatus("not_requested");
-          return;
-        }
-
-        setConnectionStatus(state.run.ssh_confirmed ? "connected" : "awaiting_approval");
-        setSystemLoaded(state.run.ssh_confirmed);
-        setAnalysisReady(true);
-        syncRunState(state);
-        await refreshAuditEvents(runId);
-        await refreshRunMetrics(runId);
-      } catch (error) {
-        if (!cancelled) {
-          removeStoredRunId(ticketId);
-          setBackendRunId(null);
-          setConnectionStatus("not_requested");
-          setNotice(`Stored backend run could not be restored. ${getApiErrorMessage(error)}`);
-        }
-      }
-    }
-
-    void restoreRun();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [backendReady, backendRunId, refreshAuditEvents, refreshRunMetrics, selectedTicketId, syncRunState]);
 
   const setTicketTab = useCallback((tab: TabId) => {
     setActiveTab(tab);
@@ -571,6 +562,7 @@ export function TechnicianConsole() {
   useEffect(() => {
     if (!backendReady || !backendRunId) {
       setRunMetrics(null);
+      setLlmMetrics(null);
       return;
     }
 
@@ -692,7 +684,6 @@ export function TechnicianConsole() {
       const confirmedState = await backendApi.confirmSsh(runState.run.id);
 
       setBackendRunId(confirmedState.run.id);
-      storeRunId(selectedTicket.id, confirmedState.run.id);
       setConnectionStatus("connected");
       updateTicketStatus(selectedTicket.id, "PENDING");
       syncRunState(confirmedState);
@@ -816,13 +807,10 @@ export function TechnicianConsole() {
   };
 
   const handleTerminalConnectionError = useCallback((message: string) => {
-    if (selectedTicketId) {
-      removeStoredRunId(selectedTicketId);
-    }
     if (message.startsWith("SSH terminal failed:")) {
-      setNotice("Terminal SSH connection failed. Refresh will not reuse this run automatically.");
+      setNotice("Terminal SSH connection failed.");
     }
-  }, [selectedTicketId]);
+  }, []);
 
   const approveAction = async (actionId: string) => {
     const action = actions.find((candidate) => candidate.id === actionId);
@@ -970,11 +958,12 @@ export function TechnicianConsole() {
     try {
       const state = await backendApi.abortRun(backendRunId);
       syncRunState(state);
-      removeStoredRunId(selectedTicket.id);
       await refreshAuditEvents(backendRunId);
       await refreshRunMetrics(backendRunId);
-      setConnectionStatus((current) => (current === "connected" ? "disconnected" : current));
+      setBackendRunId(null);
+      setConnectionStatus("disconnected");
       appendEvent("error", "Run aborted", "Technician stopped the backend run.");
+      window.location.reload();
       return;
     } catch (error) {
       setNotice(`Abort failed. ${getApiErrorMessage(error)}`);
@@ -1035,6 +1024,8 @@ export function TechnicianConsole() {
       return;
     }
 
+    setDraftGenerating(true);
+
     try {
       const draftResponse = await backendApi.generateActivityDraft(backendRunId);
       setDraft(mapActivityDraft(draftResponse));
@@ -1048,6 +1039,8 @@ export function TechnicianConsole() {
       setNotice(`Activity draft generation failed. ${getApiErrorMessage(error)}`);
       appendEvent("error", "Activity draft blocked", "Backend did not generate a draft.");
       return;
+    } finally {
+      setDraftGenerating(false);
     }
   };
 
@@ -1139,7 +1132,6 @@ export function TechnicianConsole() {
       syncRunState(state);
       if (ticketId) {
         updateTicketStatus(ticketId, "DONE");
-        removeStoredRunId(ticketId);
       }
       setSubmitStatus("submitted");
       setAgentPhase("final_analysis");
@@ -1231,7 +1223,6 @@ export function TechnicianConsole() {
       setLastTicketFetchAt(new Date().toISOString());
       setSelectedTicketId(null);
       setBackendRunId(null);
-      clearStoredRunIds();
       setActiveTab("overview");
       setSystemLoaded(false);
       setSystemLoading(false);
@@ -1244,9 +1235,11 @@ export function TechnicianConsole() {
       setTerminalCommands([]);
       setTerminalTranscript([]);
       setRunMetrics(null);
+      setLlmMetrics(null);
       setRelatedTicket(null);
       setValidation(initialValidation);
       setDraft(emptyDraft);
+      setDraftGenerating(false);
       setSubmitStatus("idle");
       setNotice(response.message || "VM reset requested.");
       setResetDialogOpen(false);
@@ -1382,9 +1375,11 @@ export function TechnicianConsole() {
               analysisReady={analysisReady}
               connectionStatus={connectionStatus}
               draft={draft}
+              draftGenerating={draftGenerating}
               events={filteredEvents}
               executedActions={executedActions}
               logFilter={logFilter}
+              llmMetrics={llmMetrics}
               notice={notice}
               onAbort={abortRun}
               onApproveAction={approveAction}
@@ -1724,6 +1719,16 @@ function runWebSocketEventDetail(event: BackendRunWebSocketEvent, phase: AgentPh
     return `Agent searched "${query}" and found ${count} snippet${count === 1 ? "" : "s"}. Top match: ${ticket} ${chunkType}${score}.`;
   }
 
+  if (event.type === "activity_submitted") {
+    return typeof event.payload.message === "string"
+      ? event.payload.message
+      : "Activity submitted to Phoenix and ticket status set to DONE.";
+  }
+
+  if (event.type === "ticket_done") {
+    return "Ticket status set to DONE.";
+  }
+
   return JSON.stringify(event.payload);
 }
 
@@ -1803,55 +1808,6 @@ function isTerminalValidationCommand(command: string, output: string) {
       "service is healthy",
     ].some((term) => outputText.includes(term))
   );
-}
-
-function readStoredRunId(ticketId: number) {
-  try {
-    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
-    if (!raw) {
-      return null;
-    }
-
-    const stored = JSON.parse(raw) as Record<string, unknown>;
-    const value = stored[String(ticketId)];
-    return typeof value === "string" && value ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function storeRunId(ticketId: number, runId: string) {
-  try {
-    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
-    const stored = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    stored[String(ticketId)] = runId;
-    window.localStorage.setItem(STORED_RUNS_KEY, JSON.stringify(stored));
-  } catch {
-    return;
-  }
-}
-
-function removeStoredRunId(ticketId: number) {
-  try {
-    const raw = window.localStorage.getItem(STORED_RUNS_KEY);
-    if (!raw) {
-      return;
-    }
-
-    const stored = JSON.parse(raw) as Record<string, unknown>;
-    delete stored[String(ticketId)];
-    window.localStorage.setItem(STORED_RUNS_KEY, JSON.stringify(stored));
-  } catch {
-    return;
-  }
-}
-
-function clearStoredRunIds() {
-  try {
-    window.localStorage.removeItem(STORED_RUNS_KEY);
-  } catch {
-    return;
-  }
 }
 
 function upsertTicket(tickets: Ticket[], ticket: Ticket) {

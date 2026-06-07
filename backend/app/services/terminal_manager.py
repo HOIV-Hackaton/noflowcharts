@@ -88,6 +88,8 @@ class TerminalManager:
         runtime.subscribers.discard(queue)
         runtime.last_activity = monotonic_seconds()
         self._audit(runtime.run_id, "terminal_disconnected", {"terminal_session_id": runtime.db_session_id})
+        if not runtime.subscribers:
+            self.close_run_sync(runtime.run_id, "terminal_disconnected")
 
     async def handle_message(self, runtime: TerminalRuntime, message: dict[str, Any]) -> None:
         runtime.last_activity = monotonic_seconds()
@@ -293,6 +295,7 @@ class TerminalManager:
         context = self._context(runtime.run_id)
         selected_phase = _workflow_phase(forced_phase or runtime.agent_workflow_phase)
         runtime.agent_workflow_phase = selected_phase
+        self._status(runtime.run_id, "generating_command", "Agent is generating the next terminal command...", phase=selected_phase)
         proposal = await asyncio.to_thread(
             self._propose_for_phase,
             planner,
@@ -329,8 +332,10 @@ class TerminalManager:
         self._audit(runtime.run_id, "agent_command_proposed", {"command_id": terminal_command.id, "command": command, "original_command": proposal.command, "intent": proposal.intent, "phase": phase})
         if safety.decision == "block":
             self._audit(runtime.run_id, "agent_command_blocked", {"command_id": terminal_command.id, "reason": safety.reason})
+            self._status(runtime.run_id, "blocked", "Agent command was blocked by the safety layer.", phase=phase, busy=False)
             await self._broadcast(runtime, {"type": "command_blocked", "command_id": terminal_command.id, "reason": safety.reason})
         else:
+            self._status(runtime.run_id, "awaiting_review", "Agent command is ready for technician review.", phase=phase, busy=False)
             await self._broadcast(
                 runtime,
                 {
@@ -410,6 +415,7 @@ class TerminalManager:
             runtime.waiting_after_rejection = False
             message = redact_text(str(exc), get_settings().configured_secrets())
             self._audit(runtime.run_id, "agent_proposal_failed", {"error": message})
+            self._status(runtime.run_id, "proposal_failed", "Agent could not propose the next command.", busy=False)
             await self._broadcast(runtime, {"type": "error", "message": f"Agent could not propose the next command: {message}"})
 
     async def _agent_is_waiting_on_existing_work(self, runtime: TerminalRuntime) -> bool:
@@ -493,6 +499,7 @@ class TerminalManager:
         )
         event_prefix = "agent" if source == TerminalCommandSource.AGENT else "manual"
         self._audit(runtime.run_id, f"{event_prefix}_command_running", {"command_id": command_id, "command": command})
+        self._status(runtime.run_id, "running_command", "Approved terminal command is running...", phase=runtime.current_agent_phase if source == TerminalCommandSource.AGENT else None)
         await self._broadcast(runtime, {"type": "command_running", "command_id": command_id})
         runtime.input_buffer = ""
         wrapped = _wrap_command_for_pty(command, command_id)
@@ -553,6 +560,7 @@ class TerminalManager:
                 source = TerminalCommandSource(terminal_command.source)
             event_prefix = "agent" if source == TerminalCommandSource.AGENT else "manual"
             self._audit(runtime.run_id, f"{event_prefix}_command_completed", {"command_id": command_id, "exit_code": exit_code})
+            self._status(runtime.run_id, "command_result", "Terminal command finished and output was captured.", phase=pending.phase, busy=False)
             await self._broadcast(runtime, {"type": "command_completed", "command_id": command_id, "exit_code": exit_code})
             if validation_evidence_collected:
                 runtime.agent_active = False
@@ -576,6 +584,7 @@ class TerminalManager:
                 runtime.agent_workflow_phase = next_phase
                 self._audit(runtime.run_id, "agent_continuing", {"after_command_id": command_id, "next_phase": next_phase})
                 message = "Agent is preparing validation evidence..." if next_phase == "verification" else "Agent is preparing the next action..."
+                self._status(runtime.run_id, "generating_command", message, phase=next_phase)
                 await self._broadcast(runtime, {"type": "status", "message": message})
                 await self._safe_propose_agent(runtime, forced_phase=next_phase)
 
@@ -609,6 +618,7 @@ class TerminalManager:
                 source = TerminalCommandSource(terminal_command.source)
             event_prefix = "agent" if source == TerminalCommandSource.AGENT else "manual"
             self._audit(runtime.run_id, f"{event_prefix}_command_timed_out", {"command_id": pending.command_id, "timeout_seconds": self.command_timeout_seconds})
+            self._status(runtime.run_id, "command_timeout", "Terminal command timed out and was interrupted.", phase=pending.phase, busy=False)
             await self._broadcast(runtime, {"type": "command_completed", "command_id": pending.command_id, "exit_code": 124})
             if source == TerminalCommandSource.AGENT and runtime.agent_active and not runtime.waiting_after_rejection:
                 runtime.agent_workflow_phase = "diagnosis"
@@ -708,6 +718,12 @@ class TerminalManager:
         with Session(engine) as session:
             AuditLog(session).record(event_type, payload, run_id)
         persist_and_publish_ws_event_sync(run_id, event_type, payload)
+
+    def _status(self, run_id: str, key: str, message: str, phase: str | None = None, busy: bool = True) -> None:
+        payload: dict[str, Any] = {"key": key, "message": message, "busy": busy}
+        if phase is not None:
+            payload["phase"] = phase
+        persist_and_publish_ws_event_sync(run_id, "run_status", payload)
 
 
 terminal_manager = TerminalManager()
