@@ -3,12 +3,7 @@ from fastapi import APIRouter, Depends
 from app.api.dependencies import get_run_manager
 from app.core.errors import AppError, ValidationError, to_http_exception
 from app.schemas.phoenix import Activity, StatusUpdate, Ticket, TicketStatus
-from app.schemas.runs import (
-    ActivityDraftRead,
-    ActivityDraftUpdate,
-    ActivityReviewRequest,
-    ActivitySubmitRequest,
-)
+from app.schemas.runs import ActivityDraftRead, ActivityDraftUpdate, ActivityReviewRequest, ActivitySubmitRequest
 from app.services.run_manager import RunManager
 
 
@@ -40,11 +35,7 @@ def review_activity_draft(run_id: str, request: ActivityReviewRequest, manager: 
 
 
 @router.post("/api/runs/{run_id}/activity/submit", response_model=Activity)
-def submit_activity(
-    run_id: str,
-    request: ActivitySubmitRequest,
-    manager: RunManager = Depends(get_run_manager),
-) -> Activity:
+def submit_activity(run_id: str, request: ActivitySubmitRequest, manager: RunManager = Depends(get_run_manager)) -> Activity:
     try:
         return manager.submit_activity(run_id, request)
     except AppError as exc:
@@ -55,7 +46,7 @@ def submit_activity(
 def set_ticket_status(ticket_id: int, request: StatusUpdate, manager: RunManager = Depends(get_run_manager)) -> Ticket:
     try:
         if request.status == TicketStatus.DONE:
-            raise ValidationError("Ticket status DONE is not set automatically by this backend")
+            raise ValidationError("Ticket status DONE can only be set after successful activity submission")
         return manager.phoenix.set_ticket_status(ticket_id, request.status)
     except AppError as exc:
         raise to_http_exception(exc) from exc

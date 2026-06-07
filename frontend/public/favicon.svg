@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">techbold</title>
+  <rect width="64" height="64" rx="14" fill="#263053"/>
+  <text x="5" y="36" fill="#ffffff" font-family="Georgia, 'Times New Roman', serif" font-size="19" font-style="italic" font-weight="700" letter-spacing="-1.4">tech</text>
+  <text x="36" y="36" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="900" letter-spacing="-1.4">bold</text>
+</svg>

@@ -96,6 +96,13 @@ class FailingActivityPhoenix(FakePhoenix):
         raise PhoenixError("activity failed")
 
 
+class FailingDonePhoenix(FakePhoenix):
+    def set_ticket_status(self, ticket_id, status):
+        if status == TicketStatus.DONE:
+            raise PhoenixError("done failed")
+        return super().set_ticket_status(ticket_id, status)
+
+
 class FakePlanner:
     def __init__(self, command="systemctl status nginx"):
         self.command = command
@@ -158,6 +165,14 @@ class FakeSshRunner:
     def run(self, system, command):
         self.commands.append((system.ip, command))
         return SshCommandResult(command=command, exit_code=0, stdout="active", stderr="", timed_out=False)
+
+
+class FakePreviewSshRunner(FakeSshRunner):
+    def run(self, system, command):
+        self.commands.append((system.ip, command))
+        if command.startswith("cat --") or command.startswith("sudo -n cat --"):
+            return SshCommandResult(command=command, exit_code=0, stdout="PORT=8080\n", stderr="", timed_out=False)
+        return SshCommandResult(command=command, exit_code=0, stdout="changed", stderr="", timed_out=False)
 
 
 class FakeActivityGenerator:
@@ -243,6 +258,22 @@ def test_run_manager_requires_approval_before_command_execution():
 
         assert ssh_runner.commands == [("10.0.0.5", "systemctl status nginx")]
         assert state.command_results[0].stdout == "active"
+
+
+def test_run_manager_write_proposal_includes_preview_before_approval_without_executing_write():
+    with make_session() as session:
+        ssh_runner = FakePreviewSshRunner()
+        manager = make_manager(session, planner=FakePlanner("echo 'PORT=9090' > /etc/app.conf"), ssh_runner=ssh_runner)
+        run_id = manager.start_run(7001).run.id
+        manager.confirm_ssh(run_id)
+
+        state = manager.propose_next(run_id)
+
+        assert state.current_action.write_preview["status"] == "available"
+        assert state.current_action.write_preview["target_path"] == "/etc/app.conf"
+        assert "-PORT=8080" in state.current_action.write_preview["diff"]
+        assert "+PORT=9090" in state.current_action.write_preview["diff"]
+        assert ssh_runner.commands == [("10.0.0.5", "cat -- /etc/app.conf")]
 
 
 def test_run_manager_routes_successful_fix_to_verification_agent():
@@ -379,7 +410,7 @@ def test_activity_submission_requires_validation_review_and_complete_draft():
             manager.submit_activity(run_id, ActivitySubmitRequest())
 
 
-def test_activity_draft_review_submission_returns_backend_completion_message_without_done_status():
+def test_activity_draft_review_submission_sets_ticket_done_and_returns_completion_message():
     with make_session() as session:
         phoenix = FakePhoenix()
         manager = make_manager(session, phoenix=phoenix, activity_generator=FakeActivityGenerator())
@@ -396,9 +427,10 @@ def test_activity_draft_review_submission_returns_backend_completion_message_wit
         assert activity.id == 9001
         assert completion_event[1] == "activity_submitted"
         assert "TICKET COMPLETE" in completion_event[2]["ascii_art"]
-        assert "not changed to DONE" in completion_event[2]["message"]
+        assert "set to DONE" in completion_event[2]["message"]
+        assert completion_event[2]["status"] == TicketStatus.DONE.value
         assert phoenix.activities[0].root_cause == "nginx was inactive, so the API proxy was unavailable."
-        assert (7001, TicketStatus.DONE) not in phoenix.status_updates
+        assert phoenix.status_updates[-1] == (7001, TicketStatus.DONE)
         assert state.run.status == RunStatus.SUBMITTED
         assert state.activity_draft.review_status == ActivityReviewStatus.SUBMITTED
 
@@ -594,7 +626,7 @@ def test_start_run_continues_when_related_ticket_lookup_fails():
         assert state.related_ticket is None
 
 
-def test_activity_submission_creates_completed_memory_after_activity_submission():
+def test_activity_submission_creates_completed_memory_after_done_status():
     with make_session() as session:
         memory = FakeTicketMemoryService()
         manager = make_manager(session, activity_generator=FakeActivityGenerator(), ticket_memory_service=memory)
@@ -609,6 +641,20 @@ def test_activity_submission_creates_completed_memory_after_activity_submission(
         assert ticket["id"] == 7001
         assert draft.root_cause == "nginx was inactive, so the API proxy was unavailable."
         assert "curl -fsS http://localhost/health" in commands
+
+
+def test_activity_submission_does_not_create_memory_when_done_status_fails():
+    with make_session() as session:
+        memory = FakeTicketMemoryService()
+        manager = make_manager(session, phoenix=FailingDonePhoenix(), activity_generator=FakeActivityGenerator(), ticket_memory_service=memory)
+        run_id = ready_run(manager)
+        manager.generate_activity_draft(run_id)
+        manager.review_activity_draft(run_id)
+
+        with pytest.raises(PhoenixError):
+            manager.submit_activity(run_id, ActivitySubmitRequest())
+
+        assert memory.created == []
 
 
 def test_activity_submission_continues_when_completed_memory_creation_fails():

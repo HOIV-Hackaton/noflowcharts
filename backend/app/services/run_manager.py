@@ -35,6 +35,7 @@ from app.services.safety import classify_command
 from app.services.ssh_runner import SshRunner
 from app.services.ticket_memory import RelatedTicketContext, TicketMemoryService
 from app.services.terminal_manager import terminal_manager
+from app.services.write_preview import WritePreviewer
 
 
 RISK_CONFIRMATION_PREFIX = "RUN "
@@ -49,7 +50,7 @@ TICKET COMPLETE
 """.strip("\n")
 
 ACTIVITY_SUBMITTED_MESSAGE = (
-    "Activity submitted to Phoenix. Ticket status was not changed to DONE automatically."
+    "Activity submitted to Phoenix and ticket status set to DONE."
 )
 
 
@@ -63,6 +64,7 @@ class RunManager:
         diagnostic_toolbox: DiagnosticToolbox | None = None,
         activity_generator: ActivityGenerator | None = None,
         ticket_memory_service: TicketMemoryService | None = None,
+        write_previewer: WritePreviewer | None = None,
     ):
         self.session = session
         self.repo = RunRepository(session)
@@ -73,6 +75,7 @@ class RunManager:
         self.diagnostic_toolbox = diagnostic_toolbox or DiagnosticToolbox(self.ssh_runner)
         self.activity_generator = activity_generator
         self.ticket_memory_service = ticket_memory_service
+        self.write_previewer = write_previewer
 
     def start_run(self, ticket_id: int) -> RunStateRead:
         ticket = self.phoenix.get_ticket(ticket_id)
@@ -112,6 +115,7 @@ class RunManager:
             proposal = self._propose_for_phase(planner, phase, snapshot, observations, run.id)
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
+        write_preview = self._write_preview(run, proposal.command, safety)
         action = self.repo.add_action(
             run,
             command=proposal.command,
@@ -119,6 +123,7 @@ class RunManager:
             intent=proposal.intent,
             risk_reason=safety.reason,
             expected_signal=proposal.expected_signal,
+            write_preview=write_preview,
             typed_confirmation_status=typed_status,
         )
         self.audit.record("command_classified", {"command": proposal.command, "classification": safety.classification.value, "reason": safety.reason}, run.id)
@@ -128,7 +133,7 @@ class RunManager:
             self._event(run.id, "command_blocked", {"action_id": action.id, "reason": safety.reason})
         else:
             self.audit.record("command_proposed", {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
-            self._event(run.id, "command_proposed", {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value})
+            self._event(run.id, "command_proposed", {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value, "write_preview": write_preview})
         return self.state(run.id)
 
     def _propose_for_phase(self, planner: Planner, phase: str, snapshot: dict[str, Any], observations: list[dict[str, Any]], run_id: str) -> CommandProposal:
@@ -288,6 +293,7 @@ class RunManager:
         )
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
+        write_preview = self._write_preview(run, proposal.command, safety)
         action = self.repo.add_action(
             run,
             command=proposal.command,
@@ -295,6 +301,7 @@ class RunManager:
             intent=proposal.intent,
             risk_reason=safety.reason,
             expected_signal=proposal.expected_signal,
+            write_preview=write_preview,
             typed_confirmation_status=typed_status,
         )
         self.audit.record(
@@ -309,7 +316,7 @@ class RunManager:
             self._event(run.id, "command_blocked", {"action_id": action.id, "reason": safety.reason})
         else:
             self.audit.record("safer_alternative_proposed", {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
-            self._event(run.id, "safer_alternative_proposed", {"action_id": action.id, "classification": safety.classification.value})
+            self._event(run.id, "safer_alternative_proposed", {"action_id": action.id, "classification": safety.classification.value, "write_preview": write_preview})
         return self.state(run.id)
 
     def confirm_risk(self, run_id: str, confirmation_text: str, action_id: int | None = None) -> RunStateRead:
@@ -395,12 +402,13 @@ class RunManager:
         action = self._action(run, action_id)
         safety = classify_command(command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
-        self.repo.update_action_command(action, command, safety.classification, safety.reason, typed_status, intent=intent)
+        write_preview = self._write_preview(run, command, safety)
+        self.repo.update_action_command(action, command, safety.classification, safety.reason, typed_status, intent=intent, write_preview=write_preview)
         self.audit.record("edited_command", {"action_id": action.id, "command": command}, run.id)
         if safety.blocked:
             self.repo.update_action_status(action, ActionStatus.BLOCKED)
             self.audit.record("blocked_command", {"action_id": action.id, "command": command, "reason": safety.reason}, run.id)
-        self._event(run.id, "command_edited", {"action_id": action.id, "classification": safety.classification.value, "blocked": safety.blocked})
+        self._event(run.id, "command_edited", {"action_id": action.id, "classification": safety.classification.value, "blocked": safety.blocked, "write_preview": write_preview})
         return self.state(run.id)
 
     def retry(self, run_id: str, action_id: int | None = None) -> RunStateRead:
@@ -408,9 +416,19 @@ class RunManager:
         previous = self._action(run, action_id)
         safety = classify_command(previous.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
-        action = self.repo.add_action(run, previous.command, safety.classification, previous.intent, safety.reason, previous.expected_signal, typed_status)
+        write_preview = self._write_preview(run, previous.command, safety)
+        action = self.repo.add_action(
+            run,
+            previous.command,
+            safety.classification,
+            previous.intent,
+            safety.reason,
+            previous.expected_signal,
+            write_preview=write_preview,
+            typed_confirmation_status=typed_status,
+        )
         self.audit.record("retry", {"previous_action_id": previous.id, "action_id": action.id, "command": action.command}, run.id)
-        self._event(run.id, "command_retry_proposed", {"action_id": action.id})
+        self._event(run.id, "command_retry_proposed", {"action_id": action.id, "write_preview": write_preview})
         return self.state(run.id)
 
     def confirm_validation(self, run_id: str, evidence: str) -> RunStateRead:
@@ -510,9 +528,13 @@ class RunManager:
         created = self.phoenix.create_activity(activity)
         self.repo.set_activity_review_status(draft, ActivityReviewStatus.SUBMITTED)
         self.repo.update_run_status(run, RunStatus.SUBMITTED)
+        self.phoenix.set_ticket_status(run.ticket_id, TicketStatus.DONE)
+        self.audit.record("ticket_set_done", {"ticket_id": run.ticket_id}, run.id)
+        self._event(run.id, "ticket_done", {"ticket_id": run.ticket_id, "status": TicketStatus.DONE.value})
         completion_payload = {
             "activity_id": created.id,
             "ticket_id": run.ticket_id,
+            "status": TicketStatus.DONE.value,
             "message": ACTIVITY_SUBMITTED_MESSAGE,
             "ascii_art": TICKET_COMPLETED_ASCII,
         }
@@ -609,6 +631,7 @@ class RunManager:
     def _add_proposed_action(self, run: Run, proposal: CommandProposal, event_type: str = "command_proposed") -> Action:
         safety = classify_command(proposal.command)
         typed_status = ConfirmationStatus.PENDING if safety.requires_typed_confirmation else ConfirmationStatus.NOT_REQUIRED
+        write_preview = self._write_preview(run, proposal.command, safety)
         action = self.repo.add_action(
             run,
             command=proposal.command,
@@ -616,6 +639,7 @@ class RunManager:
             intent=proposal.intent,
             risk_reason=safety.reason,
             expected_signal=proposal.expected_signal,
+            write_preview=write_preview,
             typed_confirmation_status=typed_status,
         )
         self.audit.record("command_classified", {"command": proposal.command, "classification": safety.classification.value, "reason": safety.reason}, run.id)
@@ -625,8 +649,14 @@ class RunManager:
             self._event(run.id, "command_blocked", {"action_id": action.id, "reason": safety.reason})
         else:
             self.audit.record(event_type, {"action_id": action.id, "command": proposal.command, "intent": proposal.intent}, run.id)
-            self._event(run.id, event_type, {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value})
+            self._event(run.id, event_type, {"action_id": action.id, "command": proposal.command, "classification": safety.classification.value, "write_preview": write_preview})
         return action
+
+    def _write_preview(self, run: Run, command: str, safety) -> dict[str, Any] | None:
+        if safety.blocked:
+            return None
+        previewer = self.write_previewer or WritePreviewer(self.ssh_runner, self.repo.secrets)
+        return previewer.preview(self._customer_system(run).system, command)
 
     def _is_concrete_validation_evidence(self, evidence: str) -> bool:
         text = evidence.strip().lower()
@@ -815,6 +845,7 @@ class RunManager:
                 "intent": action.intent,
                 "risk_reason": action.risk_reason,
                 "expected_signal": action.expected_signal,
+                "write_preview": action.write_preview,
             }
         )
 
@@ -842,6 +873,7 @@ class RunManager:
                 "edited_to": command.edited_to,
                 "classification": command.classification,
                 "risk_reason": command.risk_reason,
+                "write_preview": command.write_preview,
                 "exit_code": command.exit_code,
                 "output": command.output,
             }

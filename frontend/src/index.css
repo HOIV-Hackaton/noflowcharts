@@ -1,3 +1,235 @@
-/* Minimal reset — style the app however you like. */
-* { box-sizing: border-box; }
-body { margin: 0; background: #fff; color: #1d1d1f; }
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Geist Variable", Inter, system-ui, -apple-system, sans-serif;
+  --font-heading: "Geist Variable", Inter, system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  --color-background: #09090b;
+  --color-foreground: #fafafa;
+  --color-card: #111113;
+  --color-card-foreground: #f4f4f5;
+  --color-popover: #111113;
+  --color-popover-foreground: #f4f4f5;
+  --color-primary: #fafafa;
+  --color-primary-foreground: #09090b;
+  --color-secondary: #27272a;
+  --color-secondary-foreground: #f4f4f5;
+  --color-muted: #18181b;
+  --color-muted-foreground: #a1a1aa;
+  --color-accent: #27272a;
+  --color-accent-foreground: #fafafa;
+  --color-destructive: #f87171;
+  --color-border: #27272a;
+  --color-input: #3f3f46;
+  --color-ring: #a1a1aa;
+  --color-sidebar: #0c0c0f;
+  --color-sidebar-foreground: #f4f4f5;
+  --color-sidebar-accent: #27272a;
+  --color-sidebar-accent-foreground: #fafafa;
+  --color-sidebar-border: #27272a;
+  --color-sidebar-ring: #a1a1aa;
+}
+
+:root {
+  color-scheme: dark;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.75rem;
+  --sidebar-border: var(--color-sidebar-border);
+  --sidebar-accent: var(--color-sidebar-accent);
+}
+
+@layer base {
+  * {
+    @apply box-border border-border outline-ring/50;
+  }
+
+  html {
+    min-width: 320px;
+    @apply bg-background font-sans text-foreground;
+  }
+
+  body {
+    @apply m-0 min-h-svh bg-background text-sm font-normal text-foreground antialiased;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    color: inherit;
+    font: inherit;
+  }
+
+  button {
+    @apply cursor-pointer;
+  }
+
+  button:disabled,
+  textarea:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+
+  h1,
+  h2,
+  h3,
+  p {
+    @apply m-0;
+  }
+
+  code,
+  pre {
+    font-family: var(--font-mono);
+  }
+}
+
+@layer components {
+  .markdown-content {
+    @apply grid max-w-none gap-3 text-sm leading-7 text-foreground;
+  }
+
+  .markdown-content h1,
+  .markdown-content h2,
+  .markdown-content h3,
+  .markdown-content h4 {
+    @apply mt-2 font-heading font-medium leading-tight tracking-normal text-foreground first:mt-0;
+  }
+
+  .markdown-content h1,
+  .markdown-content h2 {
+    @apply text-lg;
+  }
+
+  .markdown-content h3,
+  .markdown-content h4 {
+    @apply text-base;
+  }
+
+  .markdown-content ul {
+    @apply grid list-disc gap-1 pl-5;
+  }
+
+  .markdown-content code {
+    @apply rounded border bg-muted px-1 py-0.5 font-mono text-[0.92em];
+  }
+
+  .markdown-content pre {
+    @apply overflow-x-auto rounded-lg border bg-muted p-3 font-mono text-sm leading-6;
+  }
+
+  .terminal-panel {
+    @apply flex h-full min-h-0 flex-col gap-3;
+  }
+
+  .terminal-panel-compact {
+    @apply min-h-0;
+  }
+
+  .terminal-controls {
+    @apply flex flex-wrap items-center justify-end gap-2;
+  }
+
+  .terminal-safety-note {
+    @apply w-full text-right text-xs text-muted-foreground;
+  }
+
+  .terminal-shell {
+    @apply relative min-h-0 flex-1 overflow-hidden rounded-lg border border-input/70 p-3 font-mono shadow-[inset_0_1px_0_rgba(255,255,255,0.04)];
+    background-color: #09090b;
+  }
+
+  .terminal-panel-compact .terminal-shell {
+    @apply min-h-0;
+  }
+
+  .terminal-grid {
+    @apply h-full min-h-0 overflow-hidden rounded-md;
+    background-color: #09090b;
+  }
+
+  .terminal-inactive-state {
+    @apply pointer-events-none absolute inset-3 z-10 flex flex-col items-start justify-center gap-2 rounded-md border border-dashed border-input/60 bg-muted/20 px-5 text-muted-foreground;
+  }
+
+  .terminal-inactive-kicker {
+    @apply text-xs uppercase tracking-[0.18em] text-muted-foreground/70;
+  }
+
+  .terminal-inactive-title {
+    @apply font-mono text-base font-medium text-foreground;
+  }
+
+  .terminal-inactive-detail {
+    @apply max-w-sm text-sm;
+  }
+
+  .terminal-inactive-state code {
+    @apply rounded border border-border bg-background px-2 py-1 text-xs text-muted-foreground;
+  }
+
+  .terminal-grid .xterm {
+    @apply h-full overflow-hidden tracking-normal;
+    background-color: #09090b;
+  }
+
+  .terminal-grid .xterm-screen,
+  .terminal-grid .xterm-scrollable-element {
+    @apply overflow-hidden;
+  }
+
+  .terminal-grid .xterm-scrollable-element > .scrollbar.horizontal {
+    display: none !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    visibility: hidden !important;
+  }
+
+  .terminal-grid .xterm-viewport {
+    background-color: #09090b !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    scrollbar-color: #52525b transparent;
+    scrollbar-width: thin;
+  }
+
+  .terminal-grid .xterm-viewport::-webkit-scrollbar:horizontal {
+    display: none;
+    height: 0;
+  }
+
+  .terminal-grid .xterm-scroll-area {
+    overflow-x: hidden !important;
+  }
+
+  .terminal-grid .xterm-scrollable-element > .scrollbar.vertical {
+    width: 8px !important;
+  }
+
+  .terminal-shell-disabled .xterm {
+    @apply pointer-events-none;
+  }
+
+  .terminal-shell-disabled .xterm-cursor-layer {
+    @apply opacity-0;
+  }
+
+  .terminal-grid .xterm,
+  .terminal-grid .xterm * {
+    letter-spacing: 0 !important;
+  }
+
+  .toast {
+    @apply fixed right-3.5 bottom-3.5 z-50 translate-x-[calc(100%+1rem)] rounded-lg border bg-popover px-3 py-2 text-sm text-popover-foreground opacity-0 shadow-xl transition duration-300 ease-out;
+  }
+
+  .toast-visible {
+    @apply translate-x-0 opacity-100;
+  }
+}

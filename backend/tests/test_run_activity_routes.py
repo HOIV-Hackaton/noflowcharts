@@ -103,16 +103,7 @@ class FakeActivityManager(FakeRunManager):
 
     def submit_activity(self, run_id, request):
         now = datetime.now(UTC)
-        return Activity(
-            id=1,
-            team_id=1,
-            team_name="T",
-            employee_id=1,
-            ticket_id=7001,
-            start_datetime=now,
-            end_datetime=now,
-            description="done",
-        )
+        return Activity(id=1, team_id=1, team_name="T", employee_id=1, ticket_id=7001, start_datetime=now, end_datetime=now, description="done")
 
 
 def _draft() -> ActivityDraftRead:
@@ -190,7 +181,7 @@ def test_patch_ticket_status_rejects_direct_done_but_allows_pending():
         pending = client.patch("/api/tickets/7001/status", json={"status": "PENDING"})
 
         assert done.status_code == 422
-        assert "not set automatically" in done.json()["detail"]
+        assert "activity submission" in done.json()["detail"]
         assert pending.status_code == 200
         assert pending.json()["status"] == TicketStatus.PENDING
     finally:
