@@ -2,7 +2,7 @@
 
 ## Project
 
-**techbold AI Service Desk Autopilot**  
+**techbold AI Service Desk Autopilot**
 Frontend dashboard specification for the hackathon MVP.
 
 This document covers only the React technician dashboard. Backend services, ERP integration, SSH execution, AI agent orchestration, VM reset handling, and persistence are owned by the backend team and are intentionally out of scope here.

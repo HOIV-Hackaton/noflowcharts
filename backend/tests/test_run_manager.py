@@ -224,7 +224,8 @@ def make_manager(session, planner=None, ssh_runner=None, phoenix=None, activity_
         activity_generator=activity_generator,
         ticket_memory_service=ticket_memory_service,
     )
-    manager._event = lambda run_id, event_type, payload: None
+    manager.events = []
+    manager._event = lambda run_id, event_type, payload: manager.events.append((run_id, event_type, payload))
     return manager
 
 
@@ -409,7 +410,7 @@ def test_activity_submission_requires_validation_review_and_complete_draft():
             manager.submit_activity(run_id, ActivitySubmitRequest())
 
 
-def test_activity_draft_review_submission_sets_ticket_done():
+def test_activity_draft_review_submission_sets_ticket_done_and_returns_completion_message():
     with make_session() as session:
         phoenix = FakePhoenix()
         manager = make_manager(session, phoenix=phoenix, activity_generator=FakeActivityGenerator())
@@ -419,10 +420,15 @@ def test_activity_draft_review_submission_sets_ticket_done():
         reviewed = manager.review_activity_draft(run_id)
         activity = manager.submit_activity(run_id, ActivitySubmitRequest())
         state = manager.state(run_id)
+        completion_event = manager.events[-1]
 
         assert draft.summary == "Restored the status API service."
         assert reviewed.review_status == ActivityReviewStatus.REVIEWED
         assert activity.id == 9001
+        assert completion_event[1] == "activity_submitted"
+        assert "TICKET COMPLETE" in completion_event[2]["ascii_art"]
+        assert "set to DONE" in completion_event[2]["message"]
+        assert completion_event[2]["status"] == TicketStatus.DONE.value
         assert phoenix.activities[0].root_cause == "nginx was inactive, so the API proxy was unavailable."
         assert phoenix.status_updates[-1] == (7001, TicketStatus.DONE)
         assert state.run.status == RunStatus.SUBMITTED

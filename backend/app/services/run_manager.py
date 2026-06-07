@@ -40,6 +40,19 @@ from app.services.write_preview import WritePreviewer
 
 RISK_CONFIRMATION_PREFIX = "RUN "
 
+TICKET_COMPLETED_ASCII = r"""
+TICKET COMPLETE
+ _____ ___ ____ _  _______ _____   ____ ___  __  __ ____  _     _____ _____ _____
+|_   _|_ _/ ___| |/ / ____|_   _| / ___/ _ \|  \/  |  _ \| |   | ____|_   _| ____|
+  | |  | | |   | ' /|  _|   | |  | |  | | | | |\/| | |_) | |   |  _|   | | |  _|
+  | |  | | |___| . \| |___  | |  | |__| |_| | |  | |  __/| |___| |___  | | | |___
+  |_| |___\____|_|\_\_____| |_|   \____\___/|_|  |_|_|   |_____|_____| |_| |_____|
+""".strip("\n")
+
+ACTIVITY_SUBMITTED_MESSAGE = (
+    "Activity submitted to Phoenix and ticket status set to DONE."
+)
+
 
 class RunManager:
     def __init__(
@@ -515,11 +528,18 @@ class RunManager:
         created = self.phoenix.create_activity(activity)
         self.repo.set_activity_review_status(draft, ActivityReviewStatus.SUBMITTED)
         self.repo.update_run_status(run, RunStatus.SUBMITTED)
-        self.audit.record("activity_submitted", {"activity_id": created.id, "ticket_id": run.ticket_id}, run.id)
-        self._event(run.id, "activity_submitted", {"activity_id": created.id})
         self.phoenix.set_ticket_status(run.ticket_id, TicketStatus.DONE)
         self.audit.record("ticket_set_done", {"ticket_id": run.ticket_id}, run.id)
         self._event(run.id, "ticket_done", {"ticket_id": run.ticket_id, "status": TicketStatus.DONE.value})
+        completion_payload = {
+            "activity_id": created.id,
+            "ticket_id": run.ticket_id,
+            "status": TicketStatus.DONE.value,
+            "message": ACTIVITY_SUBMITTED_MESSAGE,
+            "ascii_art": TICKET_COMPLETED_ASCII,
+        }
+        self.audit.record("activity_submitted", completion_payload, run.id)
+        self._event(run.id, "activity_submitted", completion_payload)
         self._create_completed_ticket_memory(run, draft)
         return created
 
